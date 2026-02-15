@@ -266,6 +266,7 @@ const USER_SETTINGS_FIELDS = {
 	autoCondenseThreshold: { default: 0.75 as number }, // number from 0 to 1
 	subagentsEnabled: { default: false as boolean },
 	enableParallelToolCalling: { default: false as boolean },
+	behaviorMonitorEnabled: { default: true as boolean },
 	backgroundEditEnabled: { default: false as boolean },
 	skillsEnabled: { default: false as boolean },
 	optOutOfRemoteConfig: { default: false as boolean },

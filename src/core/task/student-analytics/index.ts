@@ -4,6 +4,7 @@
  */
 
 export { AdoptionTracker } from "./AdoptionTracker"
+export { BehaviorMonitor } from "./BehaviorMonitor"
 export { CodeEditTracker } from "./CodeEditTracker"
 export { ContentAnalyzer, contentAnalyzer } from "./ContentAnalyzer"
 export { StudentLogPersister } from "./StudentLogPersister"

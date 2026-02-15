@@ -108,6 +108,7 @@ import { MessageStateHandler } from "./message-state"
 import { StreamResponseHandler } from "./StreamResponseHandler"
 import {
 	AdoptionTracker,
+	BehaviorMonitor,
 	CodeEditTracker,
 	contentAnalyzer,
 	type StudentInteractionLog,
@@ -882,6 +883,8 @@ export class Task {
 	private adoptionTracker: AdoptionTracker = new AdoptionTracker()
 	// 代码编辑追踪器（全局单例，由 extension.ts 注入）
 	private static codeEditTracker: CodeEditTracker | undefined
+	// 实时行为监测器（任务级）
+	private behaviorMonitor: BehaviorMonitor | undefined
 	// 上一条 assistant turn 的分类信息（用于同主题判断）
 	private lastAssistantCategory: string | undefined
 
@@ -907,6 +910,40 @@ export class Task {
 			this.studentLogPersister = new StudentLogPersister(this.cwd)
 		}
 		return this.studentLogPersister
+	}
+
+	/**
+	 * 获取实时行为监测器（懒加载）
+	 */
+	private getBehaviorMonitor(): BehaviorMonitor | undefined {
+		const enabled = this.stateManager.getGlobalSettingsKey("behaviorMonitorEnabled")
+		if (!enabled) {
+			Logger.info(`[BehaviorMonitor] disabled by setting, behaviorMonitorEnabled=${enabled}`)
+			return undefined
+		}
+
+		if (!this.behaviorMonitor) {
+			this.behaviorMonitor = new BehaviorMonitor(this.taskId)
+			Logger.info(`[BehaviorMonitor] created for taskId=${this.taskId}`)
+		}
+
+		return this.behaviorMonitor
+	}
+
+	/**
+	 * 旁路上报行为事件（不阻塞主流程）
+	 */
+	private monitorBehavior(log: StudentInteractionLog): void {
+		try {
+			const monitor = this.getBehaviorMonitor()
+			if (!monitor) {
+				Logger.info(`[BehaviorMonitor] monitorBehavior skipped: no monitor instance`)
+				return
+			}
+			monitor.ingest(log)
+		} catch (error) {
+			Logger.warn("Behavior monitor ingest failed", error)
+		}
 	}
 
 	/**
@@ -945,6 +982,7 @@ export class Task {
 
 			// 持久化日志
 			await persister.persist(log)
+			this.monitorBehavior(log)
 		} catch (error) {
 			Logger.error("Failed to persist student interaction log", error as Error)
 		}
@@ -988,6 +1026,7 @@ export class Task {
 
 			// 持久化日志
 			await persister.persist(log)
+			this.monitorBehavior(log)
 			Logger.info(`[StudentTurnLog] taskId=${this.taskId}, turnIndex=${turnIndex}, content=${text?.substring(0, 100)}`)
 		} catch (error) {
 			// 日志写入失败时只记录错误，不影响原有功能
@@ -1042,6 +1081,7 @@ export class Task {
 
 			// 持久化日志
 			await persister.persist(log)
+			this.monitorBehavior(log)
 
 			// 保存当前分类用于后续同主题判断
 			this.lastAssistantCategory = category
@@ -1125,6 +1165,7 @@ export class Task {
 				adoptionStatus,
 			}
 			await persister.persist(log)
+			this.monitorBehavior(log)
 		} catch (error) {
 			Logger.error("Failed to persist adoption infer log", error as Error)
 		}
@@ -1224,7 +1265,12 @@ export class Task {
 		await this.persistStudentInteractionLog(task, images, files)
 		// 注册代码编辑追踪器上下文
 		if (Task.codeEditTracker) {
-			Task.codeEditTracker.setContext(this.taskId, this.getStudentLogPersister(), this.adoptionTracker)
+			Task.codeEditTracker.setContext(
+				this.taskId,
+				this.getStudentLogPersister(),
+				this.adoptionTracker,
+				this.getBehaviorMonitor(),
+			)
 		}
 		try {
 			await this.clineIgnoreController.initialize()

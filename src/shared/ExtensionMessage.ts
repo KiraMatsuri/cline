@@ -111,6 +111,7 @@ export interface ExtensionState {
 	localSkillsToggles?: Record<string, boolean>
 	nativeToolCallSetting?: boolean
 	enableParallelToolCalling?: boolean
+	behaviorMonitorEnabled?: boolean
 	backgroundEditEnabled?: boolean
 	optOutOfRemoteConfig?: boolean
 	banners?: BannerCardData[]

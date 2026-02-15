@@ -16,6 +16,7 @@ import * as path from "path"
 import * as vscode from "vscode"
 import { asRelativePath } from "@/utils/path"
 import type { AdoptionTracker } from "./AdoptionTracker"
+import type { BehaviorMonitor } from "./BehaviorMonitor"
 import { contentAnalyzer } from "./ContentAnalyzer"
 import type { StudentLogPersister } from "./StudentLogPersister"
 import type { StudentInteractionLog } from "./types"
@@ -58,6 +59,9 @@ export class CodeEditTracker implements vscode.Disposable {
 	/** 采纳追踪器（由外部注入） */
 	private adoptionTracker: AdoptionTracker | undefined
 
+	/** 实时行为监测器（由外部注入） */
+	private behaviorMonitor: BehaviorMonitor | undefined
+
 	constructor() {
 		// 监听文本文档变更
 		this.disposables.push(vscode.workspace.onDidChangeTextDocument((e) => this.onDocumentChange(e)))
@@ -69,10 +73,16 @@ export class CodeEditTracker implements vscode.Disposable {
 	/**
 	 * 设置当前活跃任务信息
 	 */
-	public setContext(taskId: string, persister: StudentLogPersister, adoptionTracker: AdoptionTracker): void {
+	public setContext(
+		taskId: string,
+		persister: StudentLogPersister,
+		adoptionTracker: AdoptionTracker,
+		behaviorMonitor?: BehaviorMonitor,
+	): void {
 		this.activeTaskId = taskId
 		this.persister = persister
 		this.adoptionTracker = adoptionTracker
+		this.behaviorMonitor = behaviorMonitor
 	}
 
 	/**
@@ -82,6 +92,7 @@ export class CodeEditTracker implements vscode.Disposable {
 		this.activeTaskId = undefined
 		this.persister = undefined
 		this.adoptionTracker = undefined
+		this.behaviorMonitor = undefined
 	}
 
 	/**
@@ -169,6 +180,7 @@ export class CodeEditTracker implements vscode.Disposable {
 		}
 
 		void this.persister.persist(log)
+		this.behaviorMonitor?.ingest(log)
 	}
 
 	/**
@@ -202,6 +214,7 @@ export class CodeEditTracker implements vscode.Disposable {
 		}
 
 		void this.persister.persist(log)
+		this.behaviorMonitor?.ingest(log)
 		this.pendingEdits.delete(filePath)
 	}
 
