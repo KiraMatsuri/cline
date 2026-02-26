@@ -190,3 +190,101 @@ export interface StudentProfile {
 	/** 分析所覆盖的时间区间 */
 	timeRange: { start: string; end: string }
 }
+
+// =============================================
+// 教学干预 (Teaching Intervention) 类型定义
+// =============================================
+
+/**
+ * 行为风险规则 ID
+ */
+export type BehaviorRuleId =
+	| "consecutive_code_generation"
+	| "no_edit_streak"
+	| "high_adoption_low_self_modification"
+	| "high_recent_ai_dependency"
+
+/**
+ * 干预严重等级
+ *
+ * - gentle:    温和提示 — 轻微依赖倾向，鼓励式引导
+ * - moderate:  中度干预 — 明显依赖模式，提问式引导
+ * - strong:    强力干预 — 严重依赖，挑战式引导
+ */
+export type InterventionSeverity = "gentle" | "moderate" | "strong"
+
+/**
+ * 干预消息风格
+ *
+ * - hint:      提示型 — 简短的学习建议
+ * - question:  提问型 — 引导学生思考的问题
+ * - challenge: 挑战型 — 给出小任务让学生自主完成
+ * - reflection: 反思型 — 引导学生回顾自己的学习过程
+ */
+export type InterventionStyle = "hint" | "question" | "challenge" | "reflection"
+
+/**
+ * 行为风险警报（BehaviorMonitor 输出的结构化警报）
+ */
+export interface BehaviorAlert {
+	/** 触发的规则 ID */
+	ruleId: BehaviorRuleId
+	/** 人类可读的描述 */
+	message: string
+	/** 触发时间 (ISO 8601) */
+	triggeredAt: string
+	/** 相关的量化指标值 */
+	metricValue: number
+	/** 对应的阈值 */
+	threshold: number
+}
+
+/**
+ * 教学干预消息
+ */
+export interface InterventionMessage {
+	/** 干预消息内容 */
+	content: string
+	/** 触发的规则 ID */
+	ruleId: BehaviorRuleId
+	/** 严重等级 */
+	severity: InterventionSeverity
+	/** 干预风格 */
+	style: InterventionStyle
+	/** 生成时间 (ISO 8601) */
+	generatedAt: string
+	/** 冷却到期时间 (ISO 8601)，在该时间之前不再对同一规则触发干预 */
+	cooldownUntil: string
+}
+
+/**
+ * 干预历史记录（用于日志分析）
+ */
+export interface InterventionRecord {
+	/** 干预消息 */
+	intervention: InterventionMessage
+	/** 所属任务 ID */
+	taskId: string
+	/** 是否实际注入到对话 */
+	injected: boolean
+	/** 注入时的对话轮次索引 */
+	turnIndex: number
+}
+
+/**
+ * 干预管理器配置选项
+ */
+export interface InterventionManagerOptions {
+	/** 是否启用干预 */
+	enabled?: boolean
+	/** 全局冷却时间（毫秒），同一规则两次干预之间的最小间隔 */
+	globalCooldownMs?: number
+	/** 单个任务内最大干预次数 */
+	maxInterventionsPerTask?: number
+	/** 连续两次干预之间最少需间隔的对话轮次数 */
+	minTurnsBetweenInterventions?: number
+	/** 干预风格偏好（默认随机选择） */
+	preferredStyle?: InterventionStyle
+	/** 是否在 OutputChannel 同时输出干预日志 */
+	logToOutputChannel?: boolean
+}

@@ -6,13 +6,7 @@
  */
 
 import { Logger } from "@/shared/services/Logger"
-import type { StudentInteractionLog } from "./types"
-
-type BehaviorRuleId =
-	| "consecutive_code_generation"
-	| "no_edit_streak"
-	| "high_adoption_low_self_modification"
-	| "high_recent_ai_dependency"
+import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog } from "./types"
 
 export interface BehaviorMonitorOptions {
 	enabled?: boolean
@@ -37,7 +31,7 @@ const DEFAULT_OPTIONS: Required<BehaviorMonitorOptions> = {
 	minTurnsForDependency: 4, // 4 条 turn_message 即开始评估 AI 依赖
 	aiDependencyThreshold: 0.7, // 70% AI 参与占比（Cline 多工具调用场景下可达）
 	noEditTurnStreakThreshold: 5, // 连续 5 轮无编辑（约 2-3 轮对话）
-	consecutiveAssistantCodeThreshold: 3, // 连续 3 次 AI 生成代码
+	consecutiveAssistantCodeThreshold: 2, // 连续 3 次 AI 生成代码
 	adoptionRateThreshold: 0.7,
 	selfModificationThreshold: 0.25,
 	minAdoptionSamples: 2, // 2 条采纳推断即可评估
@@ -48,6 +42,8 @@ export class BehaviorMonitor {
 	private readonly options: Required<BehaviorMonitorOptions>
 	private recentEvents: StudentInteractionLog[] = []
 	private lastReminderAt: Partial<Record<BehaviorRuleId, number>> = {}
+	/** 待消费的结构化风险警报队列 */
+	private pendingAlerts: BehaviorAlert[] = []
 
 	private assistantCodeStreak = 0
 	private turnsSinceLastEdit = 0
@@ -131,6 +127,8 @@ export class BehaviorMonitor {
 		this.notify(
 			"consecutive_code_generation",
 			`检测到你连续 ${this.assistantCodeStreak} 次请求代码生成，建议先尝试自行修改一小段，再让 AI 帮你 review。`,
+			this.assistantCodeStreak,
+			this.options.consecutiveAssistantCodeThreshold,
 		)
 	}
 
@@ -139,7 +137,12 @@ export class BehaviorMonitor {
 			return
 		}
 
-		this.notify("no_edit_streak", `你已经连续 ${this.turnsSinceLastEdit} 轮没有代码编辑，建议动手验证或微调一处关键实现。`)
+		this.notify(
+			"no_edit_streak",
+			`你已经连续 ${this.turnsSinceLastEdit} 轮没有代码编辑，建议动手验证或微调一处关键实现。`,
+			this.turnsSinceLastEdit,
+			this.options.noEditTurnStreakThreshold,
+		)
 	}
 
 	private checkHighAdoptionLowSelfModificationRule(): void {
@@ -181,6 +184,8 @@ export class BehaviorMonitor {
 			this.notify(
 				"high_adoption_low_self_modification",
 				`近期建议采纳率较高（${(adoptionRate * 100).toFixed(0)}%），但自主修改偏少，建议在采纳后再做一次本地优化。`,
+				adoptionRate,
+				this.options.adoptionRateThreshold,
 			)
 		}
 	}
@@ -215,11 +220,13 @@ export class BehaviorMonitor {
 			this.notify(
 				"high_recent_ai_dependency",
 				`最近 ${turns.length} 条交互中 AI 参与占比较高（${(aiDependency * 100).toFixed(0)}%），建议先写思路或伪代码再请求完整答案。`,
+				aiDependency,
+				this.options.aiDependencyThreshold,
 			)
 		}
 	}
 
-	private notify(ruleId: BehaviorRuleId, message: string): void {
+	private notify(ruleId: BehaviorRuleId, message: string, metricValue: number = 0, threshold: number = 0): void {
 		const now = Date.now()
 		const lastTs = this.lastReminderAt[ruleId] ?? 0
 		if (now - lastTs < this.options.cooldownMs) {
@@ -228,5 +235,39 @@ export class BehaviorMonitor {
 
 		this.lastReminderAt[ruleId] = now
 		Logger.info(`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message}`)
+
+		// 生成结构化警报，供 TeachingInterventionManager 消费
+		const alert: BehaviorAlert = {
+			ruleId,
+			message,
+			triggeredAt: new Date().toISOString(),
+			metricValue,
+			threshold,
+		}
+		this.pendingAlerts.push(alert)
+	}
+
+	/**
+	 * 查看当前是否有待处理的风险警报（只读）
+	 */
+	public hasPendingAlerts(): boolean {
+		return this.pendingAlerts.length > 0
+	}
+
+	/**
+	 * 获取所有待处理的警报（只读，不清空队列）
+	 */
+	public getPendingAlerts(): ReadonlyArray<BehaviorAlert> {
+		return this.pendingAlerts
+	}
+
+	/**
+	 * 消费（获取并清空）所有待处理的警报
+	 * 调用后队列被清空，同一组警报只会被消费一次
+	 */
+	public consumePendingAlerts(): BehaviorAlert[] {
+		const alerts = [...this.pendingAlerts]
+		this.pendingAlerts = []
+		return alerts
 	}
 }

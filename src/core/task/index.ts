@@ -114,6 +114,7 @@ import {
 	type StudentInteractionLog,
 	StudentLogPersister,
 	type SuggestionType,
+	TeachingInterventionManager,
 	taskClassifier,
 } from "./student-analytics"
 import { TaskState } from "./TaskState"
@@ -885,6 +886,8 @@ export class Task {
 	private static codeEditTracker: CodeEditTracker | undefined
 	// 实时行为监测器（任务级）
 	private behaviorMonitor: BehaviorMonitor | undefined
+	// 教学干预管理器（任务级）
+	private interventionManager: TeachingInterventionManager | undefined
 	// 上一条 assistant turn 的分类信息（用于同主题判断）
 	private lastAssistantCategory: string | undefined
 
@@ -928,6 +931,24 @@ export class Task {
 		}
 
 		return this.behaviorMonitor
+	}
+
+	/**
+	 * 获取教学干预管理器（懒加载）
+	 * 跟随 BehaviorMonitor 的启用状态，只有在行为监测开启时才会创建
+	 */
+	private getInterventionManager(): TeachingInterventionManager | undefined {
+		// 干预机制依赖于行为监测器
+		if (!this.getBehaviorMonitor()) {
+			return undefined
+		}
+
+		if (!this.interventionManager) {
+			this.interventionManager = new TeachingInterventionManager(this.taskId)
+			Logger.info(`[TeachingIntervention] created for taskId=${this.taskId}`)
+		}
+
+		return this.interventionManager
 	}
 
 	/**
@@ -2765,6 +2786,31 @@ export class Task {
 					isMultiRootEnabled(this.stateManager),
 				),
 			})
+		}
+
+		// ========== 教学干预检查 ==========
+		// 在构建 API 请求之前，检查 BehaviorMonitor 是否触发了风险警报
+		// 如果触发，则在 userContent 中注入教学干预提示
+		// 注意：干预提示作为额外的 text block 追加，不修改用户原始输入
+		try {
+			const interventionManager = this.getInterventionManager()
+			if (interventionManager) {
+				const monitor = this.getBehaviorMonitor()
+				// 使用当前 API 请求计数作为轮次索引
+				const interventionText = interventionManager.checkAndGenerateIntervention(monitor, this.taskState.apiRequestCount)
+				if (interventionText) {
+					userContent.push({
+						type: "text",
+						text: interventionText,
+					})
+					Logger.info(
+						`[TeachingIntervention][${this.taskId}] intervention injected at apiRequestCount=${this.taskState.apiRequestCount}`,
+					)
+				}
+			}
+		} catch (error) {
+			// 干预机制出错不应影响正常对话流
+			Logger.warn("[TeachingIntervention] intervention check failed, continuing normally", error)
 		}
 
 		// getting verbose details is an expensive operation, it uses globby to top-down build file structure of project which for large projects can take a few seconds
