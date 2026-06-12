@@ -29,5 +29,7 @@
 		"source.organizeImports.biome": "always"
 	},
 	// Disable auto-forwarding ports to prevent Simple Browser from opening the Vite dev server
-	"remote.autoForwardPorts": false
+	"remote.autoForwardPorts": false,
+	"python-envs.defaultEnvManager": "ms-python.python:conda",
+	"python-envs.defaultPackageManager": "ms-python.python:conda"
 }
