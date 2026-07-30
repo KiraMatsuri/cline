@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { useExtensionState } from "../../context/ExtensionStateContext"
+import { WikiWeekSelector } from "./WikiWeekSelector"
+import { ServerSettingsButton } from "./ServerSettingsButton"
 
 // Custom MCP Server Icon component using VSCode codicon
 const McpServerIcon = ({ className, size }: { className?: string; size?: number }) => (
@@ -92,6 +94,12 @@ export const Navbar = () => {
 					</TooltipTrigger>
 				</Tooltip>
 			))}
+
+			{/* 【v1.3 增量】周数选择器 —— 直接在主工具栏显示，可随时切换 */}
+			<WikiWeekSelector />
+
+			{/* 【v1.3 增量】服务器设置按钮 —— 点击弹出 Modal 修改 serverUrl */}
+			<ServerSettingsButton />
 		</nav>
 	)
 }
