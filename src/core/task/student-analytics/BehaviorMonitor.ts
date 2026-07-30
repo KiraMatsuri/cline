@@ -21,20 +21,23 @@ export interface BehaviorMonitorOptions {
 	adoptionRateThreshold?: number
 	selfModificationThreshold?: number
 	minAdoptionSamples?: number
+	/** 触发阻断式干预的同规则累计次数阈值（默认 4 次） */
+	escalationBlockingThreshold?: number
 }
 
 const DEFAULT_OPTIONS: Required<BehaviorMonitorOptions> = {
 	enabled: true,
 	debug: false, // 开发阶段默认开启，验证完毕后改为 false
 	windowSize: 20, // 覆盖 ~4 轮完整对话（每轮约 5 条事件）
-	cooldownMs: 60_000, // 60 秒冷却，兼顾调试效率和提醒频率
+	cooldownMs: 15_000, // 15 秒冷却（原 60s，降低以避免快速连续请求时错过触发窗口）
 	minTurnsForDependency: 4, // 4 条 turn_message 即开始评估 AI 依赖
 	aiDependencyThreshold: 0.7, // 70% AI 参与占比（Cline 多工具调用场景下可达）
 	noEditTurnStreakThreshold: 5, // 连续 5 轮无编辑（约 2-3 轮对话）
-	consecutiveAssistantCodeThreshold: 2, // 连续 3 次 AI 生成代码
+	consecutiveAssistantCodeThreshold: 3, // 连续 3 次 AI 生成代码即触发（原 2，上调避免误触发）
 	adoptionRateThreshold: 0.7,
 	selfModificationThreshold: 0.25,
 	minAdoptionSamples: 2, // 2 条采纳推断即可评估
+	escalationBlockingThreshold: 4, // 同规则累计 4 次触发 → 阻断式干预
 }
 
 export class BehaviorMonitor {
@@ -47,6 +50,12 @@ export class BehaviorMonitor {
 
 	private assistantCodeStreak = 0
 	private turnsSinceLastEdit = 0
+
+	/** 同规则累计触发次数（用于阻断式干预升级判定） */
+	private escalationCounter: Partial<Record<BehaviorRuleId, number>> = {}
+
+	/** 阻断式干预是否已触发（同一任务内仅触发一次） */
+	private blockingTriggered = false
 
 	constructor(taskId: string, options?: BehaviorMonitorOptions) {
 		this.taskId = taskId
@@ -87,8 +96,10 @@ export class BehaviorMonitor {
 	private updateRealtimeStreaks(event: StudentInteractionLog): void {
 		if (event.eventType === "code_edit") {
 			this.turnsSinceLastEdit = 0
+			// 学生主动编辑代码 → 重置 streak（阻断判定仅关注连续无编辑的代码生成）
+			this.assistantCodeStreak = 0
 			if (this.options.debug) {
-				Logger.info(`[BehaviorMonitor][debug] code_edit detected → turnsSinceLastEdit reset to 0`)
+				Logger.info(`[BehaviorMonitor][debug] code_edit detected → turnsSinceLastEdit & assistantCodeStreak reset to 0`)
 			}
 			return
 		}
@@ -99,9 +110,9 @@ export class BehaviorMonitor {
 			if (event.role === "assistant") {
 				if (event.hasCode) {
 					this.assistantCodeStreak++
-				} else {
-					this.assistantCodeStreak = 0
 				}
+				// hasCode=false 时不再清零 assistantCodeStreak
+				// 只有在 code_edit 事件时才重置，避免 AI 发送非代码消息（如 execute_command / read_file / 提示文本）意外打断计数
 			}
 
 			if (this.options.debug) {
@@ -234,15 +245,23 @@ export class BehaviorMonitor {
 		}
 
 		this.lastReminderAt[ruleId] = now
-		Logger.info(`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message}`)
 
-		// 生成结构化警报，供 TeachingInterventionManager 消费
+		// 递增同规则累计触发次数（用于阻断式干预升级判定）
+		const escalationCount = (this.escalationCounter[ruleId] ?? 0) + 1
+		this.escalationCounter[ruleId] = escalationCount
+
+		Logger.info(
+			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.options.escalationBlockingThreshold})`,
+		)
+
+		// 生成结构化警报，附带回退计数，供 TeachingInterventionManager 消费
 		const alert: BehaviorAlert = {
 			ruleId,
 			message,
 			triggeredAt: new Date().toISOString(),
 			metricValue,
 			threshold,
+			escalationCount,
 		}
 		this.pendingAlerts.push(alert)
 	}
@@ -269,5 +288,53 @@ export class BehaviorMonitor {
 		const alerts = [...this.pendingAlerts]
 		this.pendingAlerts = []
 		return alerts
+	}
+
+	/**
+	 * 获取同规则累计触发次数
+	 */
+	public getEscalationCount(ruleId: BehaviorRuleId): number {
+		return this.escalationCounter[ruleId] ?? 0
+	}
+
+	/**
+	 * 检查是否已达到阻断式干预的升级阈值
+	 * @param ruleId 要检查的规则 ID
+	 * @returns 是否应触发阻断式干预
+	 */
+	public shouldEscalateToBlocking(ruleId: BehaviorRuleId): boolean {
+		if (this.blockingTriggered) {
+			return false // 同一任务内阻断仅触发一次
+		}
+		const count = this.getEscalationCount(ruleId)
+		return count >= this.options.escalationBlockingThreshold
+	}
+
+	/**
+	 * 标记阻断式干预已触发（防止重复触发）
+	 */
+	public markBlockingTriggered(): void {
+		this.blockingTriggered = true
+		Logger.info(`[BehaviorMonitor][${this.taskId}] blocking intervention marked as triggered`)
+	}
+
+	/**
+	 * 获取阻断触发阈值
+	 */
+	public getEscalationBlockingThreshold(): number {
+		return this.options.escalationBlockingThreshold
+	}
+
+	/**
+	 * 重置所有状态（通常在任务重启时调用）
+	 */
+	public reset(): void {
+		this.recentEvents = []
+		this.lastReminderAt = {}
+		this.pendingAlerts = []
+		this.assistantCodeStreak = 0
+		this.turnsSinceLastEdit = 0
+		this.escalationCounter = {}
+		this.blockingTriggered = false
 	}
 }

@@ -2790,21 +2790,53 @@ export class Task {
 
 		// ========== 教学干预检查 ==========
 		// 在构建 API 请求之前，检查 BehaviorMonitor 是否触发了风险警报
-		// 如果触发，则在 userContent 中注入教学干预提示
-		// 注意：干预提示作为额外的 text block 追加，不修改用户原始输入
+		// 阻断式干预: 完全跳过 API 请求，直接展示阻断消息并阻止后续输入
 		try {
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()
-				// 使用当前 API 请求计数作为轮次索引
-				const interventionText = interventionManager.checkAndGenerateIntervention(monitor, this.taskState.apiRequestCount)
+				const interventionText = interventionManager.checkAndGenerateIntervention(
+					monitor,
+					this.taskState.apiRequestCount,
+				)
+
+				// ★ 阻断态优先检查（独立于 interventionText）
+				// checkAndGenerateIntervention 在阻断冷却期间仍返回提醒消息
+				// 此处确保即使用户连续发送消息，每次都被拦截
+				if (interventionManager.isBlockingActive()) {
+					const blockingSeconds = Math.ceil(
+						(interventionManager.getBlockingEndsAt() - Date.now()) / 1000,
+					)
+					const minutes = Math.floor(blockingSeconds / 60)
+					const seconds = blockingSeconds % 60
+					const timeDisplay = seconds > 0
+						? `${minutes} 分 ${seconds} 秒`
+						: `${minutes} 分钟`
+
+					// 向用户展示阻断消息（含剩余时间提醒）
+					await this.say(
+						"text",
+						interventionText ||
+							`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】\n\n系统处于阻断模式，代码生成与工具执行功能暂不可用。请利用这段时间独立编写代码。`,
+					)
+
+					Logger.info(
+						`[TeachingIntervention][${this.taskId}] BLOCKING ENFORCED: ` +
+						`API request blocked, features disabled, remaining=${timeDisplay}`,
+					)
+
+					// 🔒 关键: 阻止 API 请求，返回 false 表示该轮对话未完成（等待用户继续输入）
+					return false
+				}
+
+				// 普通干预: 作为文本注入到 userContent
 				if (interventionText) {
 					userContent.push({
 						type: "text",
 						text: interventionText,
 					})
 					Logger.info(
-						`[TeachingIntervention][${this.taskId}] intervention injected at apiRequestCount=${this.taskState.apiRequestCount}`,
+						`[TeachingIntervention][${this.taskId}] hint intervention injected at apiRequestCount=${this.taskState.apiRequestCount}`,
 					)
 				}
 			}

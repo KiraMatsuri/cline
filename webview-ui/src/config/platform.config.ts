@@ -51,8 +51,18 @@ declare global {
 	function acquireVsCodeApi(): any
 }
 
-// Initialize the vscode API if available
+// Initialize the vscode API if available.
+// 【重要】此处导出的 vsCodeApi 必须由模块层确保唯一实例。
+// 由于 VS Code Webview 全局只允许调用一次 acquireVsCodeApi()，
+// 我们将其缓存并导出供其他模块复用，避免再次调用导致
+// "An instance of the VS Code API has already been acquired" 错误。
 const vsCodeApi = typeof acquireVsCodeApi === "function" ? acquireVsCodeApi() : null
+
+// 暴露给外部组件（如 AssignmentTab）复用同一个 vsCodeApi 实例
+export const getVsCodeApiInstance = (): VsCodeApiType | null => vsCodeApi
+
+// 类型别名用于导出
+type VsCodeApiType = ReturnType<typeof acquireVsCodeApi>
 
 // Implementations for post message handling
 const postMessageStrategies: Record<string, PostMessageFunction> = {

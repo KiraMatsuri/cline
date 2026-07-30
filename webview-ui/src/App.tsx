@@ -6,6 +6,9 @@ import HistoryView from "./components/history/HistoryView"
 import McpView from "./components/mcp/configuration/McpConfigurationView"
 import OnboardingView from "./components/onboarding/OnboardingView"
 import SettingsView from "./components/settings/SettingsView"
+import { AssignmentErrorBoundary } from "./components/teaching/AssignmentErrorBoundary"
+import AssignmentTab from "./components/teaching/AssignmentTab"
+import LLMSettingsView from "./components/teaching/LLMSettingsView"
 import WelcomeView from "./components/welcome/WelcomeView"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
@@ -13,7 +16,26 @@ import { useExtensionState } from "./context/ExtensionStateContext"
 import { Providers } from "./Providers"
 import { UiServiceClient } from "./services/grpc-client"
 
+/**
+ * 识别当前 webview 容器（v1.3 增量）
+ * - LLMSettingsViewProvider 在 HTML 写入 `<div id="root" data-view="clineLLMSettings">`
+ * - 主 SidebarProvider 不写 data-view
+ * - 通过此 hook 在 LLMSettingsView webview 中跳过所有主逻辑，直接渲染设置页
+ */
+function useCurrentWebviewView(): string | undefined {
+	if (typeof document === "undefined") return undefined
+	const root = document.getElementById("root")
+	return root?.getAttribute("data-view") ?? undefined
+}
+
 const AppContent = () => {
+	const currentView = useCurrentWebviewView()
+
+	// 【v1.3 增量】独立的 LLMSettingsView webview：跳过主侧边栏全部状态，直接渲染
+	if (currentView === "clineLLMSettings") {
+		return <LLMSettingsView />
+	}
+
 	const {
 		didHydrateState,
 		showWelcome,
@@ -26,6 +48,8 @@ const AppContent = () => {
 		showAccount,
 		showWorktrees,
 		showAnnouncement,
+		showTeaching,
+		setShowTeaching,
 		onboardingModels,
 		setShowAnnouncement,
 		setShouldShowAnnouncement,
@@ -77,10 +101,15 @@ const AppContent = () => {
 				/>
 			)}
 			{showWorktrees && <WorktreesView onDone={hideWorktrees} />}
+			{showTeaching && (
+				<AssignmentErrorBoundary>
+					<AssignmentTab />
+				</AssignmentErrorBoundary>
+			)}
 			{/* Do not conditionally load ChatView, it's expensive and there's state we don't want to lose (user input, disableInput, askResponse promise, etc.) */}
 			<ChatView
 				hideAnnouncement={hideAnnouncement}
-				isHidden={showSettings || showHistory || showMcp || showAccount || showWorktrees}
+				isHidden={showSettings || showHistory || showMcp || showAccount || showWorktrees || showTeaching}
 				showAnnouncement={showAnnouncement}
 				showHistoryView={navigateToHistory}
 			/>

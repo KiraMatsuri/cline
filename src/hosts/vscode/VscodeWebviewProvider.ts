@@ -16,13 +16,21 @@ import { WebviewMessage } from "@/shared/WebviewMessage"
  * Webview → Extension 单向消息，response 通过 postMessageToWebview 回传
  */
 export type WikiCommand =
-  | { type: "wiki_command"; command: "switchWeek"; week: number }
-  | { type: "wiki_command"; command: "fetchWiki"; week: number }
-  | { type: "wiki_command"; command: "updateServerUrl"; url: string }
-  | { type: "wiki_command"; command: "loadHeaderState" }
-  | { type: "wiki_command"; command: "loadLLMSettings" }
-  | { type: "wiki_command"; command: "saveLLMSettings"; provider: string; baseUrl: string; apiKey: string; model: string; enableTools: boolean }
-  | { type: "wiki_command"; command: "testLLMConnection"; baseUrl: string; apiKey: string; model: string }
+	| { type: "wiki_command"; command: "switchWeek"; week: number }
+	| { type: "wiki_command"; command: "fetchWiki"; week: number }
+	| { type: "wiki_command"; command: "updateServerUrl"; url: string }
+	| { type: "wiki_command"; command: "loadHeaderState" }
+	| { type: "wiki_command"; command: "loadLLMSettings" }
+	| {
+			type: "wiki_command"
+			command: "saveLLMSettings"
+			provider: string
+			baseUrl: string
+			apiKey: string
+			model: string
+			enableTools: boolean
+	  }
+	| { type: "wiki_command"; command: "testLLMConnection"; baseUrl: string; apiKey: string; model: string }
 
 /*
 https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts

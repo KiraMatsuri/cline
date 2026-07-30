@@ -57,6 +57,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	showHistory: boolean
 	showAccount: boolean
 	showWorktrees: boolean
+	showTeaching: boolean
 	showAnnouncement: boolean
 	showChatModelSelector: boolean
 	expandTaskHeader: boolean
@@ -96,8 +97,9 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setUserInfo: (userInfo?: UserInfo) => void
 
 	// Navigation state setters
-	setShowMcp: (value: boolean) => void
-	setMcpTab: (tab?: McpViewTab) => void
+    setShowMcp: (value: boolean) => void
+    setShowTeaching: (value: boolean) => void
+    setMcpTab: (tab?: McpViewTab) => void
 
 	// Navigation functions
 	navigateToMcp: (tab?: McpViewTab) => void
@@ -105,6 +107,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	navigateToHistory: () => void
 	navigateToAccount: () => void
 	navigateToWorktrees: () => void
+	navigateToTeaching: () => void
 	navigateToChat: () => void
 
 	// Hide functions
@@ -112,6 +115,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	hideHistory: () => void
 	hideAccount: () => void
 	hideWorktrees: () => void
+	hideTeaching: () => void
 	hideAnnouncement: () => void
 	hideChatModelSelector: () => void
 	closeMcpView: () => void
@@ -133,6 +137,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const [showHistory, setShowHistory] = useState(false)
 	const [showAccount, setShowAccount] = useState(false)
 	const [showWorktrees, setShowWorktrees] = useState(false)
+	const [showTeaching, setShowTeaching] = useState(false)
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [showChatModelSelector, setShowChatModelSelector] = useState(false)
 
@@ -150,6 +155,7 @@ export const ExtensionStateContextProvider: React.FC<{
 	const hideHistory = useCallback(() => setShowHistory(false), [setShowHistory])
 	const hideAccount = useCallback(() => setShowAccount(false), [setShowAccount])
 	const hideWorktrees = useCallback(() => setShowWorktrees(false), [setShowWorktrees])
+	const hideTeaching = useCallback(() => setShowTeaching(false), [setShowTeaching])
 	const hideAnnouncement = useCallback(() => setShowAnnouncement(false), [setShowAnnouncement])
 	const hideChatModelSelector = useCallback(() => setShowChatModelSelector(false), [setShowChatModelSelector])
 
@@ -204,13 +210,23 @@ export const ExtensionStateContextProvider: React.FC<{
 		setShowWorktrees(true)
 	}, [setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
 
+	const navigateToTeaching = useCallback(() => {
+		setShowSettings(false)
+		closeMcpView()
+		setShowHistory(false)
+		setShowAccount(false)
+		setShowWorktrees(false)
+		setShowTeaching(true)
+	}, [setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees, setShowTeaching])
+
 	const navigateToChat = useCallback(() => {
 		setShowSettings(false)
 		closeMcpView()
 		setShowHistory(false)
 		setShowAccount(false)
 		setShowWorktrees(false)
-	}, [setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees])
+		setShowTeaching(false)
+	}, [setShowSettings, closeMcpView, setShowHistory, setShowAccount, setShowWorktrees, setShowTeaching])
 
 	const [state, setState] = useState<ExtensionState>({
 		version: "",
@@ -777,6 +793,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		showHistory,
 		showAccount,
 		showWorktrees,
+		showTeaching,
 		showAnnouncement,
 		showChatModelSelector,
 		globalClineRulesToggles: state.globalClineRulesToggles || {},
@@ -797,6 +814,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		navigateToHistory,
 		navigateToAccount,
 		navigateToWorktrees,
+		navigateToTeaching,
 		navigateToChat,
 
 		// Hide functions
@@ -804,6 +822,7 @@ export const ExtensionStateContextProvider: React.FC<{
 		hideHistory,
 		hideAccount,
 		hideWorktrees,
+		hideTeaching,
 		hideAnnouncement,
 		setShowAnnouncement,
 		hideChatModelSelector,
@@ -821,8 +840,9 @@ export const ExtensionStateContextProvider: React.FC<{
 		setBasetenModels: (models: Record<string, ModelInfo>) => setBasetenModels(models),
 		setHuggingFaceModels: (models: Record<string, ModelInfo>) => setHuggingFaceModels(models),
 		setMcpMarketplaceCatalog: (catalog: McpMarketplaceCatalog) => setMcpMarketplaceCatalog(catalog),
-		setShowMcp,
-		closeMcpView,
+        setShowMcp,
+        setShowTeaching,
+        closeMcpView,
 		setGlobalClineRulesToggles: (toggles) =>
 			setState((prevState) => ({
 				...prevState,

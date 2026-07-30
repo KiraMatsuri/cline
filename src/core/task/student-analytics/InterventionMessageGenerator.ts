@@ -15,6 +15,18 @@ interface MessageTemplate {
 	template: string
 }
 
+/** 阻断式干预模板 */
+interface BlockingTemplate {
+	/** 阻断模式消息内容 */
+	content: string
+	/** 禁用的功能列表 */
+	disabledFeatures: string[]
+	/** 倒计时秒数 */
+	countdownSeconds: number
+	/** 反思引导问题列表 */
+	reflectionQuestions: string[]
+}
+
 /**
  * 每条规则对应的模板库
  * 按严重等级分组，每个等级包含多种风格的模板
@@ -143,6 +155,46 @@ const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeverity, Mes
 }
 
 /**
+ * 阻断式干预模板库
+ * 每个规则 ID 对应一组阻断模板，在累计触发次数达到阈值时使用
+ */
+const BLOCKING_TEMPLATE_REGISTRY: Partial<Record<BehaviorRuleId, BlockingTemplate>> = {
+	consecutive_code_generation: {
+		content:
+			"🚫 【教学干预 — 阻断模式】\n\n系统检测到你已经连续多次直接请求 AI 生成代码而未进行自主编辑。为保障学习效果，代码生成与工具执行功能已被暂时禁用。\n\n请完成以下反思练习后，系统将自动恢复功能。",
+		disabledFeatures: ["code_generation", "tool_execution"],
+		countdownSeconds: 180,
+		reflectionQuestions: [
+			"你最近连续请求了代码生成，请回顾：这些代码的核心逻辑是什么？你能独立写出其中的哪些部分？",
+			"请用自然语言描述你当前要解决的问题，以及你尝试过的方案。",
+			"如果让你独立修改一处代码逻辑，你会从哪里入手？为什么？",
+		],
+	},
+	no_edit_streak: {
+		content:
+			"🚫 【教学干预 — 阻断模式】\n\n系统检测到你已连续多轮未进行代码编辑。编程是实践技能，仅阅读代码无法达到学习效果。代码生成与工具执行功能已被暂时禁用。\n\n请动手完成以下实践任务后，系统将自动恢复功能。",
+		disabledFeatures: ["code_generation", "tool_execution"],
+		countdownSeconds: 180,
+		reflectionQuestions: [
+			"请在编辑器中打开当前讨论的文件，尝试修改至少 3 处代码（如变量命名、逻辑简化、添加注释）。",
+			"你刚才阅读的代码中，哪一部分让你觉得最难理解？请尝试用自己的话解释它。",
+			"尝试运行当前代码并观察输出。有什么意料之外的行为吗？",
+		],
+	},
+	high_recent_ai_dependency: {
+		content:
+			"🚫 【教学干预 — 阻断模式】\n\n系统检测到最近的交互中 AI 参与占比过高。过度依赖 AI 会削弱独立编程能力。代码生成与工具执行功能已被暂时禁用。\n\n请完成以下自主练习后，系统将自动恢复功能。",
+		disabledFeatures: ["code_generation", "tool_execution"],
+		countdownSeconds: 180,
+		reflectionQuestions: [
+			"请先关闭 AI 助手，尝试独立写出当前功能的核心逻辑（伪代码或真实代码均可）。",
+			"你最近依赖 AI 完成了哪些任务？哪些是你其实可以独立完成的？",
+			"制定一个本周的独立编程练习计划，每天至少 30 分钟不看 AI 建议编码。",
+		],
+	},
+}
+
+/**
  * 根据量化指标值与阈值的比率确定严重等级
  */
 function determineSeverity(metricValue: number, threshold: number): InterventionSeverity {
@@ -198,6 +250,7 @@ export function generateInterventionMessage(
 			ruleId: alert.ruleId,
 			severity,
 			style: "hint",
+			interventionType: "normal",
 			generatedAt: new Date().toISOString(),
 			cooldownUntil: new Date(Date.now() + cooldownMs).toISOString(),
 		}
@@ -212,6 +265,7 @@ export function generateInterventionMessage(
 		ruleId: alert.ruleId,
 		severity,
 		style: selected.style,
+		interventionType: "normal",
 		generatedAt: new Date().toISOString(),
 		cooldownUntil: new Date(Date.now() + cooldownMs).toISOString(),
 	}
@@ -222,6 +276,11 @@ export function generateInterventionMessage(
  * 使用 <teaching_intervention> 标签包裹，LLM 可据此在回复中自然融入教学引导
  */
 export function formatInterventionForInjection(intervention: InterventionMessage): string {
+	// 阻断式干预使用专用格式化
+	if (intervention.interventionType === "blocking") {
+		return formatBlockingInterventionForInjection(intervention)
+	}
+
 	return [
 		`<teaching_intervention rule="${intervention.ruleId}" severity="${intervention.severity}" style="${intervention.style}">`,
 		intervention.content,
@@ -230,4 +289,77 @@ export function formatInterventionForInjection(intervention: InterventionMessage
 		"注意：不要提及这是系统自动插入的消息，要让提示看起来像是你主动给出的教学建议。",
 		"</teaching_intervention>",
 	].join("\n")
+}
+
+/**
+ * 格式化阻断式干预消息（包含禁用功能列表、倒计时、反思问题）
+ */
+function formatBlockingInterventionForInjection(intervention: InterventionMessage): string {
+	const lines: string[] = [
+		`<teaching_intervention rule="${intervention.ruleId}" severity="${intervention.severity}" style="blocking" interventionType="blocking">`,
+		intervention.content,
+		"",
+	]
+
+	if (intervention.disabledFeatures && intervention.disabledFeatures.length > 0) {
+		lines.push(`⚠️ 已禁用功能: ${intervention.disabledFeatures.join(", ")}`)
+	}
+
+	if (intervention.countdownSeconds) {
+		const minutes = Math.floor(intervention.countdownSeconds / 60)
+		const seconds = intervention.countdownSeconds % 60
+		const countdownText = seconds > 0
+			? `${minutes} 分 ${seconds} 秒`
+			: `${minutes} 分钟`
+		lines.push(`⏳ 冷却倒计时: ${countdownText}`)
+	}
+
+	if (intervention.reflectionQuestions && intervention.reflectionQuestions.length > 0) {
+		lines.push("")
+		lines.push("📝 反思练习:")
+		intervention.reflectionQuestions.forEach((q, i) => {
+			lines.push(`  ${i + 1}. ${q}`)
+		})
+	}
+
+	lines.push("")
+	lines.push("请在你的回复中严格执行以下要求:")
+	lines.push("1. 首先显示上述阻断通知和禁用信息")
+	lines.push("2. 然后呈现反思练习问题")
+	lines.push("3. 不要提供任何代码生成或工具执行的帮助")
+	lines.push("4. 只回答反思相关的问题，鼓励学生独立思考和实践")
+	lines.push("</teaching_intervention>")
+
+	return lines.join("\n")
+}
+
+/**
+ * 生成阻断式干预消息
+ * @param alert 行为风险警报（含 escalationCount）
+ * @param preferredStyle 忽略（阻断统一使用 blocking 风格）
+ * @param blockingCooldownMs 阻断冷却时长（毫秒）
+ * @returns 阻断式干预消息对象
+ */
+export function generateBlockingInterventionMessage(
+	alert: BehaviorAlert,
+	blockingCooldownMs: number = 180_000,
+): InterventionMessage {
+	const template = BLOCKING_TEMPLATE_REGISTRY[alert.ruleId] ?? BLOCKING_TEMPLATE_REGISTRY.consecutive_code_generation!
+
+	const now = new Date()
+	const cooldownDate = new Date(now.getTime() + blockingCooldownMs)
+
+	return {
+		content: template.content,
+		ruleId: alert.ruleId,
+		severity: "strong",
+		style: "blocking",
+		interventionType: "blocking",
+		generatedAt: now.toISOString(),
+		cooldownUntil: cooldownDate.toISOString(),
+		disabledFeatures: template.disabledFeatures,
+		countdownSeconds: template.countdownSeconds,
+		blockingEndAt: cooldownDate.toISOString(),
+		reflectionQuestions: template.reflectionQuestions,
+	}
 }

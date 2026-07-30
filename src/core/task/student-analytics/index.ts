@@ -7,7 +7,11 @@ export { AdoptionTracker } from "./AdoptionTracker"
 export { BehaviorMonitor } from "./BehaviorMonitor"
 export { CodeEditTracker } from "./CodeEditTracker"
 export { ContentAnalyzer, contentAnalyzer } from "./ContentAnalyzer"
-export { formatInterventionForInjection, generateInterventionMessage } from "./InterventionMessageGenerator"
+export {
+	formatInterventionForInjection,
+	generateBlockingInterventionMessage,
+	generateInterventionMessage,
+} from "./InterventionMessageGenerator"
 export { StudentLogPersister } from "./StudentLogPersister"
 export { StudentProfiler } from "./StudentProfiler"
 export { TaskClassifier, taskClassifier } from "./TaskClassifier"

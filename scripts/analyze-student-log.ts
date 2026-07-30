@@ -7,7 +7,7 @@
  *   npx ts-node scripts/analyze-student-log.ts [logPath]
  *
  * 参数:
- *   logPath - 可选，日志文件路径。默认为当前目录下的 .cline-logs/student_interactions.log
+ *   logPath - 可选，日志文件路径。默认为 D:\\cline-test\\.cline-logs\\student_interactions.log
  *
  * 输出:
  *   - 总任务数
@@ -636,15 +636,16 @@ function printProfile(profile: StudentProfile): void {
 // ============= 主程序 =============
 
 function main(): void {
-	const args = process.argv.slice(2)
+	// 过滤标记参数（--json / -j），剩余参数作为日志文件路径
+	const args = process.argv.slice(2).filter((a) => !a.startsWith("-"))
+	const flags = new Set(process.argv.slice(2).filter((a) => a.startsWith("-")))
 
-	// 确定日志文件路径
 	let logPath: string
 	if (args[0]) {
 		logPath = path.resolve(args[0])
 	} else {
-		// 默认路径：当前目录下的 .cline-logs/student_interactions.log
-		logPath = path.join(process.cwd(), ".cline-logs", "student_interactions.log")
+		// 默认路径：D:\\cline-test\\.cline-logs\\student_interactions.log
+		logPath = path.join("D:\\cline-test", ".cline-logs", "student_interactions.log")
 	}
 
 	console.log(`\n📖 正在读取日志文件: ${logPath}`)
@@ -665,7 +666,7 @@ function main(): void {
 	printProfile(profile)
 
 	// 可选：导出 JSON
-	const exportJson = args.includes("--json") || args.includes("-j")
+	const exportJson = flags.has("--json") || flags.has("-j")
 	if (exportJson) {
 		const jsonOutputPath = logPath.replace(/\.log$/, "_analysis.json")
 		// 将画像一并写入 JSON
