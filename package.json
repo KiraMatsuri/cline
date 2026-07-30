@@ -123,6 +123,13 @@
 					"id": "claude-dev.SidebarProvider",
 					"name": "",
 					"icon": "assets/icons/icon.svg"
+				},
+				{
+					"type": "webview",
+					"id": "clineLLMSettings",
+					"name": "LLM 设置",
+					"icon": "$(settings-gear)",
+					"when": "true"
 				}
 			]
 		},
@@ -372,7 +379,69 @@
 		},
 		"configuration": {
 			"title": "Cline",
-			"properties": {}
+			"properties": {
+				"teaching.apiBase": {
+					"type": "string",
+					"default": "http://localhost:4001",
+					"description": "实验任务后端 API 基础地址（教学辅助功能，方案 B 通过 VS Code 配置注入）",
+					"scope": "machine",
+					"pattern": "^https?://.*:\\d+$",
+					"patternErrorMessage": "必须是形如 http(s)://host:port 的 URL"
+				},
+				"teaching.studentInfo": {
+					"type": "object",
+					"description": "学生信息（学号/姓名/班级），由插件内的【实验任务】设置面板写入。",
+					"scope": "machine",
+					"properties": {
+						"studentId": {
+							"type": "string",
+							"description": "学号"
+						},
+						"studentName": {
+							"type": "string",
+							"description": "姓名"
+						},
+						"classId": {
+							"type": "string",
+							"description": "班级"
+						}
+					},
+					"additionalProperties": false
+				},
+				"clineTeaching.serverUrl": {
+					"type": "string",
+					"default": "http://localhost:4001",
+					"description": "教学辅助后端 API 地址（Wiki 资料库与实验任务）",
+					"scope": "machine",
+					"pattern": "^https?://.*:\\d+$",
+					"patternErrorMessage": "必须是形如 http(s)://host:port 的 URL"
+				},
+				"clineTeaching.currentWeek": {
+					"type": "number",
+					"default": 1,
+					"minimum": 1,
+					"maximum": 18,
+					"description": "学生当前学习周数（影响 Wiki 资料可见范围与 LLM 认知边界）"
+				},
+				"clineTeaching.llmEnableTools": {
+					"type": "boolean",
+					"default": false,
+					"description": "是否启用 karpathy 式工具调用答疑（在设置页可改）"
+				},
+				"clineTeaching.llmPresetModel": {
+					"type": "string",
+					"default": "gpt-4o-mini",
+					"enum": [
+						"gpt-4o-mini",
+						"gpt-4o",
+						"claude-3-5-sonnet-20241022",
+						"deepseek-chat",
+						"qwen-long",
+						"custom"
+					],
+					"description": "设置页默认选中的预设模型"
+				}
+			}
 		}
 	},
 	"scripts": {

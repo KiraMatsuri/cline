@@ -34,6 +34,7 @@ import { HookProcessRegistry } from "./core/hooks/HookProcessRegistry"
 import { Task } from "./core/task"
 import { CodeEditTracker } from "./core/task/student-analytics/CodeEditTracker"
 import { workspaceResolver } from "./core/workspace"
+import { AssignmentManager } from "./core/teaching/AssignmentManager"
 import { findMatchingNotebookCell, getContextForCommand, showWebview } from "./hosts/vscode/commandUtils"
 import { abortCommitGeneration, generateCommitMsg } from "./hosts/vscode/commit-message-generator"
 import { registerClineOutputChannel } from "./hosts/vscode/hostbridge/env/debugLog"
@@ -113,6 +114,34 @@ export async function activate(context: vscode.ExtensionContext) {
 			webviewOptions: { retainContextWhenHidden: true },
 		}),
 	)
+
+	// 【v1.3 增量】注册 LLM 设置 WebviewView 与 Wiki 服务
+	const { LLMSettingsViewProvider } = await import("./hosts/vscode/LLMSettingsViewProvider")
+	const llmSettingsProvider = LLMSettingsViewProvider.getInstance(context.extensionUri)
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider(
+			LLMSettingsViewProvider.viewId,
+			llmSettingsProvider,
+			{ webviewOptions: { retainContextWhenHidden: true } },
+		),
+	)
+	context.subscriptions.push({ dispose: () => llmSettingsProvider.dispose() })
+
+	// 启动 LLMWikiService 单例 + 配置监听
+	const { LLMWikiService } = await import("./core/teaching/LLMWikiService")
+	const llmWikiService = LLMWikiService.getInstance()
+	llmWikiService.listenConfigChanges()
+	context.subscriptions.push({ dispose: () => llmWikiService.dispose() })
+
+	// 首次激活时若有 currentWeek 配置，预拉取一次 wiki 资料（让 Header 立即可用）
+	const initialWeek = vscode.workspace
+		.getConfiguration("clineTeaching")
+		.get<number>("currentWeek", 1)
+	if (initialWeek >= 1) {
+		llmWikiService.fetchWikiForWeek(initialWeek).catch((e) => {
+			Logger.warn(`[extension.ts] 预拉取 Wiki 失败:`, e)
+		})
+	}
 
 	const { commands } = ExtensionRegistryInfo
 
