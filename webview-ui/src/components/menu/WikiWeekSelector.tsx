@@ -73,10 +73,11 @@ export function WikiWeekSelector() {
 						height: 28,
 						border: "1px solid var(--vscode-panel-border)",
 						borderRadius: 4,
-						background: "var(--vscode-input-background)",
+						// 浅色背景以承载深色字体（与 VS Code 主题解耦）
+						background: "#ffffff",
 					}}
 				>
-					<CalendarIcon size={14} />
+					<CalendarIcon size={14} color="#1f1f1f" />
 					<select
 						value={currentWeek}
 						onChange={onChange}
@@ -84,15 +85,24 @@ export function WikiWeekSelector() {
 						style={{
 							background: "transparent",
 							border: "none",
-							color: "var(--vscode-input-foreground)",
+							// 强制深色字体，避免浅色主题下看不清
+							color: "#1f1f1f",
 							fontSize: 12,
+							fontWeight: 600,
 							outline: "none",
 							cursor: "pointer",
 						}}
 						aria-label="学习进度周数"
 					>
 						{Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
-							<option key={w} value={w}>
+							<option
+								key={w}
+								value={w}
+								style={{
+									background: "#ffffff",
+									color: "#1f1f1f",
+								}}
+							>
 								第 {w} 周
 							</option>
 						))}
