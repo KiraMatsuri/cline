@@ -29,7 +29,7 @@
 | # | 项目 | 命令 / 操作 | 期望结果 |
 |---|------|------------|----------|
 | 1 | Node 版本 | `node -v` | `v22.x` 或更高 |
-| 2 | 后端依赖 | `cd D:\web-dashboard\teaching-server && pnpm install` | 无错误；tesseract.js / pdfjs-dist / canvas 安装成功 |
+| 2 | 后端依赖 | `cd D:\web-dashboard\teaching-server && pnpm install` | 无错误；tesseract.js / pdfjs-dist / @napi-rs/canvas 安装成功 |
 | 3 | 后端启动 | `pnpm dev` | 监听 `http://localhost:4001`，无致命错误 |
 | 4 | 后端健康检查 | `curl http://localhost:4001/api/health` | `{ok:true, service:"teaching-server"}` |
 | 5 | Web 启动 | `cd D:\web-dashboard\frontend && pnpm dev` | 监听 `http://localhost:5173` |
@@ -442,6 +442,45 @@ curl -X POST http://localhost:4001/api/v1/internal/llm-test \
 ---
 
 ## 10. 验收清单
+
+### 10.0 部署前置（必读）
+
+> ⚠️ **v2.0 部署踩坑记录**（已在 commit `4bbae0ad` 之后修复）
+
+| 坑 | 现象 | 解决方案 |
+|----|------|----------|
+| canvas 原生编译失败 | `node-gyp` 报 Python/VS 构建工具链缺失错误 | **替换为 `@napi-rs/canvas`**（纯 Rust 实现，无需 node-gyp，跨平台兼容） |
+| pnpm 10 默认忽略 build script | tesseract.js / canvas 等 native 模块未真正构建 | 在 `package.json` 添加 `"pnpm.onlyBuiltDependencies": ["@napi-rs/canvas", "tesseract.js", "core-js", "core-js-pure"]` |
+| pdfjs-dist 6.x 大版本升级 | API 不兼容旧用法 | 固定 `pdfjs-dist@^4.10.0` |
+| Worker 文件需编译为 .js | tsx watch 不能直接 import .ts worker | Worker 入口用 `textbookWorker.ts`，运行时通过 tsx 编译（见 `textbookTaskQueue.ts` 中的 `path.resolve(__dirname, "textbookWorker.js")`） |
+
+#### 部署命令（推荐顺序）
+
+```bash
+# 1. 后端安装依赖（含 ~100MB OCR 依赖）
+cd D:\web-dashboard\teaching-server
+pnpm install
+# ⚠ 第一次安装耗时 20~30 分钟（tesseract.js 含中文 chi_sim 语言包）
+
+# 2. 验证 OCR 模块可加载
+node -e "import('@napi-rs/canvas').then(c => console.log('OK'))"
+node -e "import('tesseract.js').then(t => console.log('OK'))"
+
+# 3. 启动后端
+pnpm dev
+
+# 4. 启动 Web
+cd D:\web-dashboard\frontend && pnpm dev
+
+# 5. 启动 VS Code 扩展开发宿主
+cd D:\cline && code .   # 然后按 F5
+```
+
+#### OCR 首次使用预热
+
+第一次 OCR 扫描版 PDF 时，tesseract.js 会下载语言包（eng ~2MB + chi_sim ~30MB），约 1~3 分钟。建议在测试前先上传一个测试 PDF 让系统预热。
+
+---
 
 ### 10.1 v1.3 功能验收
 
