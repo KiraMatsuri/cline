@@ -440,6 +440,11 @@
 						"custom"
 					],
 					"description": "设置页默认选中的预设模型"
+				},
+				"clineTeaching.currentTextbookId": {
+					"type": "string",
+					"default": "",
+					"description": "v2.0：当前生效教材 ID（为空则不拉取教材章节）"
 				}
 			}
 		}

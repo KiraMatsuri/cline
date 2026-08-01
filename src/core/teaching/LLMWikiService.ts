@@ -92,6 +92,20 @@ export interface ToolDef {
   }
 }
 
+/**
+ * 教材章节（v2.0 增量）
+ * 由后端 GET /api/v1/wiki?max_week=N&textbook_id=... 返回
+ */
+export interface TextbookChapter {
+  id: string
+  title: string
+  content: string
+  applicable_week: number
+  chapter_index: number
+  total_chapters: number
+  ocr_used: number
+}
+
 // ============================================================================
 //  常量
 // ============================================================================
@@ -129,6 +143,12 @@ export class LLMWikiService {
   /** Wiki 资料缓存（按 baseId 分组） */
   private _wikiCache: Map<string, WikiChunk[]> = new Map()
 
+  /** 【v2.0 增量】教材章节缓存 */
+  private _textbookChapters: TextbookChapter[] = []
+
+  /** 【v2.0 增量】当前生效教材 ID（来自 clineTeaching.currentTextbookId） */
+  private _currentTextbookId: string = ""
+
   /** 当前生效的 serverUrl（缓存避免每请求读配置） */
   private _serverUrl: string = ""
 
@@ -148,6 +168,7 @@ export class LLMWikiService {
         e.affectsConfiguration("clineTeaching.serverUrl") ||
         e.affectsConfiguration("clineTeaching.currentWeek") ||
         e.affectsConfiguration("clineTeaching.llmEnableTools") ||
+        e.affectsConfiguration("clineTeaching.currentTextbookId") ||
         e.affectsConfiguration("teaching.apiBase")
       ) {
         this._refreshConfig()
@@ -169,6 +190,14 @@ export class LLMWikiService {
 
     const newWeek = ct.get<number>("currentWeek") ?? 1
     this._currentWeek = clampWeek(newWeek)
+
+    // 【v2.0】同步 currentTextbookId
+    const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""
+    if (newTextbookId !== this._currentTextbookId) {
+      this._currentTextbookId = newTextbookId
+      this._textbookChapters = [] // 教材切换 → 清章节缓存
+    }
+
     if (newUrl !== this._serverUrl) {
       this._serverUrl = newUrl
       this.invalidateCache() // serverUrl 变更 → 清缓存
@@ -209,11 +238,63 @@ export class LLMWikiService {
   /** 失效全部缓存（教师删除资料 / 修改 serverUrl 时调用） */
   public invalidateCache(): void {
     this._wikiCache.clear()
+    this._textbookChapters = []
+  }
+
+  // ============================================================================
+  //  v2.0 增量：教材加载与切换
+  // ============================================================================
+
+  /** 获取当前生效教材 ID（空字符串表示未设置） */
+  public getCurrentTextbookId(): string {
+    return this._currentTextbookId
+  }
+
+  /**
+   * 切换教材（写 VS Code 全局配置 + 失效缓存）。
+   * 下次 fetchWikiForWeek / loadTextbookForWeek 会用新 ID。
+   */
+  public async setCurrentTextbook(textbookId: string): Promise<void> {
+    const id = textbookId.trim()
+    await vscode.workspace
+      .getConfiguration("clineTeaching")
+      .update("currentTextbookId", id, vscode.ConfigurationTarget.Global)
+    this._currentTextbookId = id
+    this.invalidateCache()
+  }
+
+  /**
+   * 拉取教材章节（v2.0）。
+   * 若 currentTextbookId 为空则跳过；否则请求 GET /api/v1/wiki?max_week=N&textbook_id=...。
+   * 返回的章节缓存到 _textbookChapters，供 buildSystemPrompt 合并。
+   */
+  public async loadTextbookForWeek(week: number): Promise<TextbookChapter[]> {
+    if (!this._currentTextbookId) return []
+    const targetWeek = clampWeek(week)
+    const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}&textbook_id=${encodeURIComponent(this._currentTextbookId)}`
+    try {
+      const resp = await fetch(url)
+      if (!resp.ok) {
+        Logger.warn(`[LLMWikiService] 拉取教材章节失败: ${resp.status}`)
+        return this._textbookChapters
+      }
+      const json = (await resp.json()) as { data: WikiChunk[]; textbook_chapters: TextbookChapter[] }
+      this._textbookChapters = json.textbook_chapters ?? []
+      Logger.log(
+        `[LLMWikiService] 教材章节: ${this._textbookChapters.length} 章 (textbookId=${this._currentTextbookId})`,
+      )
+      return this._textbookChapters
+    } catch (e) {
+      Logger.error(`[LLMWikiService] 拉取教材异常:`, e)
+      return this._textbookChapters
+    }
   }
 
   /**
    * 按周数渐进式拉取 Wiki 资料。
    * 缓存策略：baseId 维度去重，相同 baseId 不重复请求。
+   *
+   * 【v2.0 增量】同时拉取教材章节（若 currentTextbookId 已设置）。
    */
   public async fetchWikiForWeek(week: number): Promise<WikiChunk[]> {
     const targetWeek = clampWeek(week)
@@ -228,14 +309,23 @@ export class LLMWikiService {
 
     // 找出未缓存的 baseId（调用后端 max_week 接口一次拿全）
     // 这里简化：直接 GET /api/v1/wiki?max_week=N 全量拿，缓存里去重
-    const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}`
+    // 【v2.0】附加 textbook_id 参数（若已设置），后端会 JOIN 返回 textbook_chapters
+    const tbParam = this._currentTextbookId
+      ? `&textbook_id=${encodeURIComponent(this._currentTextbookId)}`
+      : ""
+    const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}${tbParam}`
     try {
       const resp = await fetch(url)
       if (!resp.ok) {
         Logger.warn(`[LLMWikiService] 拉取 Wiki 失败: ${resp.status}`)
         return cached
       }
-      const json = (await resp.json()) as WikiListResponse
+      const json = (await resp.json()) as WikiListResponse & { textbook_chapters?: TextbookChapter[] }
+
+      // 【v2.0】更新教材章节缓存
+      if (Array.isArray(json.textbook_chapters)) {
+        this._textbookChapters = json.textbook_chapters
+      }
       const allChunks = json.data ?? []
 
       // 按 baseId 聚合
@@ -280,6 +370,9 @@ export class LLMWikiService {
     // 拼装 wiki 上下文
     const ctx = this._buildWikiContext(visible)
 
+    // 【v2.0】拼装教材章节上下文（追加到 Primary Context 之后）
+    const tbCtx = this._buildTextbookContext()
+
     return [
       `# 角色`,
       `你是一名严格的 Python 编程教师，正在为第 ${week} 周的学生答疑。`,
@@ -291,10 +384,36 @@ export class LLMWikiService {
       ``,
       `# 优先参考知识（Primary Context）`,
       ctx || `（当前周数暂无 Wiki 资料，请基于通用 Python 知识答疑）`,
+      tbCtx,
       ``,
       `# 学生提问`,
       userQuery,
     ].join("\n")
+  }
+
+  /**
+   * 【v2.0】拼装教材章节上下文。
+   * 单章节截断 2000 字（防单章占用过大 token），总字符上限复用 TOTAL_CONTEXT_CHARS。
+   */
+  private _buildTextbookContext(): string {
+    if (this._textbookChapters.length === 0) return ""
+
+    const blocks: string[] = []
+    let totalChars = 0
+    const CHAPTER_TRUNCATE = 2000
+
+    for (const ch of this._textbookChapters) {
+      const ocrNote = ch.ocr_used ? "\n\n> ⚠ 本章由 OCR 识别，可能含噪" : ""
+      const block = `## [教材 第 ${ch.applicable_week} 周] ${ch.title} (${ch.chapter_index + 1}/${ch.total_chapters})\n\n${truncate(ch.content, CHAPTER_TRUNCATE)}${ocrNote}`
+      if (totalChars + block.length > TOTAL_CONTEXT_CHARS) {
+        blocks.push(`> （后续教材章节已省略，避免 token 超限）`)
+        break
+      }
+      blocks.push(block)
+      totalChars += block.length
+    }
+
+    return "\n\n---\n\n# 教材章节（v2.0）\n\n" + blocks.join("\n\n---\n\n")
   }
 
   /**
