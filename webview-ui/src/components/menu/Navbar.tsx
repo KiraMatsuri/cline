@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { TaskServiceClient } from "@/services/grpc-client"
 import { useExtensionState } from "../../context/ExtensionStateContext"
-import { WikiWeekSelector } from "./WikiWeekSelector"
 import { ServerSettingsButton } from "./ServerSettingsButton"
+import { WikiWeekSelector } from "./WikiWeekSelector"
 
 // Custom MCP Server Icon component using VSCode codicon
 const McpServerIcon = ({ className, size }: { className?: string; size?: number }) => (
@@ -16,7 +16,8 @@ const McpServerIcon = ({ className, size }: { className?: string; size?: number 
 )
 
 export const Navbar = () => {
-	const { navigateToHistory, navigateToSettings, navigateToAccount, navigateToMcp, navigateToChat, navigateToTeaching } = useExtensionState()
+	const { navigateToHistory, navigateToSettings, navigateToAccount, navigateToMcp, navigateToChat, navigateToTeaching } =
+		useExtensionState()
 
 	const SETTINGS_TABS = useMemo(
 		() => [

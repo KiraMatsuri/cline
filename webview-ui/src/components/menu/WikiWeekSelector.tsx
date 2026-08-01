@@ -9,15 +9,10 @@
  * 【v1.3 决策】直接暴露在主工具栏，避免学生需要先点击"实验任务"
  */
 
-import { useEffect, useState } from "react"
 import { CalendarIcon } from "lucide-react"
+import { useEffect, useState } from "react"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { getVsCodeApiInstance } from "@/config/platform.config"
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@/components/ui/tooltip"
-import { Button } from "@/components/ui/button"
 
 export function WikiWeekSelector() {
 	const [currentWeek, setCurrentWeek] = useState<number>(1)
@@ -75,13 +70,12 @@ export function WikiWeekSelector() {
 						borderRadius: 4,
 						// 浅色背景以承载深色字体（与 VS Code 主题解耦）
 						background: "#ffffff",
-					}}
-				>
-					<CalendarIcon size={14} color="#1f1f1f" />
+					}}>
+					<CalendarIcon color="#1f1f1f" size={14} />
 					<select
-						value={currentWeek}
-						onChange={onChange}
+						aria-label="学习进度周数"
 						disabled={loading}
+						onChange={onChange}
 						style={{
 							background: "transparent",
 							border: "none",
@@ -92,17 +86,15 @@ export function WikiWeekSelector() {
 							outline: "none",
 							cursor: "pointer",
 						}}
-						aria-label="学习进度周数"
-					>
+						value={currentWeek}>
 						{Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
 							<option
 								key={w}
-								value={w}
 								style={{
 									background: "#ffffff",
 									color: "#1f1f1f",
 								}}
-							>
+								value={w}>
 								第 {w} 周
 							</option>
 						))}

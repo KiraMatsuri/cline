@@ -849,3 +849,183 @@ LLM 清洗调用
 | 8.E | chunk 总数上限 | **推荐方案：≤5 个**（清洗 Prompt 约束 + 服务端校验） |
 
 > **执行前置**：本设计文档已 git commit 存档（仅本地，不推送），随后进入实现阶段。
+
+---
+
+## 十、v2.0 扩展：教材级 Wiki 支持（2026-08-01 用户拍板）
+
+> v1.3 仅支持"单 chunk 资料上传"。v2.0 在此基础上拓展：
+> **允许教师上传整本教材（pdf/docx），系统自动切分为章节，教师+AI 联合划定章节↔周数映射。**
+
+### 10.1 v2.0 用户拍板的 8 项决策
+
+| # | 决策点 | 选择 |
+|---|--------|------|
+| 1 | 教材解析位置 | **A** 后端异步（worker_threads + 进度轮询） |
+| 2 | 章节切分方式 | **A** LLM 自动识别（降级正则） |
+| 3 | 范围划定 UI | **A+B** AI 建议一键采纳 + 教师微调 |
+| 4 | 教材文件格式 | **A** pdf + docx（最小集） |
+| 5 | 章节与现有 wiki 关系 | **B** 独立表，按需 JOIN（清晰解耦） |
+| 6 | 大文件上传限制 | **B** 500MB |
+| 7 | OCR 范围 | **B** tesseract.js 处理扫描版（+80MB 依赖） |
+| 8 | 教师端 UI 入口 | **B** WikiManagement 内嵌 tab 切换 |
+
+### 10.2 数据模型（v2.0 新增 3 表）
+
+```sql
+-- 教材主表
+CREATE TABLE IF NOT EXISTS textbooks (
+  id              TEXT PRIMARY KEY,
+  title           TEXT NOT NULL,
+  total_chapters  INTEGER DEFAULT 0,
+  processed       INTEGER DEFAULT 0,        -- 0/1：是否解析完成
+  task_status     TEXT DEFAULT 'pending',  -- pending/processing/done/failed
+  task_progress   INTEGER DEFAULT 0,       -- 0~100
+  task_error      TEXT,
+  original_name   TEXT NOT NULL,
+  file_size       INTEGER NOT NULL,
+  mime_type       TEXT NOT NULL,
+  created_at      DATETIME DEFAULT (datetime('now'))
+);
+
+-- 教材章节表（解析产物）
+CREATE TABLE IF NOT EXISTS textbook_chapters (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  textbook_id     TEXT NOT NULL,
+  chapter_index   INTEGER NOT NULL,
+  title           TEXT NOT NULL,
+  content_md      TEXT NOT NULL,
+  start_offset    INTEGER,
+  end_offset      INTEGER,
+  ocr_used        INTEGER DEFAULT 0,       -- 是否走 OCR
+  ai_reviewed     INTEGER DEFAULT 0,
+  FOREIGN KEY (textbook_id) REFERENCES textbooks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_tc_textbook ON textbook_chapters(textbook_id);
+
+-- 章节 ↔ 周数 映射（教师 + AI 联合编辑）
+CREATE TABLE IF NOT EXISTS textbook_chapter_weeks (
+  textbook_id     TEXT NOT NULL,
+  chapter_index   INTEGER NOT NULL,
+  applicable_week INTEGER NOT NULL,        -- 1~18
+  source          TEXT DEFAULT 'manual',   -- 'manual' | 'ai-suggested' | 'ai-accepted'
+  updated_at      DATETIME DEFAULT (datetime('now')),
+  PRIMARY KEY (textbook_id, chapter_index),
+  FOREIGN KEY (textbook_id) REFERENCES textbooks(id) ON DELETE CASCADE
+);
+```
+
+### 10.3 异步任务管线（v2.0 核心）
+
+```
+教师上传教材 (multipart/form-data, file=<教材>)
+   ↓
+POST /api/v1/teacher/textbook
+   ↓
+multer 接收 → uploads/textbook/<id>.<ext>
+   ↓
+INSERT textbooks(task_status='processing', task_progress=0)
+   ↓
+返回 202 Accepted + { textbookId, status: 'processing' }
+   ↓
+【后台 worker_threads 异步执行】
+   ① task_progress=10 → mammoth/pdf-parse 提取全文
+   ② task_progress=40 → llmHelper.splitByChapter (LLM 切分)
+   ③ 降级：若 LLM 不可用 → 正则匹配目录
+   ④ task_progress=70 → tesseract.js OCR（仅在 PDF 文本为空时触发）
+   ⑤ task_progress=90 → 写入 textbook_chapters
+   ⑥ task_status='done' / task_progress=100
+   ↓
+教师前端轮询 GET /api/v1/teacher/textbook/:id/status
+```
+
+### 10.4 新增后端路由
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/teacher/textbook` | 上传教材（异步任务） |
+| GET | `/api/v1/teacher/textbook/:id/status` | 轮询进度 |
+| GET | `/api/v1/teacher/textbook/:id/chapters` | 获取章节列表（含 AI 建议） |
+| POST | `/api/v1/teacher/textbook/:id/ai-review` | 触发 AI 辅助评判章节难度 |
+| POST | `/api/v1/teacher/textbook/:id/chapter-week` | 教师手动设定章节↔周数 |
+| POST | `/api/v1/teacher/textbook/:id/ai-accept` | 一键采纳 AI 建议 |
+
+### 10.5 学生端拉取（保持协议兼容）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/wiki?max_week=N` | **现有接口**：返回 wiki_chunks + JOIN textbook_chapters |
+
+**关键兼容**：后端 `GET /api/v1/wiki?max_week=N` 增加可选查询参数 `textbook_id`，未传时只返回普通 wiki_chunks；传了则 JOIN textbook_chapters + textbook_chapter_weeks。
+
+### 10.6 AI 辅助评判 Prompt
+
+```text
+# 角色
+你是 Python 教学专家，负责评估教材章节难度与适配周数。
+
+# 输入
+- 课程总周数: 18
+- 章节标题: {chapterTitle}
+- 章节内容（前 2000 字）: {chapterContent}
+- 已分配章节列表: [{week: 3, title: "列表"}, {week: 4, title: "字典"}]
+
+# 输出 JSON（严格遵守）
+{
+  "suggested_week": 5,
+  "difficulty": "easy" | "medium" | "hard",
+  "prerequisites": ["第 3 周", "第 4 周"],
+  "reasoning": "本章引入装饰器，需先掌握函数基础与闭包",
+  "teaching_focus": ["理解装饰器本质", "掌握 @staticmethod 用法"]
+}
+```
+
+### 10.7 插件端改动
+
+**VS Code 配置新增**：
+```jsonc
+"clineTeaching.currentTextbookId": {
+  "type": "string",
+  "default": "",
+  "description": "当前生效的教材 ID（为空则不拉取教材）"
+}
+```
+
+**LLMWikiService.ts 增量**：
+- `setCurrentTextbook(id)` → 写 VS Code 配置
+- `loadTextbookForWeek(week)` → GET `/api/v1/wiki?max_week=N&textbook_id=...`
+- `buildSystemPrompt()` 内合并 textbook_chapters 内容到 Primary Context
+- 每个章节内容截断 ≤ 2000 字（避免单章占用过大 token）
+
+### 10.8 新增依赖
+
+| 依赖 | 体积 | 用途 |
+|------|------|------|
+| `tesseract.js` | ~80MB | OCR 扫描版 PDF（仅在文本提取为空时触发） |
+| `worker_threads` | 内置 | 异步解析 |
+| `multer` 调优 | 已有 | fileSize 提到 500MB |
+
+### 10.9 实施步骤（v2.0 共 8 步）
+
+| Step | 任务 | 涉及文件 |
+|------|------|----------|
+| 1 | 后端新增 3 张表 + 6 个路由 + 异步 worker | `server.ts` |
+| 2 | 后端 `textbookParser.ts`（LLM 切分 + 正则降级 + OCR 兜底） | 新增 |
+| 3 | 后端 `textbookTaskQueue.ts`（worker_threads 异步任务队列） | 新增 |
+| 4 | 后端 AI 辅助评判 Prompt + `/ai-review` 接口 | `llmHelper.ts` 增量 |
+| 5 | Web `TextbookManagement.tsx`（上传 + 进度条 + 章节范围划定 + AI 建议面板） | 新增 |
+| 6 | Web `WikiManagement.tsx` 增加 tab 切换（资料管理 / 教材管理） | `WikiManagement.tsx` 增量 |
+| 7 | 插件 `LLMWikiService.ts` 增加 `loadTextbookForWeek` + buildSystemPrompt 合并 | `LLMWikiService.ts` 增量 |
+| 8 | git commit v2.0 | 设计文档 + 代码 |
+
+### 10.10 风险与兜底
+
+| 风险 | 兜底 |
+|------|------|
+| 500MB PDF 解析 > 10min | 进度轮询；超 10min 标记 failed |
+| 扫描版 PDF | 检测文本为空 → tesseract.js OCR（OCR 失败 → 提示教师提供文字版） |
+| LLM 章节识别失败 | 降级为正则匹配目录 |
+| 教师误传非教材 | 文件大小启发式（< 5MB 警告）+ 解析后章节数 < 3 警告 |
+| 章节切分粒度过细 | 合并 < 500 字 的相邻章节 |
+| 多本教材冲突 | VS Code 配置 `clineTeaching.currentTextbookId` 显式指定 |
+| tesseract.js 80MB 拖累启动 | **动态 import**，仅在需要时加载 |

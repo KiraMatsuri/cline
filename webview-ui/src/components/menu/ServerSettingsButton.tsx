@@ -10,15 +10,11 @@
  * 【v1.3 决策】直接暴露在主工具栏，与 LLM 设置（独立 WebviewView）解耦
  */
 
-import { useEffect, useState } from "react"
 import { ServerIcon } from "lucide-react"
-import { getVsCodeApiInstance } from "@/config/platform.config"
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@/components/ui/tooltip"
+import { useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { getVsCodeApiInstance } from "@/config/platform.config"
 
 export function ServerSettingsButton() {
 	const [serverUrl, setServerUrl] = useState<string>("http://localhost:4001")
@@ -71,9 +67,7 @@ export function ServerSettingsButton() {
 	return (
 		<>
 			<Tooltip>
-				<TooltipContent side="bottom">
-					服务器设置（{serverUrl}）
-				</TooltipContent>
+				<TooltipContent side="bottom">服务器设置（{serverUrl}）</TooltipContent>
 				<TooltipTrigger asChild>
 					<Button
 						aria-label="服务器设置"
@@ -88,11 +82,8 @@ export function ServerSettingsButton() {
 			</Tooltip>
 
 			{modalVisible && (
-				<div
-					style={modalOverlay}
-					onClick={() => !saving && setModalVisible(false)}
-				>
-					<div style={modalBox} onClick={(e) => e.stopPropagation()}>
+				<div onClick={() => !saving && setModalVisible(false)} style={modalOverlay}>
+					<div onClick={(e) => e.stopPropagation()} style={modalBox}>
 						<h3 style={{ marginTop: 0, marginBottom: 12 }}>⚙ 服务器设置</h3>
 						<p style={hintStyle}>
 							修改后端 API 地址（教学 Wiki 与实验任务共用此地址）。
@@ -101,30 +92,23 @@ export function ServerSettingsButton() {
 						</p>
 						<label style={labelStyle}>Server URL</label>
 						<input
-							type="text"
-							value={draftUrl}
+							autoFocus
+							disabled={saving}
 							onChange={(e) => setDraftUrl(e.target.value)}
 							placeholder="http://localhost:4001"
 							style={inputStyle}
-							autoFocus
-							disabled={saving}
+							type="text"
+							value={draftUrl}
 						/>
-						<p style={hintStyle}>
-							格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）
-						</p>
+						<p style={hintStyle}>格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
 						<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
 							<button
-								onClick={() => setModalVisible(false)}
 								disabled={saving}
-								style={{ ...btnStyle, ...secondaryBtnStyle }}
-							>
+								onClick={() => setModalVisible(false)}
+								style={{ ...btnStyle, ...secondaryBtnStyle }}>
 								取消
 							</button>
-							<button
-								onClick={onSave}
-								disabled={saving}
-								style={{ ...btnStyle, ...primaryBtnStyle }}
-							>
+							<button disabled={saving} onClick={onSave} style={{ ...btnStyle, ...primaryBtnStyle }}>
 								{saving ? "保存中..." : "保存"}
 							</button>
 						</div>
