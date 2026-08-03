@@ -95,6 +95,7 @@ import {
 import { ApiFormat } from "@/shared/proto/cline/models"
 import { ShowMessageType } from "@/shared/proto/index.host"
 import { Logger } from "@/shared/services/Logger"
+import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isClineCliInstalled, isCliSubagentContext } from "@/utils/cli-detector"
 import { RuleContextBuilder } from "../context/instructions/user-instructions/RuleContextBuilder"
 import { ensureLocalClineDirExists } from "../context/instructions/user-instructions/rule-helpers"
@@ -2191,6 +2192,40 @@ export class Task {
 		const { systemPrompt, tools } = await getSystemPrompt(promptContext)
 		this.useNativeToolCalls = !!tools?.length
 
+		// 【v2.0 增量】进度感知 RAG：把 Wiki 上下文注入 System Prompt
+		// - 自动按 currentWeek 过滤 chunk
+		// - 包含教材章节（若 currentTextbookId 已设置）
+		// - 单 chunk <=4000 字 / 总上下文 <=16k 字 / 3 条认知边界约束
+		let systemPromptFinal = systemPrompt
+		try {
+			const llmWiki = LLMWikiService.getInstance()
+			// 若缓存为空，同步拉取（<=3s 超时）
+			if (llmWiki.getServerUrl() && llmWiki.getWikiCacheSize() === 0) {
+				try {
+					await Promise.race([
+						llmWiki.fetchWikiForWeek(llmWiki.getCurrentWeek()),
+						new Promise<never>((_, reject) => setTimeout(() => reject(new Error("wiki fetch timeout")), 3000)),
+					])
+				} catch (e) {
+					Logger.warn("[Task] 同步拉取 Wiki 超时/失败，使用空 RAG:", e instanceof Error ? e.message : e)
+				}
+			}
+			// 提取 taskState.userMessageContent 中的文本（用户最新消息）
+			const userQuery = (this.taskState.userMessageContent ?? [])
+				.map((b: unknown) => {
+					const t = (b as { text?: unknown }).text
+					return typeof t === "string" ? t : ""
+				})
+				.filter(Boolean)
+				.join("\n")
+				.slice(0, 2000)
+			const ragContext = llmWiki.buildSystemPrompt(userQuery)
+			systemPromptFinal = systemPrompt + "\n\n" + ragContext
+			Logger.log(`[Task] Wiki RAG 已注入 (week=${llmWiki.getCurrentWeek()}, chunks=${llmWiki.getWikiCacheSize()}, ragChars=${ragContext.length})`)
+		} catch (e) {
+			Logger.warn("[Task] Wiki RAG 注入失败，使用原 systemPrompt:", e)
+		}
+
 		const contextManagementMetadata = await this.contextManager.getNewContextMessagesAndMetadata(
 			this.messageStateHandler.getApiConversationHistory(),
 			this.messageStateHandler.getClineMessages(),
@@ -2208,7 +2243,7 @@ export class Task {
 		}
 
 		// Response API requires native tool calls to be enabled
-		const stream = this.api.createMessage(systemPrompt, contextManagementMetadata.truncatedConversationHistory, tools)
+		const stream = this.api.createMessage(systemPromptFinal, contextManagementMetadata.truncatedConversationHistory, tools)
 
 		const iterator = stream[Symbol.asyncIterator]()
 

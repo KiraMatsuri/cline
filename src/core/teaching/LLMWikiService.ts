@@ -241,6 +241,13 @@ export class LLMWikiService {
     this._textbookChapters = []
   }
 
+  /** 获取当前 wikiCache 中已缓存的总 chunk 数（公开 API 给主对话流程用） */
+  public getWikiCacheSize(): number {
+    let n = 0
+    for (const arr of this._wikiCache.values()) n += arr.length
+    return n
+  }
+
   // ============================================================================
   //  v2.0 增量：教材加载与切换
   // ============================================================================
