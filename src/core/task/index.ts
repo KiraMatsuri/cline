@@ -72,6 +72,7 @@ import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
+import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
 import {
@@ -95,7 +96,6 @@ import {
 import { ApiFormat } from "@/shared/proto/cline/models"
 import { ShowMessageType } from "@/shared/proto/index.host"
 import { Logger } from "@/shared/services/Logger"
-import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isClineCliInstalled, isCliSubagentContext } from "@/utils/cli-detector"
 import { RuleContextBuilder } from "../context/instructions/user-instructions/RuleContextBuilder"
 import { ensureLocalClineDirExists } from "../context/instructions/user-instructions/rule-helpers"
@@ -2221,7 +2221,9 @@ export class Task {
 				.slice(0, 2000)
 			const ragContext = llmWiki.buildSystemPrompt(userQuery)
 			systemPromptFinal = systemPrompt + "\n\n" + ragContext
-			Logger.log(`[Task] Wiki RAG 已注入 (week=${llmWiki.getCurrentWeek()}, chunks=${llmWiki.getWikiCacheSize()}, ragChars=${ragContext.length})`)
+			Logger.log(
+				`[Task] Wiki RAG 已注入 (week=${llmWiki.getCurrentWeek()}, chunks=${llmWiki.getWikiCacheSize()}, ragChars=${ragContext.length})`,
+			)
 		} catch (e) {
 			Logger.warn("[Task] Wiki RAG 注入失败，使用原 systemPrompt:", e)
 		}
@@ -2830,23 +2832,16 @@ export class Task {
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()
-				const interventionText = interventionManager.checkAndGenerateIntervention(
-					monitor,
-					this.taskState.apiRequestCount,
-				)
+				const interventionText = interventionManager.checkAndGenerateIntervention(monitor, this.taskState.apiRequestCount)
 
 				// ★ 阻断态优先检查（独立于 interventionText）
 				// checkAndGenerateIntervention 在阻断冷却期间仍返回提醒消息
 				// 此处确保即使用户连续发送消息，每次都被拦截
 				if (interventionManager.isBlockingActive()) {
-					const blockingSeconds = Math.ceil(
-						(interventionManager.getBlockingEndsAt() - Date.now()) / 1000,
-					)
+					const blockingSeconds = Math.ceil((interventionManager.getBlockingEndsAt() - Date.now()) / 1000)
 					const minutes = Math.floor(blockingSeconds / 60)
 					const seconds = blockingSeconds % 60
-					const timeDisplay = seconds > 0
-						? `${minutes} 分 ${seconds} 秒`
-						: `${minutes} 分钟`
+					const timeDisplay = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
 
 					// 向用户展示阻断消息（含剩余时间提醒）
 					await this.say(
@@ -2857,7 +2852,7 @@ export class Task {
 
 					Logger.info(
 						`[TeachingIntervention][${this.taskId}] BLOCKING ENFORCED: ` +
-						`API request blocked, features disabled, remaining=${timeDisplay}`,
+							`API request blocked, features disabled, remaining=${timeDisplay}`,
 					)
 
 					// 🔒 关键: 阻止 API 请求，返回 false 表示该轮对话未完成（等待用户继续输入）
