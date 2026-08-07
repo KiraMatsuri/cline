@@ -39,6 +39,7 @@
 import type { FC } from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { getVsCodeApiInstance } from "@/config/platform.config"
+
 // 【v2.3 改造】移除 AssignmentHeader（Wiki 进度感知区与其他按钮功能重复，已删除）
 // import AssignmentHeader from "./AssignmentHeader"
 
@@ -466,18 +467,21 @@ const AssignmentTab: FC = () => {
 	 * 设计动机：v2.3 前 fetchAssignments 会一次性创建所有任务文件，
 	 * 不利于"一个任务一个独立工作区"的学生；改为按需创建。
 	 */
-	const handleCreateOne = useCallback((assignment: Assignment) => {
-		if (!vscodeApi) return
-		setStatusMessage({
-			type: "info",
-			text: `⏳ 正在为「${assignment.title}」创建源码文件...`,
-		})
-		vscodeApi.postMessage({
-			type: "assignment_command",
-			command: "createOneFile",
-			payload: { assignmentId: assignment.id },
-		})
-	}, [vscodeApi])
+	const handleCreateOne = useCallback(
+		(assignment: Assignment) => {
+			if (!vscodeApi) return
+			setStatusMessage({
+				type: "info",
+				text: `⏳ 正在为「${assignment.title}」创建源码文件...`,
+			})
+			vscodeApi.postMessage({
+				type: "assignment_command",
+				command: "createOneFile",
+				payload: { assignmentId: assignment.id },
+			})
+		},
+		[vscodeApi],
+	)
 
 	// ========================================================================
 	//  ③ 一键提交
@@ -700,12 +704,12 @@ const AssignmentTab: FC = () => {
 								onClick={() => handleSelectTask(task)}
 								// 【v2.3 增量】双击任务项 → 在当前工作区创建对应的源码文件
 								onDoubleClick={() => handleCreateOne(task)}
-								title="单击查看任务详情，双击创建源码文件"
 								style={{
 									...styles.taskCard,
 									...(selectedTask?.id === task.id ? styles.taskCardSelected : {}),
 									userSelect: "none", // 避免双击时误选中文本
-								}}>
+								}}
+								title="单击查看任务详情，双击创建源码文件">
 								<p style={styles.taskTitle}>{task.title}</p>
 								<div style={styles.taskMeta}>
 									<span style={styles.badge}>第 {task.week} 周</span>
