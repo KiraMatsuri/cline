@@ -1,6 +1,6 @@
 /**
  * =============================================================================
- *  ResponsiveModal — 自适应 VS Code 侧栏宽度的 Modal 通用组件 (v2.3 增量)
+ *  ResponsiveModal — 自适应 VS Code webview 容器宽度的 Modal 通用组件 (v2.3 增量)
  *  基于 Cline 的编程学习行为分析与教学辅助系统
  * =============================================================================
  *
@@ -9,22 +9,23 @@
  * 之前教学组件 (AssignmentHeader/LLMSettingsView) 中的 Modal 使用了硬编码
  * `minWidth: 360 / maxWidth: 480`，当侧栏较窄时 Modal 会撑出侧栏或被截断。
  *
- * 【方案】
- * 监听 window.resize 事件，根据 `window.innerWidth` 计算当前可用宽度：
+ * 【关键洞察 v2.3.2】
+ * 阶段 2 + v2.3.1 修复后 Modal 仍然超出侧栏边缘（用户多次反馈）。
+ * 真正的根因是 `position: fixed`：在 VS Code webview 中，
+ * fixed 定位的参考系是宿主浏览器视口（数百~上千 px），
+ * 而不是 webview iframe 容器本身。即使宽度算对了，
+ * Modal 仍然会在视口上"居中"，看起来像是左侧被遮挡。
  *
- *     modalWidth = Math.min(
- *       Math.max(window.innerWidth - 32, MIN_WIDTH),  // 留 16px 边距，下限 280px
- *       MAX_WIDTH                                      // 上限 480px（PC 体验）
- *     )
+ * 【方案 v2.3.2】
+ * 1. 覆盖层改用 `position: absolute`，并把 <body> 设为 `position: relative`
+ *    让 Modal 锚定到 webview 容器（参见 main.css 的 `body { position: relative; }`）
+ * 2. Modal 内容用 `margin: 0 auto` 居中，避免依赖 flex/grid 居中（更兼容）
+ * 3. 宽度测量保持 v2.3.1 的 ResizeObserver + clientWidth 方案
  *
  * 这样：
- * - 侧栏 < 312px 时 Modal 占满侧栏
- * - 侧栏 312~512px 时 Modal 自适应
- * - 侧栏 > 512px 时 Modal 保持 480px 居中
- *
- * 【决策点 2.A】
- * 选择 `window.innerWidth`（简单且响应 VS Code 拖拽），
- * 不使用 ResizeObserver（webview 兼容性需验证，本轮先验证此方案）。
+ * - Modal 永远锚定在 webview 容器内部
+ * - 拖拽侧栏时 ResizeObserver 触发重渲染
+ * - Modal 不会"飞出"webview 边界
  *
  * =============================================================================
  */
@@ -50,15 +51,20 @@ export interface ResponsiveModalProps {
 }
 
 /**
- * 自适应宽度的 Modal。
+ * 测量 webview 容器的真实宽度。
  *
- * 用法：
- * ```tsx
- * <ResponsiveModal visible={open} onClose={() => setOpen(false)}>
- *   <h3>标题</h3>
- *   <p>内容...</p>
- * </ResponsiveModal>
- * ```
+ * 关键：webview 是 iframe，window.innerWidth 是宿主窗口宽度（不正确）。
+ * document.documentElement.clientWidth 才是 webview 容器的可见宽度。
+ */
+function measureContainerWidth(): number {
+	if (typeof document === "undefined") return 480
+	const root = document.documentElement
+	const width = root?.clientWidth || document.body?.clientWidth || 0
+	return width > 0 ? width : 480
+}
+
+/**
+ * 自适应宽度的 Modal。
  */
 const ResponsiveModal: FC<ResponsiveModalProps> = ({
 	visible,
@@ -69,19 +75,31 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 	modalStyle,
 	closeOnEsc = true,
 }) => {
-	// ----- 监听 window.innerWidth 变化 -----
-	const [viewportWidth, setViewportWidth] = useState<number>(() => {
-		if (typeof window === "undefined") return maxWidth
-		return window.innerWidth
-	})
+	// ----- 监听 webview 容器宽度变化 -----
+	const [containerWidth, setContainerWidth] = useState<number>(() => measureContainerWidth())
 
 	useEffect(() => {
 		if (!visible) return
-		const onResize = () => setViewportWidth(window.innerWidth)
-		window.addEventListener("resize", onResize)
-		// 进入可见时主动同步一次（处理"首次打开"时父级 layout 变化的情况）
-		onResize()
-		return () => window.removeEventListener("resize", onResize)
+
+		const update = () => setContainerWidth(measureContainerWidth())
+
+		// 进入可见时立即同步
+		update()
+
+		// 方案 1：ResizeObserver（推荐，响应最精准）
+		let observer: ResizeObserver | null = null
+		if (typeof ResizeObserver !== "undefined" && document.documentElement) {
+			observer = new ResizeObserver(() => update())
+			observer.observe(document.documentElement)
+		}
+
+		// 方案 2：window.resize 兜底（部分 webview 配置下 ResizeObserver 不触发）
+		window.addEventListener("resize", update)
+
+		return () => {
+			observer?.disconnect()
+			window.removeEventListener("resize", update)
+		}
 	}, [visible])
 
 	// ----- ESC 关闭 -----
@@ -101,16 +119,22 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 
 	// 计算 Modal 宽度：留 16px 边距，下限 minWidth，上限 maxWidth
 	const horizontalPadding = 32
-	const computedWidth = Math.min(Math.max(viewportWidth - horizontalPadding, minWidth), maxWidth)
+	const computedWidth = Math.min(Math.max(containerWidth - horizontalPadding, minWidth), maxWidth)
 
+	// 【v2.3.2】覆盖层改用 absolute 锚定到 body（需 main.css 把 body 设为 position:relative）
+	// 不能再用 fixed：fixed 在 webview 内会相对宿主视口定位，导致 Modal 飞出 iframe 边界
 	const overlayStyle: React.CSSProperties = {
-		position: "fixed",
-		inset: 0,
+		position: "absolute",
+		top: 0,
+		left: 0,
+		right: 0,
+		bottom: 0,
 		background: "rgba(0,0,0,0.4)",
 		display: "flex",
 		alignItems: "center",
 		justifyContent: "center",
 		zIndex: 9999,
+		overflow: "auto",
 	}
 
 	const modalStyleMerged: React.CSSProperties = {
@@ -120,8 +144,10 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 		borderRadius: 6,
 		fontSize: 13,
 		width: computedWidth,
-		maxWidth: "calc(100vw - 32px)",
+		// 双重保护：即使 maxWidth 算错，也不能超过 webview 容器宽度 - 32px 边距
+		maxWidth: `calc(${containerWidth}px - 32px)`,
 		boxSizing: "border-box",
+		margin: "16px auto", // 上下留 16px，左右 auto 居中（不依赖 flex）
 		...modalStyle,
 	}
 

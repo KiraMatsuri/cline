@@ -23,6 +23,10 @@ body {
 	height: 100%;
 	width: 100%;
 	background-color: var(--vscode-sideBar-background);
+	/* 【v2.3.2】让 body 成为 absolute 定位祖先
+	   ResponsiveModal 使用 position:absolute 锚定到 body，避免 fixed 定位
+	   在 webview iframe 内相对宿主视口飞出边界的 bug */
+	position: relative;
 }
 
 #root {
