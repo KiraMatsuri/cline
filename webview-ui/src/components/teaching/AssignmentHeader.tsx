@@ -189,7 +189,7 @@ const AssignmentHeader: FC = () => {
 			</div>
 
 			{/* 服务器设置 Modal —— 【v2.3】使用 ResponsiveModal 自适应侧栏宽度 */}
-			<ResponsiveModal maxWidth={480} minWidth={280} onClose={() => setModalVisible(false)} visible={modalVisible}>
+			<ResponsiveModal maxWidth={480} minWidth={0} onClose={() => setModalVisible(false)} visible={modalVisible}>
 				<h3 style={{ marginTop: 0 }}>⚙ 服务器设置</h3>
 				<p style={styles.modalDesc}>
 					修改后端 API 地址（教学 Wiki 与实验任务共用此地址）。

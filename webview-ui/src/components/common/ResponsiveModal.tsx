@@ -40,7 +40,7 @@ export interface ResponsiveModalProps {
 	onClose: () => void
 	/** Modal 内容 */
 	children: ReactNode
-	/** 最小宽度（px），默认 280 */
+	/** 最小宽度（px），默认 0（不设下限，完全自适应容器） */
 	minWidth?: number
 	/** 最大宽度（px），默认 480 */
 	maxWidth?: number
@@ -70,7 +70,7 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 	visible,
 	onClose,
 	children,
-	minWidth = 280,
+	minWidth = 0,
 	maxWidth = 480,
 	modalStyle,
 	closeOnEsc = true,
@@ -117,12 +117,11 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 
 	if (!visible) return null
 
-	// 计算 Modal 宽度：留 16px 边距，下限 minWidth，上限 maxWidth
-	const horizontalPadding = 32
+	// 计算 Modal 宽度：留 16px 边距，下限 minWidth（默认 0），上限 maxWidth
+	const horizontalPadding = 16 // 【v2.3.3】从 32 缩到 16，配合 padding:14 减少占用
 	const computedWidth = Math.min(Math.max(containerWidth - horizontalPadding, minWidth), maxWidth)
 
 	// 【v2.3.2】覆盖层改用 absolute 锚定到 body（需 main.css 把 body 设为 position:relative）
-	// 不能再用 fixed：fixed 在 webview 内会相对宿主视口定位，导致 Modal 飞出 iframe 边界
 	const overlayStyle: React.CSSProperties = {
 		position: "absolute",
 		top: 0,
@@ -140,14 +139,17 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 	const modalStyleMerged: React.CSSProperties = {
 		background: "var(--vscode-editor-background)",
 		border: "1px solid var(--vscode-panel-border)",
-		padding: 20,
+		padding: 14, // 【v2.3.3】从 20 缩到 14，给小侧栏更多空间
 		borderRadius: 6,
 		fontSize: 13,
 		width: computedWidth,
-		// 双重保护：即使 maxWidth 算错，也不能超过 webview 容器宽度 - 32px 边距
-		maxWidth: `calc(${containerWidth}px - 32px)`,
+		// 兜底：不能超过容器宽度 - 16px
+		maxWidth: `calc(${containerWidth}px - 16px)`,
 		boxSizing: "border-box",
-		margin: "16px auto", // 上下留 16px，左右 auto 居中（不依赖 flex）
+		margin: "12px auto",
+		// 【v2.3.3】防止内部元素（如 input/button 默认 min-content）撑出 Modal
+		overflowWrap: "break-word",
+		minWidth: 0,
 		...modalStyle,
 	}
 
