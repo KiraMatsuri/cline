@@ -75,7 +75,7 @@ export interface SubmissionPayload {
 
 /** Webview → Extension 的 IPC 消息协议 */
 export interface AssignmentMessage {
-	command: "fetchAssignments" | "submitTask" | "openFile" | "saveStudentInfo" | "exitToChat"
+	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "saveStudentInfo" | "exitToChat"
 	payload?: Record<string, unknown>
 }
 
@@ -85,6 +85,8 @@ export interface AssignmentResponse {
 	success: boolean
 	data?: unknown
 	error?: string
+	/** 【v2.3 增量】createOneFile 等需要回传任务标识时附带 */
+	assignmentId?: string
 }
 
 // ============================================================================
@@ -121,6 +123,12 @@ export class AssignmentManager {
 
 	/** 配置变更订阅 disposable，用于 dispose() 解绑 */
 	private configWatcherDisposable: vscode.Disposable | null = null
+
+	/**
+	 * 【v2.3 增量】已拉取的实验任务缓存（id → Assignment）。
+	 * 双击任务项触发 `createOneFile` 时优先查找本缓存，避免每次双击都重新请求后端。
+	 */
+	private cachedAssignmentsById: Map<string, Assignment> = new Map()
 
 	constructor(apiBase?: string) {
 		// 若调用方未传值，使用默认兜底；后续可通过 refreshApiBaseFromConfig 或 setApiBase 覆盖
@@ -206,6 +214,12 @@ export class AssignmentManager {
 					await this.handleFetchAssignments(postMessage)
 					break
 
+				case "createOneFile": {
+					const assignmentId = typeof payload["assignmentId"] === "string" ? (payload["assignmentId"] as string) : ""
+					await this.handleCreateOneFile({ assignmentId }, postMessage)
+					break
+				}
+
 				case "submitTask": {
 					const assignmentId = typeof payload["assignmentId"] === "string" ? (payload["assignmentId"] as string) : ""
 					await this.handleSubmitTask({ assignmentId }, postMessage)
@@ -284,25 +298,9 @@ export class AssignmentManager {
 	 *                 → AssignmentManager.handleFetchAssignments()
 	 *                 → GET http://localhost:3000/api/v1/assignments
 	 *                 → 创建 ${assignment.id}_experiment.py 并写入 template_code
-	 *                 → 在编辑器中打开该文件
-	 *                 → 返回任务列表到 Webview
+	 *                 → 返回任务列表到 Webview（不自动创建文件，由学生双击触发）
 	 */
 	private async handleFetchAssignments(postMessage: (response: AssignmentResponse) => void): Promise<void> {
-		// ----- 校验工作区是否打开 -----
-		const workspaceFolders = vscode.workspace.workspaceFolders
-		if (!workspaceFolders || workspaceFolders.length === 0) {
-			const errMsg = "未检测到打开的工作区"
-			vscode.window.showErrorMessage("❌ 请先打开一个工作区（文件夹），才能创建实验文件。")
-			postMessage({
-				command: "fetchAssignments",
-				success: false,
-				error: errMsg,
-			})
-			return
-		}
-
-		const workspaceRoot = workspaceFolders[0].uri.fsPath
-
 		try {
 			// ----- 调用后端 API 获取任务列表 -----
 			const response = await fetch(`${this.apiBase}/api/v1/assignments`, {
@@ -325,17 +323,13 @@ export class AssignmentManager {
 
 			const assignments: Assignment[] = result.data
 
-			// ----- 为每个任务在工作区创建实验文件（收集失败的文件名）-----
-			const failedFiles: string[] = []
-			for (const assignment of assignments) {
-				try {
-					await this.createExperimentFile(workspaceRoot, assignment)
-				} catch (err) {
-					failedFiles.push(assignment.id)
-					// 输出警告但不影响其它任务的处理
-					const msg = err instanceof Error ? err.message : String(err)
-					vscode.window.showWarningMessage(`⚠️ 创建实验文件「${assignment.title}」失败: ${msg}`)
-				}
+			// 【v2.3 改造】不再自动创建实验文件 —— 改为由学生在列表中双击任务项触发
+			// 避免"一个任务一个独立工作区"的学生打开多个工作区时文件散落各处
+
+			// 填充缓存，供双击 createOneFile 时快速查找
+			this.cachedAssignmentsById.clear()
+			for (const a of assignments) {
+				this.cachedAssignmentsById.set(a.id, a)
 			}
 
 			// ----- 通知 Webview 更新任务列表 -----
@@ -345,14 +339,9 @@ export class AssignmentManager {
 				data: assignments,
 			})
 
-			const successCount = assignments.length - failedFiles.length
-			if (failedFiles.length === 0) {
-				vscode.window.showInformationMessage(`📋 成功获取 ${assignments.length} 个实验任务，实验文件已创建到工作区。`)
-			} else {
-				vscode.window.showWarningMessage(
-					`📋 已获取 ${assignments.length} 个任务，成功创建 ${successCount} 个实验文件，${failedFiles.length} 个创建失败。`,
-				)
-			}
+			vscode.window.showInformationMessage(
+				`📋 成功获取 ${assignments.length} 个实验任务。\n💡 双击某个任务项可创建对应的源码文件到当前工作区。`,
+			)
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error)
 			vscode.window.showErrorMessage(`❌ 获取实验任务失败: ${msg}`)
@@ -361,6 +350,89 @@ export class AssignmentManager {
 				success: false,
 				error: msg,
 			})
+		}
+	}
+
+	/**
+	 * 【v2.3 增量】双击实验任务项时触发 —— 在当前工作区创建单个任务的源码文件。
+	 * 由 Webview 通过 `createOneFile` 命令调用。失败仅弹 warning，不抛出。
+	 */
+	private async handleCreateOneFile(
+		payload: { assignmentId: string },
+		postMessage: (response: AssignmentResponse) => void = () => {},
+	): Promise<void> {
+		try {
+			const { assignmentId } = payload
+			if (!assignmentId) {
+				throw new Error("缺少 assignmentId 参数")
+			}
+
+			// ----- 校验工作区是否打开 -----
+			const workspaceFolders = vscode.workspace.workspaceFolders
+			if (!workspaceFolders || workspaceFolders.length === 0) {
+				const errMsg = "未检测到打开的工作区"
+				vscode.window.showErrorMessage("❌ 请先打开一个工作区（文件夹），才能创建实验文件。")
+				postMessage({
+					command: "createOneFile",
+					success: false,
+					assignmentId,
+					error: errMsg,
+				})
+				return
+			}
+
+			const workspaceRoot = workspaceFolders[0].uri.fsPath
+
+			// 优先用本地缓存列表查找；缓存为空时再拉一次后端
+			let assignment = this.cachedAssignmentsById.get(assignmentId)
+			if (!assignment) {
+				assignment = await this.fetchAssignmentById(assignmentId)
+				if (assignment) {
+					this.cachedAssignmentsById.set(assignmentId, assignment)
+				}
+			}
+			if (!assignment) {
+				throw new Error(`未找到任务 ${assignmentId}，请先点击「获取实验任务」拉取列表`)
+			}
+
+			// 调用底层方法（沿用 fs.existsSync 跳过 + writeFileSync + 打开编辑器逻辑）
+			await this.createExperimentFile(workspaceRoot, assignment)
+
+			// 成功反馈（不打扰型，提示已由 createExperimentFile 内部的 showTextDocument 提供）
+			postMessage({
+				command: "createOneFile",
+				success: true,
+				assignmentId,
+				data: { fileName: `${assignment.id.replace(/[^a-zA-Z0-9_-]/g, "_")}_experiment.py` },
+			})
+		} catch (error) {
+			// 单文件创建失败：按决策 4.A 弹 warning 而非抛错，不打断列表
+			const msg = error instanceof Error ? error.message : String(error)
+			vscode.window.showWarningMessage(`⚠️ 创建实验文件失败: ${msg}`)
+			postMessage({
+				command: "createOneFile",
+				success: false,
+				assignmentId: payload.assignmentId,
+				error: msg,
+			})
+		}
+	}
+
+	/**
+	 * 从后端 API 拉取单个任务详情。失败时返回 undefined（不抛错）。
+	 */
+	private async fetchAssignmentById(assignmentId: string): Promise<Assignment | undefined> {
+		try {
+			const response = await fetch(`${this.apiBase}/api/v1/assignments`, {
+				method: "GET",
+				headers: { "Content-Type": "application/json" },
+			})
+			if (!response.ok) return undefined
+			const result = (await response.json()) as { ok: boolean; data: Assignment[] }
+			if (!result.ok || !Array.isArray(result.data)) return undefined
+			return result.data.find((a) => a.id === assignmentId) ?? undefined
+		} catch {
+			return undefined
 		}
 	}
 

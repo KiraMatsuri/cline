@@ -39,7 +39,8 @@
 import type { FC } from "react"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { getVsCodeApiInstance } from "@/config/platform.config"
-import AssignmentHeader from "./AssignmentHeader"
+// 【v2.3 改造】移除 AssignmentHeader（Wiki 进度感知区与其他按钮功能重复，已删除）
+// import AssignmentHeader from "./AssignmentHeader"
 
 // ============================================================================
 //  类型定义
@@ -291,6 +292,29 @@ const AssignmentTab: FC = () => {
 	// 折叠/展开状态：实验任务列表和学生信息
 	const [showTaskList, setShowTaskList] = useState(true)
 
+	// 【v2.3 增量】学习进度（教学周数 1~18）。LLMWikiService.fetchWikiForWeek
+	// 会按此周数在主对话 RAG 注入 Wiki 资料。此处放在底部紧凑控件，
+	// 避免与"获取实验任务"按钮功能区视觉上重叠。
+	const [currentWeek, setCurrentWeek] = useState<number>(() => {
+		// 持久化：从 VS Code 全局状态恢复
+		try {
+			const saved = vscodeApiRef.current?.getState?.()
+			const w = (saved as { teachingCurrentWeek?: number } | undefined)?.teachingCurrentWeek
+			if (typeof w === "number" && w >= 1 && w <= 18) return w
+		} catch {
+			// 忽略状态读取异常
+		}
+		return 1
+	})
+	const onWeekChange = useCallback((week: number) => {
+		setCurrentWeek(week)
+		try {
+			vscodeApiRef.current?.setState?.({ teachingCurrentWeek: week })
+		} catch {
+			// 状态写入失败不影响 UI
+		}
+	}, [])
+
 	/** VS Code API 实例 —— 用于与插件后台通信。
 	 * 使用 useRef 包裹，避免每次重渲染都重新执行 getVsCodeApi()。 */
 	const vscodeApiRef = useRef<VsCodeApi | null>(null)
@@ -360,6 +384,23 @@ const AssignmentTab: FC = () => {
 						})
 					}
 					break
+
+				// 【v2.3 增量】createOneFile 响应处理
+				case "createOneFile":
+					if (message.success) {
+						const fileName = (message.data as { fileName?: string })?.fileName ?? ""
+						setStatusMessage({
+							type: "success",
+							text: `✅ 已创建源码文件${fileName ? `「${fileName}」` : ""}`,
+						})
+					} else {
+						// 失败也提示（失败由 handleCreateOneFile 内部已弹 warning，这里仅更新 statusBar）
+						setStatusMessage({
+							type: "error",
+							text: `❌ 创建失败: ${message.error || "未知错误"}`,
+						})
+					}
+					break
 			}
 		}
 
@@ -406,6 +447,37 @@ const AssignmentTab: FC = () => {
 	const handleSelectTask = useCallback((assignment: Assignment) => {
 		setSelectedTask(assignment)
 	}, [])
+
+	// ========================================================================
+	//  ②.b 【v2.3 增量】双击任务项 → 创建单个源码文件
+	// ========================================================================
+
+	/**
+	 * 【IPC 消息：createOneFile】
+	 * 向 Extension 后台发送"为单个任务创建源码文件"请求。
+	 *
+	 * 消息流转：
+	 *   AssignmentTab (Webview)
+	 *     → postMessage({ command: 'createOneFile', payload: { assignmentId } })
+	 *     → AssignmentManager.handleCreateOneFile()
+	 *     → 在当前工作区创建 ${assignment.id}_experiment.py
+	 *     → postMessage() 返回创建结果
+	 *
+	 * 设计动机：v2.3 前 fetchAssignments 会一次性创建所有任务文件，
+	 * 不利于"一个任务一个独立工作区"的学生；改为按需创建。
+	 */
+	const handleCreateOne = useCallback((assignment: Assignment) => {
+		if (!vscodeApi) return
+		setStatusMessage({
+			type: "info",
+			text: `⏳ 正在为「${assignment.title}」创建源码文件...`,
+		})
+		vscodeApi.postMessage({
+			type: "assignment_command",
+			command: "createOneFile",
+			payload: { assignmentId: assignment.id },
+		})
+	}, [vscodeApi])
 
 	// ========================================================================
 	//  ③ 一键提交
@@ -523,8 +595,8 @@ const AssignmentTab: FC = () => {
 				</button>
 			</div>
 
-			{/* ----- 【v1.3 增量】进度感知 Header：周数选择 + 获取任务 + 服务器设置 ----- */}
-			<AssignmentHeader />
+			{/* ----- 【v2.3 改造】删除 Wiki 进度感知 Header（与其他按钮功能重复） ----- */}
+			{/* 原 <AssignmentHeader /> 已移除。周数 Select 移至底部紧凑控件。 */}
 
 			{/* ----- 状态栏（加载中 / 成功 / 失败反馈）----- */}
 			{statusMessage && (
@@ -563,6 +635,20 @@ const AssignmentTab: FC = () => {
 					"📥 获取实验任务"
 				)}
 			</button>
+
+			{/* ----- 【v2.3 增量】双击提示文本 ----- */}
+			{assignments.length > 0 && (
+				<div
+					style={{
+						fontSize: 11,
+						color: "var(--vscode-descriptionForeground)",
+						marginTop: -4,
+						marginBottom: 4,
+						padding: "0 4px",
+					}}>
+					💡 双击实验任务以创建源码文件
+				</div>
+			)}
 
 			{/* ================================================================ */}
 			{/*  任务列表（可折叠）                                              */}
@@ -612,9 +698,13 @@ const AssignmentTab: FC = () => {
 							<div
 								key={task.id}
 								onClick={() => handleSelectTask(task)}
+								// 【v2.3 增量】双击任务项 → 在当前工作区创建对应的源码文件
+								onDoubleClick={() => handleCreateOne(task)}
+								title="单击查看任务详情，双击创建源码文件"
 								style={{
 									...styles.taskCard,
 									...(selectedTask?.id === task.id ? styles.taskCardSelected : {}),
+									userSelect: "none", // 避免双击时误选中文本
 								}}>
 								<p style={styles.taskTitle}>{task.title}</p>
 								<div style={styles.taskMeta}>
@@ -700,6 +790,46 @@ const AssignmentTab: FC = () => {
 			{/* ================================================================ */}
 			{/*  学生信息配置（折叠区域）                                        */}
 			{/* ================================================================ */}
+
+			<div style={styles.divider} />
+
+			{/* ----- 【v2.3 增量】底部紧凑：学习进度（教学周数）----- */}
+			<div
+				style={{
+					display: "flex",
+					alignItems: "center",
+					gap: 8,
+					padding: "4px 0",
+				}}>
+				<label
+					htmlFor="teaching-week-select"
+					style={{
+						fontSize: 11,
+						color: "var(--vscode-descriptionForeground)",
+						fontWeight: 600,
+					}}>
+					📅 学习进度
+				</label>
+				<select
+					id="teaching-week-select"
+					onChange={(e) => onWeekChange(Number(e.target.value))}
+					style={{
+						flex: 1,
+						padding: "3px 6px",
+						background: "var(--vscode-input-background)",
+						color: "var(--vscode-input-foreground)",
+						border: "1px solid var(--vscode-input-border)",
+						borderRadius: 3,
+						fontSize: 11,
+					}}
+					value={currentWeek}>
+					{Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
+						<option key={w} value={w}>
+							第 {w} 周
+						</option>
+					))}
+				</select>
+			</div>
 
 			<div style={styles.divider} />
 
