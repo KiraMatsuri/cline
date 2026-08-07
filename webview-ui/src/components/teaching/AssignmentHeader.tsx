@@ -189,11 +189,7 @@ const AssignmentHeader: FC = () => {
 			</div>
 
 			{/* 服务器设置 Modal —— 【v2.3】使用 ResponsiveModal 自适应侧栏宽度 */}
-			<ResponsiveModal
-				visible={modalVisible}
-				onClose={() => setModalVisible(false)}
-				minWidth={280}
-				maxWidth={480}>
+			<ResponsiveModal maxWidth={480} minWidth={280} onClose={() => setModalVisible(false)} visible={modalVisible}>
 				<h3 style={{ marginTop: 0 }}>⚙ 服务器设置</h3>
 				<p style={styles.modalDesc}>
 					修改后端 API 地址（教学 Wiki 与实验任务共用此地址）。
@@ -211,9 +207,7 @@ const AssignmentHeader: FC = () => {
 				/>
 				<p style={styles.hint}>格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
 				<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-					<button
-						onClick={() => setModalVisible(false)}
-						style={{ ...styles.button, ...styles.secondaryButton }}>
+					<button onClick={() => setModalVisible(false)} style={{ ...styles.button, ...styles.secondaryButton }}>
 						取消
 					</button>
 					<button onClick={onSaveServer} style={{ ...styles.button, ...styles.primaryButton }}>

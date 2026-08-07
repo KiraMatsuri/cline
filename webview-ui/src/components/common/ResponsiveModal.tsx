@@ -101,10 +101,7 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 
 	// 计算 Modal 宽度：留 16px 边距，下限 minWidth，上限 maxWidth
 	const horizontalPadding = 32
-	const computedWidth = Math.min(
-		Math.max(viewportWidth - horizontalPadding, minWidth),
-		maxWidth,
-	)
+	const computedWidth = Math.min(Math.max(viewportWidth - horizontalPadding, minWidth), maxWidth)
 
 	const overlayStyle: React.CSSProperties = {
 		position: "fixed",
@@ -129,7 +126,7 @@ const ResponsiveModal: FC<ResponsiveModalProps> = ({
 	}
 
 	return (
-		<div onClick={onClose} style={overlayStyle} role="dialog" aria-modal="true">
+		<div aria-modal="true" onClick={onClose} role="dialog" style={overlayStyle}>
 			<div onClick={(e) => e.stopPropagation()} style={modalStyleMerged}>
 				{children}
 			</div>
