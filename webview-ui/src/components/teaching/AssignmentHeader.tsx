@@ -25,6 +25,7 @@
 import type { FC } from "react"
 import { useEffect, useState } from "react"
 import { getVsCodeApiInstance } from "@/config/platform.config"
+import ResponsiveModal from "../common/ResponsiveModal"
 
 // ============================================================================
 //  类型定义
@@ -187,39 +188,39 @@ const AssignmentHeader: FC = () => {
 				当前服务器：<code>{serverUrl}</code>
 			</div>
 
-			{/* 服务器设置 Modal */}
-			{modalVisible && (
-				<div onClick={() => setModalVisible(false)} style={styles.modalOverlay}>
-					<div onClick={(e) => e.stopPropagation()} style={styles.modal}>
-						<h3 style={{ marginTop: 0 }}>⚙ 服务器设置</h3>
-						<p style={styles.modalDesc}>
-							修改后端 API 地址（教学 Wiki 与实验任务共用此地址）。
-							<br />
-							修改后会立即刷新 Wiki 缓存。
-						</p>
-						<label style={styles.label}>Server URL</label>
-						<input
-							autoFocus
-							onChange={(e) => setDraftUrl(e.target.value)}
-							placeholder="http://localhost:4001"
-							style={styles.input}
-							type="text"
-							value={draftUrl}
-						/>
-						<p style={styles.hint}>格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
-						<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
-							<button
-								onClick={() => setModalVisible(false)}
-								style={{ ...styles.button, ...styles.secondaryButton }}>
-								取消
-							</button>
-							<button onClick={onSaveServer} style={{ ...styles.button, ...styles.primaryButton }}>
-								保存
-							</button>
-						</div>
-					</div>
+			{/* 服务器设置 Modal —— 【v2.3】使用 ResponsiveModal 自适应侧栏宽度 */}
+			<ResponsiveModal
+				visible={modalVisible}
+				onClose={() => setModalVisible(false)}
+				minWidth={280}
+				maxWidth={480}>
+				<h3 style={{ marginTop: 0 }}>⚙ 服务器设置</h3>
+				<p style={styles.modalDesc}>
+					修改后端 API 地址（教学 Wiki 与实验任务共用此地址）。
+					<br />
+					修改后会立即刷新 Wiki 缓存。
+				</p>
+				<label style={styles.label}>Server URL</label>
+				<input
+					autoFocus
+					onChange={(e) => setDraftUrl(e.target.value)}
+					placeholder="http://localhost:4001"
+					style={styles.input}
+					type="text"
+					value={draftUrl}
+				/>
+				<p style={styles.hint}>格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
+				<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+					<button
+						onClick={() => setModalVisible(false)}
+						style={{ ...styles.button, ...styles.secondaryButton }}>
+						取消
+					</button>
+					<button onClick={onSaveServer} style={{ ...styles.button, ...styles.primaryButton }}>
+						保存
+					</button>
 				</div>
-			)}
+			</ResponsiveModal>
 		</div>
 	)
 }

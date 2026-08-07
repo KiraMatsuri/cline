@@ -29,6 +29,7 @@
 import type { FC } from "react"
 import { useCallback, useEffect, useState } from "react"
 import { getVsCodeApiInstance } from "@/config/platform.config"
+import ResponsiveModal from "../common/ResponsiveModal"
 
 // ============================================================================
 //  类型定义
@@ -400,30 +401,28 @@ const LLMSettingsView: FC = () => {
 
       {/* 工具调用开启确认弹窗 */}
       {toolsConfirmVisible && (
-        <div style={styles.modalOverlay}>
-          <div style={styles.modal}>
-            <h3 style={{ marginTop: 0 }}>⚠ 启用工具调用答疑</h3>
-            <p>启用后：</p>
-            <ul>
-              <li>跨周复杂问题将由 LLM 自主检索 Wiki</li>
-              <li>平均 token 消耗增加 30%~80%</li>
-              <li>答疑延迟可能 +2~5 秒</li>
-              <li>建议在"对比"、"综合"类提问时启用</li>
-            </ul>
-            <p>是否确认开启？</p>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button
-                onClick={() => setToolsConfirmVisible(false)}
-                style={{ ...styles.button, ...styles.secondaryButton }}
-              >
-                取消
-              </button>
-              <button onClick={confirmTools} style={{ ...styles.button, ...styles.primaryButton }}>
-                确认开启
-              </button>
-            </div>
+        <ResponsiveModal visible={toolsConfirmVisible} onClose={() => setToolsConfirmVisible(false)} maxWidth={420}>
+          <h3 style={{ marginTop: 0 }}>⚠ 启用工具调用答疑</h3>
+          <p>启用后：</p>
+          <ul>
+            <li>跨周复杂问题将由 LLM 自主检索 Wiki</li>
+            <li>平均 token 消耗增加 30%~80%</li>
+            <li>答疑延迟可能 +2~5 秒</li>
+            <li>建议在"对比"、"综合"类提问时启用</li>
+          </ul>
+          <p>是否确认开启？</p>
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button
+              onClick={() => setToolsConfirmVisible(false)}
+              style={{ ...styles.button, ...styles.secondaryButton }}
+            >
+              取消
+            </button>
+            <button onClick={confirmTools} style={{ ...styles.button, ...styles.primaryButton }}>
+              确认开启
+            </button>
           </div>
-        </div>
+        </ResponsiveModal>
       )}
     </div>
   )
