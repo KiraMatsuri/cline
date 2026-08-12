@@ -61,6 +61,8 @@ export interface StudentInfo {
 	studentId: string
 	studentName: string
 	classId: string
+	/** 【v2.3 阶段4】学生工作区日志文件路径（JSONL），可空 */
+	logFilePath?: string
 }
 
 /** 提交请求体 —— POST /api/v1/submissions */
@@ -71,6 +73,10 @@ export interface SubmissionPayload {
 	class_id: string
 	code_snapshot: string
 	raw_behavior_logs: unknown
+	/** 【v2.3 阶段4】学生工作区日志文件路径（绝对路径，后端按 JSONL 读取） */
+	log_file_path?: string
+	/** 【v2.3 阶段4】提交时间戳 ISO 8601 */
+	submitted_at?: string
 }
 
 /** Webview → Extension 的 IPC 消息协议 */
@@ -277,13 +283,18 @@ export class AssignmentManager {
 		if (typeof studentId !== "string" || typeof studentName !== "string" || typeof classId !== "string") {
 			return null
 		}
-		const trimmed = {
+		const trimmed: StudentInfo = {
 			studentId: studentId.trim(),
 			studentName: studentName.trim(),
 			classId: classId.trim(),
 		}
 		if (!trimmed.studentId || !trimmed.studentName || !trimmed.classId) {
 			return null
+		}
+		// 【v2.3 阶段4】可选：学生工作区日志文件路径
+		const logFilePath = payload["logFilePath"]
+		if (typeof logFilePath === "string" && logFilePath.trim()) {
+			trimmed.logFilePath = logFilePath.trim()
 		}
 		return trimmed
 	}
@@ -570,6 +581,9 @@ export class AssignmentManager {
 				class_id: studentInfo.classId,
 				code_snapshot: codeSnapshot,
 				raw_behavior_logs: rawBehaviorLogs,
+				// 【v2.3 阶段4】学生工作区日志路径（可空）
+				log_file_path: studentInfo.logFilePath ?? undefined,
+				submitted_at: new Date().toISOString(),
 			}
 
 			// ----- ⑤ POST 提交至云端后端 -----
@@ -825,7 +839,13 @@ export class AssignmentManager {
 		if (!studentId || !studentName || !classId) {
 			return null
 		}
-		return { studentId, studentName, classId }
+		const info: StudentInfo = { studentId, studentName, classId }
+		// 【v2.3 阶段4】同时加载日志文件路径
+		const logFilePath = typeof raw.logFilePath === "string" ? raw.logFilePath.trim() : ""
+		if (logFilePath) {
+			info.logFilePath = logFilePath
+		}
+		return info
 	}
 
 	/**

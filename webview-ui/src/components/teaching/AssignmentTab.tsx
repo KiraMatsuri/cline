@@ -289,6 +289,10 @@ const AssignmentTab: FC = () => {
 	const [studentName, setStudentName] = useState("")
 	const [classId, setClassId] = useState("")
 	const [showStudentForm, setShowStudentForm] = useState(false)
+	// 【v2.3 阶段4】学生工作区日志文件路径（JSONL），提交时附带。
+	// 默认猜测常见路径（先后端从 .env 的 DASHBOARD_LOG_PATH 同步不好，
+	// 所以前端用本地常见路径作为兜底）。
+	const [logFilePath, setLogFilePath] = useState("")
 
 	// 折叠/展开状态：实验任务列表和学生信息
 	const [showTaskList, setShowTaskList] = useState(true)
@@ -876,6 +880,22 @@ const AssignmentTab: FC = () => {
 							style={styles.input}
 							value={classId}
 						/>
+					</div>
+					{/* 【v2.3 阶段4】日志路径输入：留空则走系统默认 */}
+					<div style={styles.inputGroup}>
+						<label style={styles.label}>
+							📄 行为日志路径（可选）
+						</label>
+						<input
+							onChange={(e) => setLogFilePath(e.target.value)}
+							placeholder="D:/your-workspace/.cline-logs/student_interactions.log"
+							style={{ ...styles.input, fontFamily: "var(--vscode-editor-font-family)" }}
+							value={logFilePath}
+						/>
+						<div style={{ fontSize: 10, color: "var(--vscode-descriptionForeground)", marginTop: 2 }}>
+							提交实验时附带此 JSONL 日志文件，看板可按学号/姓名/班级筛选。
+							留空则不附带，由后端仅使用 raw_behavior_logs。
+						</div>
 					</div>
 					<button onClick={handleSaveStudentInfo} style={{ ...styles.button, ...styles.primaryButton }}>
 						💾 保存学生信息
