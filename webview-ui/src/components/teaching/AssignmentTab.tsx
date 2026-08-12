@@ -274,6 +274,18 @@ const styles = {
 // ============================================================================
 
 const AssignmentTab: FC = () => {
+	/** VS Code API 实例 —— 用于与插件后台通信。
+	 * 【v2.4.3 修复】必须先声明 useRef，因为下方 useState 的 lazy initializer
+	 * 会引用 vscodeApiRef.current。如果声明在 useState 之后，React 19 / StrictMode
+	 * 下会抛 "Cannot access 'vscodeApiRef' before initialization"，导致
+	 * 整个组件渲染失败，侧边栏空白。
+	 * 使用 useRef 包裹，避免每次重渲染都重新执行 getVsCodeApi()。 */
+	const vscodeApiRef = useRef<VsCodeApi | null>(null)
+	if (vscodeApiRef.current === null) {
+		vscodeApiRef.current = getVsCodeApi()
+	}
+	const vscodeApi = vscodeApiRef.current
+
 	// ----- 状态管理 -----
 	const [assignments, setAssignments] = useState<Assignment[]>([])
 	const [selectedTask, setSelectedTask] = useState<Assignment | null>(null)
@@ -319,14 +331,6 @@ const AssignmentTab: FC = () => {
 			// 状态写入失败不影响 UI
 		}
 	}, [])
-
-	/** VS Code API 实例 —— 用于与插件后台通信。
-	 * 使用 useRef 包裹，避免每次重渲染都重新执行 getVsCodeApi()。 */
-	const vscodeApiRef = useRef<VsCodeApi | null>(null)
-	if (vscodeApiRef.current === null) {
-		vscodeApiRef.current = getVsCodeApi()
-	}
-	const vscodeApi = vscodeApiRef.current
 
 	// ========================================================================
 	//  消息监听：接收 Extension 后台发来的响应
