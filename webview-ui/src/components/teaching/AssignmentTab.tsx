@@ -37,7 +37,7 @@
  */
 
 import type { FC } from "react"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { getVsCodeApiInstance } from "@/config/platform.config"
 
 // 【v2.3 改造】移除 AssignmentHeader（Wiki 进度感知区与其他按钮功能重复，已删除）
@@ -101,6 +101,15 @@ function getVsCodeApi(): VsCodeApi | null {
 	}
 	return api as VsCodeApi
 }
+
+/**
+ * 【v2.4.4 修复】模块顶层缓存 vsCodeApi 实例。
+ * 之前 v2.4.3 把 vscodeApiRef 声明在 useState 之前，但 React 19 StrictMode
+ * 下 useState 的 lazy initializer 与 useRef 初始化时序仍存在边缘 case，
+ * 导致侧边栏空白。
+ * 把 vsCodeApi 提取到模块顶层（同步执行），任何 hook 都能安全引用。
+ */
+const cachedVsCodeApi: VsCodeApi | null = getVsCodeApi()
 
 /** 格式化文件大小 */
 function formatFileSize(bytes: number): string {
@@ -274,17 +283,10 @@ const styles = {
 // ============================================================================
 
 const AssignmentTab: FC = () => {
-	/** VS Code API 实例 —— 用于与插件后台通信。
-	 * 【v2.4.3 修复】必须先声明 useRef，因为下方 useState 的 lazy initializer
-	 * 会引用 vscodeApiRef.current。如果声明在 useState 之后，React 19 / StrictMode
-	 * 下会抛 "Cannot access 'vscodeApiRef' before initialization"，导致
-	 * 整个组件渲染失败，侧边栏空白。
-	 * 使用 useRef 包裹，避免每次重渲染都重新执行 getVsCodeApi()。 */
-	const vscodeApiRef = useRef<VsCodeApi | null>(null)
-	if (vscodeApiRef.current === null) {
-		vscodeApiRef.current = getVsCodeApi()
-	}
-	const vscodeApi = vscodeApiRef.current
+	// 【v2.4.4 修复】直接使用模块顶层缓存的 vsCodeApi，避免 useRef + useState
+	// 在 StrictMode 下的时序问题。vscodeApi 在模块加载时已确定，组件函数
+	// 内任何位置访问都不会撞 TDZ。
+	const vscodeApi = cachedVsCodeApi
 
 	// ----- 状态管理 -----
 	const [assignments, setAssignments] = useState<Assignment[]>([])
@@ -315,7 +317,7 @@ const AssignmentTab: FC = () => {
 	const [currentWeek, setCurrentWeek] = useState<number>(() => {
 		// 持久化：从 VS Code 全局状态恢复
 		try {
-			const saved = vscodeApiRef.current?.getState?.()
+			const saved = cachedVsCodeApi?.getState?.()
 			const w = (saved as { teachingCurrentWeek?: number } | undefined)?.teachingCurrentWeek
 			if (typeof w === "number" && w >= 1 && w <= 18) return w
 		} catch {
@@ -326,7 +328,7 @@ const AssignmentTab: FC = () => {
 	const onWeekChange = useCallback((week: number) => {
 		setCurrentWeek(week)
 		try {
-			vscodeApiRef.current?.setState?.({ teachingCurrentWeek: week })
+			cachedVsCodeApi?.setState?.({ teachingCurrentWeek: week })
 		} catch {
 			// 状态写入失败不影响 UI
 		}
