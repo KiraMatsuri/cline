@@ -303,9 +303,10 @@ const AssignmentTab: FC = () => {
 	const [studentName, setStudentName] = useState("")
 	const [classId, setClassId] = useState("")
 	const [showStudentForm, setShowStudentForm] = useState(false)
-	// 【v2.3 阶段4】学生工作区日志文件路径（JSONL），提交时附带。
-	// 默认猜测常见路径（先后端从 .env 的 DASHBOARD_LOG_PATH 同步不好，
-	// 所以前端用本地常见路径作为兜底）。
+	// 【v2.5】学生工作区日志文件路径（JSONL），提交时附带。
+	// 初始为空；组件挂载时向后端请求"自动工作区日志路径"，
+	// 由后端在用户打开文件夹时自动创建 <root>/.cline-logs/student_interactions.log
+	// 然后通过 IPC 推回前端。
 	const [logFilePath, setLogFilePath] = useState("")
 
 	// 折叠/展开状态：实验任务列表和学生信息
@@ -336,6 +337,22 @@ const AssignmentTab: FC = () => {
 
 	// ========================================================================
 	//  消息监听：接收 Extension 后台发来的响应
+	// ========================================================================
+
+	/**
+	 * 【v2.5】挂载时向后端请求"自动工作区日志路径"，
+	 * 由后端在用户打开文件夹时自动创建 <root>/.cline-logs/student_interactions.log
+	 * 并通过 IPC 推回本组件。
+	 */
+	useEffect(() => {
+		if (!cachedVsCodeApi) return
+		// 1) 主动请求最新路径（覆盖任何已填过但工作区已切换的情况）
+		cachedVsCodeApi.postMessage({
+			type: "assignment_command",
+			command: "queryAutoLogPath",
+		})
+	}, [cachedVsCodeApi])
+
 	// ========================================================================
 
 	/**
@@ -410,6 +427,24 @@ const AssignmentTab: FC = () => {
 							type: "error",
 							text: `❌ 创建失败: ${message.error || "未知错误"}`,
 						})
+					}
+					break
+
+				// 【v2.5】自动工作区日志路径响应
+				case "queryAutoLogPath":
+					if (message.success) {
+						const data = message.data as
+							| { path: string | null; created: boolean }
+							| undefined
+						if (data?.path) {
+							setLogFilePath(data.path)
+							if (data.created) {
+								setStatusMessage({
+									type: "info",
+									text: `📄 已为当前工作区新建日志文件: ${data.path}`,
+								})
+							}
+						}
 					}
 					break
 			}
@@ -887,10 +922,10 @@ const AssignmentTab: FC = () => {
 							value={classId}
 						/>
 					</div>
-					{/* 【v2.3 阶段4】日志路径输入：留空则走系统默认 */}
+					{/* 【v2.5】日志路径输入：打开工作区时自动填入/创建 */}
 					<div style={styles.inputGroup}>
 						<label style={styles.label}>
-							📄 行为日志路径（可选）
+							📄 行为日志路径（自动检测）
 						</label>
 						<input
 							onChange={(e) => setLogFilePath(e.target.value)}
@@ -899,8 +934,8 @@ const AssignmentTab: FC = () => {
 							value={logFilePath}
 						/>
 						<div style={{ fontSize: 10, color: "var(--vscode-descriptionForeground)", marginTop: 2 }}>
-							提交实验时附带此 JSONL 日志文件，看板可按学号/姓名/班级筛选。
-							留空则不附带，由后端仅使用 raw_behavior_logs。
+							打开工作区时自动填入并创建空白日志文件（路径 <code>&lt;root&gt;/.cline-logs/student_interactions.log</code>）。
+							可手动修改为其他路径。提交实验时附带此 JSONL，看板可按学号/姓名/班级筛选。
 						</div>
 					</div>
 					<button onClick={handleSaveStudentInfo} style={{ ...styles.button, ...styles.primaryButton }}>
