@@ -57,6 +57,10 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		const m = new AssignmentManager()
 		m.refreshApiBaseFromConfig()
 		m.listenConfigChanges()
+		// 【v2.5】自动日志路径：工作区变化时创建/检测 student_interactions.log。
+		// 必须在持有 IPC 分发能力的同一个实例上调用，确保 queryAutoLogPath
+		// 能拿到同一份 cachedAutoLogPath（与 extension.ts 的独立实例隔离）。
+		m.startWatchingWorkspaceOpen()
 		return m
 	})()
 

@@ -202,11 +202,18 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 						const data = (await resp.json()) as { ok: boolean; message?: string }
 						post({ command: "testLLMConnection", success: data.ok, data, error: data.ok ? undefined : data.message })
 					} catch (e) {
+						// 【v2.5】更友好的错误提示：teaching-server 未启动时给出明确指引
+						const rawMsg = e instanceof Error ? e.message : String(e)
+						const isFetchFailed = /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(rawMsg)
+						const friendlyMsg = isFetchFailed
+							? `无法连接 ${serverUrl}。请确认 teaching-server 已在 4001 端口启动（cd D:/web-dashboard/teaching-server && pnpm dev）`
+							: `请求后端失败: ${rawMsg}`
 						post({
 							command: "testLLMConnection",
 							success: false,
-							error: `请求后端失败: ${e instanceof Error ? e.message : String(e)}`,
+							error: friendlyMsg,
 						})
+						Logger.warn(`[LLMSettingsViewProvider] testLLMConnection 后端不可达: ${rawMsg}`)
 					}
 					break
 				}

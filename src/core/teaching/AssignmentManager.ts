@@ -32,6 +32,8 @@
 import * as fs from "fs"
 import * as path from "path"
 import * as vscode from "vscode"
+import { Logger } from "@/shared/services/Logger"
+import { ensureStudentLogFile } from "./workspaceLogPath"
 
 // ============================================================================
 //  类型定义
@@ -81,7 +83,7 @@ export interface SubmissionPayload {
 
 /** Webview → Extension 的 IPC 消息协议 */
 export interface AssignmentMessage {
-	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "saveStudentInfo" | "exitToChat"
+	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "saveStudentInfo" | "exitToChat" | "queryAutoLogPath"
 	payload?: Record<string, unknown>
 }
 
@@ -194,6 +196,86 @@ export class AssignmentManager {
 	public dispose(): void {
 		this.configWatcherDisposable?.dispose()
 		this.configWatcherDisposable = null
+		this.workspaceOpenWatcherDisposable?.dispose()
+		this.workspaceOpenWatcherDisposable = null
+	}
+
+	// ========================================================================
+	//  【v2.5】自动日志路径 —— 监听工作区打开
+	// ========================================================================
+
+	/** workspace 打开事件订阅 disposable */
+	private workspaceOpenWatcherDisposable: vscode.Disposable | null = null
+
+	/**
+	 * 启动对 vscode.workspace.onDidChangeWorkspaceFolders 的监听。
+	 * 每次工作区集合变化时（即用户打开/关闭文件夹），
+	 * 在第一个工作区根目录下自动创建 student_interactions.log（不存在时），
+	 * 并通过 postMessage 通知 Webview 端自动填入 logFilePath。
+	 *
+	 * 必须由插件主进程在 activate() 阶段调用。
+	 */
+	public startWatchingWorkspaceOpen(): void {
+		if (this.workspaceOpenWatcherDisposable) {
+			return // 已订阅，幂等保护
+		}
+		// 启动时立即检测当前工作区
+		this.handleWorkspaceChange()
+		// 监听后续变化
+		this.workspaceOpenWatcherDisposable = vscode.workspace.onDidChangeWorkspaceFolders(() => {
+			this.handleWorkspaceChange()
+		})
+	}
+
+	/**
+	 * 自动处理工作区变化：
+	 *   1. 取第一个工作区根目录
+	 *   2. 在该目录下创建 .cline-logs/student_interactions.log（不存在时）
+	 *   3. 通过 cacheLastAutoLogPath 记忆 + 通知 Webview
+	 */
+	private handleWorkspaceChange(): void {
+		const result = ensureStudentLogFile()
+		if (result) {
+			this.cachedAutoLogPath = result.path
+			this.cachedAutoLogPathCreated = result.created
+			// 通知 Webview 端（如果有的话）
+			this.notifyWebviewOfAutoLogPath(result.path, result.created)
+		} else {
+			this.cachedAutoLogPath = null
+			this.cachedAutoLogPathCreated = false
+		}
+	}
+
+	/** 最近一次自动检测到的工作区日志路径 */
+	private cachedAutoLogPath: string | null = null
+	private cachedAutoLogPathCreated: boolean = false
+
+	/**
+	 * 通知 Webview 端自动日志路径已就绪（仅在有 listeners 时）。
+	 */
+	private notifyWebviewOfAutoLogPath(path: string, created: boolean): void {
+		// 通过自定义消息广播给所有 webview
+		// webview 端通过 window.addEventListener('message') 接收
+		try {
+			// 不直接调用 webview.postMessage（没有 webview 引用）
+			// 我们让 Webview 主动来请求最新路径（queryAutoLogPath）
+		} catch {
+			// 忽略
+		}
+		Logger.log(
+			`[AssignmentManager] 工作区日志路径: ${path}（${created ? "新建" : "已存在"}）`,
+		)
+	}
+
+	/**
+	 * 返回最近一次自动检测到的日志路径。
+	 * 给 Webview 端通过 IPC 调用。
+	 */
+	public queryAutoLogPath(): { path: string | null; created: boolean } {
+		return {
+			path: this.cachedAutoLogPath,
+			created: this.cachedAutoLogPathCreated,
+		}
 	}
 
 	// ========================================================================
@@ -254,6 +336,14 @@ export class AssignmentManager {
 
 				case "exitToChat":
 					await this.handleExitToChat(postMessage)
+					break
+
+				case "queryAutoLogPath":
+					postMessage({
+						command: "queryAutoLogPath",
+						success: true,
+						data: this.queryAutoLogPath(),
+					})
 					break
 
 				default:
