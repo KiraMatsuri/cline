@@ -83,7 +83,7 @@ export interface SubmissionPayload {
 
 /** Webview → Extension 的 IPC 消息协议 */
 export interface AssignmentMessage {
-	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "saveStudentInfo" | "exitToChat" | "queryAutoLogPath"
+	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "downloadAttachment" | "saveStudentInfo" | "exitToChat" | "queryAutoLogPath"
 	payload?: Record<string, unknown>
 }
 
@@ -317,6 +317,18 @@ export class AssignmentManager {
 				case "openFile": {
 					const filePath = typeof payload["filePath"] === "string" ? (payload["filePath"] as string) : ""
 					await this.handleOpenFile({ filePath }, postMessage)
+					break
+				}
+
+				case "downloadAttachment": {
+					const assignmentId = typeof payload["assignmentId"] === "string" ? (payload["assignmentId"] as string) : ""
+					const fileId = Number(payload["fileId"])
+					const originalName = typeof payload["originalName"] === "string" ? (payload["originalName"] as string) : ""
+					if (!assignmentId || !fileId) {
+						postMessage({ command: "downloadAttachment", success: false, error: "缺少附件下载参数" })
+						return
+					}
+					await this.handleDownloadAttachment({ assignmentId, fileId, originalName }, postMessage)
 					break
 				}
 
@@ -608,6 +620,99 @@ export class AssignmentManager {
 			const msg = error instanceof Error ? error.message : String(error)
 			vscode.window.showErrorMessage(`❌ 无法打开文件: ${msg}`)
 			postMessage({ command: "openFile", success: false, error: msg })
+		}
+	}
+
+	/**
+	 * 【附件下载】Webview 点击附件 → 从后端下载附件到本地工作区并打开。
+	 *
+	 * 背景：附件实际存储在 teaching-server 的 uploads/ 目录，学生本地工作区
+	 * 并没有该文件。此前把 original_name 当本地路径打开必然报"文件不存在"。
+	 * 现在改为通过后端下载接口
+	 *   GET /api/v1/assignments/:id/attachments/:fileId/download
+	 * 将附件保存到工作区根目录后，再在编辑器中打开。
+	 */
+	private async handleDownloadAttachment(
+		payload: { assignmentId: string; fileId: number; originalName?: string },
+		postMessage: (response: AssignmentResponse) => void,
+	): Promise<void> {
+		try {
+			const { assignmentId, fileId, originalName } = payload
+			if (!assignmentId || !fileId) {
+				throw new Error("缺少附件下载参数")
+			}
+
+			// ----- 校验工作区是否打开 -----
+			const workspaceFolders = vscode.workspace.workspaceFolders
+			if (!workspaceFolders || workspaceFolders.length === 0) {
+				throw new Error("未打开工作区，无法保存附件")
+			}
+			const workspaceRoot = workspaceFolders[0].uri.fsPath
+
+			// ----- 调用后端下载接口（返回二进制流） -----
+			const downloadUrl = `${this.apiBase}/api/v1/assignments/${encodeURIComponent(
+				assignmentId,
+			)}/attachments/${fileId}/download`
+			const response = await fetch(downloadUrl, {
+				method: "GET",
+			})
+			if (!response.ok) {
+				throw new Error(`附件下载失败: HTTP ${response.status}`)
+			}
+
+			// ----- 文件名解析 -----
+			// 优先使用 webview 传入的 originalName（任务列表中的原始文件名，中文正常）。
+			// 后端 res.download 的 Content-Disposition 对中文会做 latin1+UTF-8 双重编码
+			// （filename*=UTF-8''%C3%A5...），解析后反而是乱码，故仅作为兜底。
+			let fileName = originalName || ""
+			if (!fileName) {
+				const disposition = response.headers.get("content-disposition") ?? ""
+				const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+				const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
+				if (utf8Match) {
+					try {
+						fileName = decodeURIComponent(utf8Match[1])
+					} catch {
+						fileName = utf8Match[1]
+					}
+				} else if (plainMatch) {
+					fileName = plainMatch[1]
+				}
+			}
+			if (!fileName) {
+				fileName = `attachment_${fileId}`
+			}
+			// 文件名安全过滤（防止路径穿越）
+			const safeFileName = path.basename(fileName).replace(/[\\/:*?"<>|]/g, "_")
+
+			// ----- 写入工作区根目录 -----
+			const targetPath = path.join(workspaceRoot, safeFileName)
+			const buffer = Buffer.from(await response.arrayBuffer())
+			fs.writeFileSync(targetPath, buffer)
+
+			// ----- 打开文件（PDF 等二进制用 showTextDocument 可能乱码，走系统默认应用） -----
+			const uri = vscode.Uri.file(targetPath)
+			const isTextLike =
+				/\.(txt|md|py|js|ts|json|c|cpp|h|java|html|css|xml|yml|yaml|log|sql|sh)$/i.test(
+					safeFileName,
+				)
+			if (isTextLike) {
+				const document = await vscode.workspace.openTextDocument(uri)
+				await vscode.window.showTextDocument(document, { preview: false })
+			} else {
+				await vscode.commands.executeCommand("vscode.open", uri)
+			}
+
+			vscode.window.showInformationMessage(`📄 已下载附件: ${safeFileName}`)
+			postMessage({
+				command: "downloadAttachment",
+				success: true,
+				data: { filePath: targetPath, fileName: safeFileName },
+			})
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error)
+			vscode.window.showErrorMessage(`❌ 下载附件失败: ${msg}`)
+			postMessage({ command: "downloadAttachment", success: false, error: msg })
 		}
 	}
 

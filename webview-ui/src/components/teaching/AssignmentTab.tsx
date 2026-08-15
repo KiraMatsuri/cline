@@ -802,12 +802,16 @@ const AssignmentTab: FC = () => {
 										if (!vscodeApi) return
 										vscodeApi.postMessage({
 											type: "assignment_command",
-											command: "openFile",
-											payload: { filePath: file.original_name },
+											command: "downloadAttachment",
+											payload: {
+												assignmentId: selectedTask.id,
+												fileId: file.id,
+												originalName: file.original_name,
+											},
 										})
 									}}
 									style={styles.attachmentItem}
-									title="单击在编辑器中打开（开发阶段需配合完整路径）">
+									title="单击从服务器下载附件到工作区并打开">
 									📄 {file.original_name} ({formatFileSize(file.file_size)})
 								</div>
 							))}
