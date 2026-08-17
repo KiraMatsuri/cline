@@ -53,6 +53,8 @@ export interface ExtensionState {
 	clineMessages: ClineMessage[]
 	currentTaskItem?: HistoryItem
 	currentFocusChainChecklist?: string | null
+	/** 【教学】阻隔式干预状态（用于顶部实时倒计时）：active=true 表示处于阻断冷却中，endsAt 为冷却结束时间戳(ms) */
+	teachingBlocking?: { active: boolean; endsAt: number } | null
 	mcpMarketplaceEnabled?: boolean
 	mcpDisplayMode: McpDisplayMode
 	planActSeparateModelsSetting: boolean

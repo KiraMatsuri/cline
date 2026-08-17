@@ -1,22 +1,22 @@
 {
-	"name": "claude-dev",
-	"displayName": "Cline",
-	"description": "Autonomous coding agent right in your IDE, capable of creating/editing files, running commands, using the browser, and more with your permission every step of the way.",
-	"version": "3.53.1",
+	"name": "student-cline",
+	"displayName": "学生端 Cline（教学版）",
+	"description": "面向编程教学的学生端 AI 编程助手：实验任务管理、行为分析、LLM 答疑（基于 Cline 的教学定制版）",
+	"version": "1.0.0",
 	"icon": "assets/icons/icon.png",
 	"engines": {
 		"vscode": "^1.84.0"
 	},
 	"author": {
-		"name": "Cline Bot Inc."
+		"name": "KiraMatsuri"
 	},
 	"license": "Apache-2.0",
-	"publisher": "saoudrizwan",
+	"publisher": "MagicTeatime",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/cline/cline"
+		"url": "https://github.com/KiraMatsuri/cline"
 	},
-	"homepage": "https://cline.bot",
+	"homepage": "https://github.com/KiraMatsuri/cline",
 	"categories": [
 		"AI",
 		"Chat",
@@ -27,17 +27,15 @@
 	],
 	"keywords": [
 		"cline",
-		"claude",
-		"dev",
-		"mcp",
-		"openrouter",
+		"teaching",
+		"education",
+		"student",
 		"coding",
 		"agent",
-		"autonomous",
-		"chatgpt",
-		"sonnet",
 		"ai",
-		"llama"
+		"python",
+		"experiment",
+		"learning"
 	],
 	"activationEvents": [
 		"onLanguage",
@@ -385,12 +383,12 @@
 					"default": "http://localhost:4001",
 					"description": "实验任务后端 API 基础地址（教学辅助功能，方案 B 通过 VS Code 配置注入）",
 					"scope": "machine",
-					"pattern": "^https?://.*:\\d+$",
-					"patternErrorMessage": "必须是形如 http(s)://host:port 的 URL"
+					"pattern": "^https?://[^\\s]+$",
+					"patternErrorMessage": "必须是形如 http(s)://host[:port] 的 URL（不带端口默认 80）"
 				},
 				"teaching.studentInfo": {
 					"type": "object",
-					"description": "学生信息（学号/姓名/班级），由插件内的【实验任务】设置面板写入。",
+					"description": "学生信息（学号/姓名/班级），由插件内的【实验任务】设置面板写入并持久化。",
 					"scope": "machine",
 					"properties": {
 						"studentId": {
@@ -404,6 +402,10 @@
 						"classId": {
 							"type": "string",
 							"description": "班级"
+						},
+						"logFilePath": {
+							"type": "string",
+							"description": "学生工作区行为日志文件路径（JSONL）"
 						}
 					},
 					"additionalProperties": false
@@ -413,8 +415,8 @@
 					"default": "http://localhost:4001",
 					"description": "教学辅助后端 API 地址（Wiki 资料库与实验任务）",
 					"scope": "machine",
-					"pattern": "^https?://.*:\\d+$",
-					"patternErrorMessage": "必须是形如 http(s)://host:port 的 URL"
+					"pattern": "^https?://[^\\s]+$",
+					"patternErrorMessage": "必须是形如 http(s)://host[:port] 的 URL（不带端口默认 80）"
 				},
 				"clineTeaching.currentWeek": {
 					"type": "number",

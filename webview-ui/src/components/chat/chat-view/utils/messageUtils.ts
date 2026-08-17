@@ -69,6 +69,9 @@ export function filterVisibleMessages(messages: ClineMessage[]): ClineMessage[] 
 			case "api_req_retried": // this message is used to update the latest api_req_started that the request was retried
 			case "deleted_api_reqs": // aggregated api_req metrics from deleted messages
 			case "task_progress": // task progress messages are displayed in TaskHeader, not in main chat
+			// 【教学】默认隐藏思考链：在源头过滤 reasoning 消息，
+			// 覆盖独立 Thinking 行、工具组 tooltip、浏览器会话分组等多条渲染路径
+			case "reasoning":
 				return false
 			// NOTE: reasoning passes through to be included in tool groups
 			case "api_req_started":

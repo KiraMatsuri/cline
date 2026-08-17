@@ -1,38 +1,38 @@
 import { COMMAND_OUTPUT_STRING } from "@shared/combineCommandSequences"
 import {
-	ClineApiReqInfo,
-	ClineAskQuestion,
-	ClineAskUseMcpServer,
-	ClineMessage,
-	ClinePlanModeResponse,
-	ClineSayGenerateExplanation,
-	ClineSayTool,
-	COMPLETION_RESULT_CHANGES_FLAG,
+    ClineApiReqInfo,
+    ClineAskQuestion,
+    ClineAskUseMcpServer,
+    ClineMessage,
+    ClinePlanModeResponse,
+    ClineSayGenerateExplanation,
+    ClineSayTool,
+    COMPLETION_RESULT_CHANGES_FLAG,
 } from "@shared/ExtensionMessage"
 import { BooleanRequest, StringRequest } from "@shared/proto/cline/common"
 import { Mode } from "@shared/storage/types"
 import deepEqual from "fast-deep-equal"
 import {
-	ArrowRightIcon,
-	BellIcon,
-	CheckIcon,
-	CircleSlashIcon,
-	CircleXIcon,
-	FileCode2Icon,
-	FilePlus2Icon,
-	FoldVerticalIcon,
-	ImageUpIcon,
-	LightbulbIcon,
-	Link2Icon,
-	LoaderCircleIcon,
-	PencilIcon,
-	RefreshCwIcon,
-	SearchIcon,
-	SettingsIcon,
-	SquareArrowOutUpRightIcon,
-	SquareMinusIcon,
-	TerminalIcon,
-	TriangleAlertIcon,
+    ArrowRightIcon,
+    BellIcon,
+    CheckIcon,
+    CircleSlashIcon,
+    CircleXIcon,
+    FileCode2Icon,
+    FilePlus2Icon,
+    FoldVerticalIcon,
+    ImageUpIcon,
+    LightbulbIcon,
+    Link2Icon,
+    LoaderCircleIcon,
+    PencilIcon,
+    RefreshCwIcon,
+    SearchIcon,
+    SettingsIcon,
+    SquareArrowOutUpRightIcon,
+    SquareMinusIcon,
+    TerminalIcon,
+    TriangleAlertIcon,
 } from "lucide-react"
 import { MouseEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSize } from "react-use"
@@ -59,7 +59,6 @@ import QuoteButton from "./QuoteButton"
 import ReportBugPreview from "./ReportBugPreview"
 import { RequestStartRow } from "./RequestStartRow"
 import SearchResultsDisplay from "./SearchResultsDisplay"
-import { ThinkingRow } from "./ThinkingRow"
 import UserMessage from "./UserMessage"
 
 // State type for api_req_started rendering
@@ -840,6 +839,7 @@ export const ChatRowContent = memo(
 								isExpanded={isExpanded}
 								message={message}
 								mode={mode}
+								// 【教学】默认隐藏思考链：MessageRenderer 恒传 undefined，不展示 api_req_started 的推理内容
 								reasoningContent={reasoningContent}
 								responseStarted={responseStarted}
 							/>
@@ -881,15 +881,8 @@ export const ChatRowContent = memo(
 						)
 					}
 					case "reasoning": {
-						return (
-							<ThinkingRow
-								isExpanded={isExpanded}
-								isVisible={true}
-								onToggle={handleToggle}
-								reasoningContent={message.text}
-								showTitle={true}
-							/>
-						)
+						// 【教学】默认隐藏思考链：不渲染推理过程
+						return <InvisibleSpacer />
 					}
 					case "user_feedback":
 						return (

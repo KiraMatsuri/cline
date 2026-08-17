@@ -16,21 +16,22 @@ import { Navbar } from "../menu/Navbar"
 import AutoApproveBar from "./auto-approve-menu/AutoApproveBar"
 // Import utilities and hooks from the new structure
 import {
-	ActionButtons,
-	CHAT_CONSTANTS,
-	ChatLayout,
-	convertHtmlToMarkdown,
-	filterVisibleMessages,
-	groupLowStakesTools,
-	groupMessages,
-	InputSection,
-	MessagesArea,
-	TaskSection,
-	useChatState,
-	useMessageHandlers,
-	useScrollBehavior,
-	WelcomeSection,
+    ActionButtons,
+    CHAT_CONSTANTS,
+    ChatLayout,
+    convertHtmlToMarkdown,
+    filterVisibleMessages,
+    groupLowStakesTools,
+    groupMessages,
+    InputSection,
+    MessagesArea,
+    TaskSection,
+    useChatState,
+    useMessageHandlers,
+    useScrollBehavior,
+    WelcomeSection,
 } from "./chat-view"
+import { TeachingBlockingBanner } from "./TeachingBlockingBanner"
 
 interface ChatViewProps {
 	isHidden: boolean
@@ -343,6 +344,8 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar />}
+				{/* 【教学】阻隔式干预时在顶部 tab 栏下方实时显示倒计时 */}
+				<TeachingBlockingBanner />
 				{task ? (
 					<TaskSection
 						apiMetrics={apiMetrics}

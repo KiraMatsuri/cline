@@ -100,7 +100,7 @@ export function ServerSettingsButton() {
 							type="text"
 							value={draftUrl}
 						/>
-						<p style={hintStyle}>格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
+						<p style={hintStyle}>格式：http(s)://host[:port]（不带端口则默认 80；与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
 						<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
 							<button
 								disabled={saving}

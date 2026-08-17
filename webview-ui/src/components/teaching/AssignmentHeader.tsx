@@ -205,7 +205,7 @@ const AssignmentHeader: FC = () => {
 					type="text"
 					value={draftUrl}
 				/>
-				<p style={styles.hint}>格式：http(s)://host:port（与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
+				<p style={styles.hint}>格式：http(s)://host[:port]（不带端口则默认 80；与 VS Code 配置 clineTeaching.serverUrl 同源）</p>
 				<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
 					<button onClick={() => setModalVisible(false)} style={{ ...styles.button, ...styles.secondaryButton }}>
 						取消

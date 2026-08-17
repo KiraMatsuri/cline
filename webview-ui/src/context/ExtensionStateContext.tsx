@@ -15,15 +15,15 @@ import { fromProtobufModels } from "@shared/proto-conversions/models/typeConvers
 import type React from "react"
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
 import {
-	basetenDefaultModelId,
-	basetenModels,
-	groqDefaultModelId,
-	groqModels,
-	type ModelInfo,
-	openRouterDefaultModelId,
-	openRouterDefaultModelInfo,
-	requestyDefaultModelId,
-	requestyDefaultModelInfo,
+    basetenDefaultModelId,
+    basetenModels,
+    groqDefaultModelId,
+    groqModels,
+    type ModelInfo,
+    openRouterDefaultModelId,
+    openRouterDefaultModelInfo,
+    requestyDefaultModelId,
+    requestyDefaultModelInfo,
 } from "../../../src/shared/api"
 import { Environment } from "../../../src/shared/config-types"
 import type { McpMarketplaceCatalog, McpServer, McpViewTab } from "../../../src/shared/mcp"
@@ -295,6 +295,8 @@ export const ExtensionStateContextProvider: React.FC<{
 		nativeToolCallSetting: false,
 		enableParallelToolCalling: false,
 		behaviorMonitorEnabled: true,
+			// 【教学】阻隔式干预实时状态
+		teachingBlocking: null,
 	})
 	const [expandTaskHeader, setExpandTaskHeader] = useState(true)
 	const [didHydrateState, setDidHydrateState] = useState(false)

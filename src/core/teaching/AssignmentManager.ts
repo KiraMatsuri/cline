@@ -83,7 +83,7 @@ export interface SubmissionPayload {
 
 /** Webview → Extension 的 IPC 消息协议 */
 export interface AssignmentMessage {
-	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "downloadAttachment" | "saveStudentInfo" | "exitToChat" | "queryAutoLogPath"
+	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "downloadAttachment" | "saveStudentInfo" | "loadStudentInfo" | "exitToChat" | "queryAutoLogPath"
 	payload?: Record<string, unknown>
 }
 
@@ -106,14 +106,15 @@ export interface AssignmentResponse {
  *
  * 配置优先级（从高到低）：
  * 1. 通过 setApiBase() 显式注入（优先级最高）
- * 2. VS Code 用户/工作区配置 `teaching.apiBase`（用户在 Settings UI 中设置）
- * 3. 构造函数参数 apiBase 默认值（兜底）
+ * 2. VS Code 配置 `clineTeaching.serverUrl`（教学"服务器设置"面板，Wiki/答疑/实验任务共用）
+ * 3. 旧配置 `teaching.apiBase`（兼容旧版设置）
+ * 4. 构造函数参数 apiBase 默认值（兜底 http://localhost:4001）
  *
  * 推荐的调用方式：
  *   在插件 activate() 中创建 AssignmentManager 时，从 VS Code 配置加载：
  *     const manager = new AssignmentManager();
  *     manager.refreshApiBaseFromConfig();
- *   这样用户在 Settings 中改 teaching.apiBase 后，下次拉取/提交即生效。
+ *   这样用户在设置中修改 serverUrl / teaching.apiBase 后，下次拉取/提交即生效。
  *
  * 同时支持监听配置变更：
  *   manager.dispose() 会取消监听。
@@ -144,10 +145,21 @@ export class AssignmentManager {
 	}
 
 	/**
-	 * 从 VS Code 配置中读取 teaching.apiBase 并应用。
+	 * 从 VS Code 配置读取 API 地址并应用。
+	 * 【v2.6】与 LLMSettingsView 的"服务器设置"统一：优先 clineTeaching.serverUrl，
+	 * 回退 teaching.apiBase，避免"服务器设置改了但实验任务仍用 localhost"。
 	 * 应在插件 activation 时调用一次，之后可用 listenConfigChanges() 监听后续变更。
 	 */
 	public refreshApiBaseFromConfig(): void {
+		// ① 优先：clineTeaching.serverUrl（服务器设置面板，Wiki/答疑/实验任务共用）
+		const teachingCfg = vscode.workspace.getConfiguration("clineTeaching")
+		const serverUrl = teachingCfg.get<string>("serverUrl")
+		if (typeof serverUrl === "string" && serverUrl.trim()) {
+			this.apiBase = serverUrl.trim()
+			return
+		}
+
+		// ② 回退：旧配置 teaching.apiBase（兼容旧版）
 		const config = vscode.workspace.getConfiguration(AssignmentManager.CONFIG_SECTION)
 		const fromConfig = config.get<string>(AssignmentManager.CONFIG_API_BASE)
 		if (typeof fromConfig === "string" && fromConfig.trim()) {
@@ -164,7 +176,10 @@ export class AssignmentManager {
 			return // 已订阅，幂等保护
 		}
 		this.configWatcherDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
-			if (event.affectsConfiguration(`${AssignmentManager.CONFIG_SECTION}.${AssignmentManager.CONFIG_API_BASE}`)) {
+			const affected =
+				event.affectsConfiguration("clineTeaching.serverUrl") ||
+				event.affectsConfiguration(`${AssignmentManager.CONFIG_SECTION}.${AssignmentManager.CONFIG_API_BASE}`)
+			if (affected) {
 				const oldUrl = this.apiBase
 				this.refreshApiBaseFromConfig()
 				console.log(`[AssignmentManager] API base 由 ${oldUrl} 更新为 ${this.apiBase}`)
@@ -346,6 +361,21 @@ export class AssignmentManager {
 					break
 				}
 
+				// 【v2.6】查询已持久化的学生信息（webview 进入实验任务窗口时回填表单）
+				case "loadStudentInfo": {
+					try {
+						const info = await this.loadStudentInfo()
+						postMessage({ command: "loadStudentInfo", success: true, data: info })
+					} catch (error) {
+						postMessage({
+							command: "loadStudentInfo",
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+						})
+					}
+					break
+				}
+
 				case "exitToChat":
 					await this.handleExitToChat(postMessage)
 					break
@@ -456,12 +486,17 @@ export class AssignmentManager {
 				`📋 成功获取 ${assignments.length} 个实验任务。\n💡 双击某个任务项可创建对应的源码文件到当前工作区。`,
 			)
 		} catch (error) {
+			// 【诊断增强】展示当前生效的 apiBase + 具体网络错误（cause），
+			// 便于定位"配置未生效 / 端口不通 / 代理拦截"等问题
+			const cause = error instanceof Error && (error as { cause?: { code?: string; message?: string } }).cause
+			const causeDetail = cause ? (cause.code || cause.message || String(cause)) : ""
 			const msg = error instanceof Error ? error.message : String(error)
-			vscode.window.showErrorMessage(`❌ 获取实验任务失败: ${msg}`)
+			const detail = `${msg}${causeDetail ? ` (${causeDetail})` : ""} [apiBase=${this.apiBase}]`
+			vscode.window.showErrorMessage(`❌ 获取实验任务失败: ${detail}`)
 			postMessage({
 				command: "fetchAssignments",
 				success: false,
-				error: msg,
+				error: detail,
 			})
 		}
 	}

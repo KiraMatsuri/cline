@@ -1,6 +1,7 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { buildApiHandler } from "@core/api"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
+import { TeachingInterventionManager } from "@core/task/student-analytics"
 import { tryAcquireTaskLockWithRetry } from "@core/task/TaskLockUtils"
 import { detectWorkspaceRoots } from "@core/workspace/detection"
 import { setupWorkspaceManager } from "@core/workspace/setup"
@@ -893,6 +894,9 @@ export class Controller {
 			currentTaskItem,
 			clineMessages,
 			currentFocusChainChecklist: this.task?.taskState.currentFocusChainChecklist || null,
+			// 【教学】阻隔式干预实时状态（顶部倒计时组件读取）
+			// 【v2.7】优先读全局阻断状态：退出对话/新建对话后倒计时组件依然显示
+			teachingBlocking: TeachingInterventionManager.getGlobalBlockingState() ?? this.task?.getBlockingState() ?? null,
 			checkpointManagerErrorMessage,
 			autoApprovalSettings,
 			browserSettings,

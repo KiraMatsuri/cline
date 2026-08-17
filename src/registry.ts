@@ -1,6 +1,8 @@
 import { name, publisher, version } from "../package.json"
 
-const prefix = name === "claude-dev" ? "cline" : name
+// 【发布定制】固定使用 "cline" 前缀：命令 ID 与扩展名解耦，
+// 即使扩展 name/publisher 改为 student-cline / MagicTeatime，所有 cline.xxx 命令照常工作。
+const prefix = "cline"
 
 /**
  * List of commands with the name of the extension they are registered under.
@@ -36,7 +38,8 @@ const ClineCommands = {
  * These should match the name + view IDs defined in package.json.
  */
 const ClineViewIds = {
-	Sidebar: name + ".SidebarProvider",
+	// 固定与 package.json contributes 中注册的 view id 保持一致（不随扩展名变化）
+	Sidebar: "claude-dev.SidebarProvider",
 }
 
 /**

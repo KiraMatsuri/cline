@@ -37,7 +37,7 @@
  */
 
 import type { FC } from "react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { getVsCodeApiInstance } from "@/config/platform.config"
 
 // 【v2.3 改造】移除 AssignmentHeader（Wiki 进度感知区与其他按钮功能重复，已删除）
@@ -303,6 +303,14 @@ const AssignmentTab: FC = () => {
 	const [studentName, setStudentName] = useState("")
 	const [classId, setClassId] = useState("")
 	const [showStudentForm, setShowStudentForm] = useState(false)
+	// 【v2.6】已持久化的学生信息（进入窗口时回填，折叠区也能看到摘要）
+	const [savedStudentInfo, setSavedStudentInfo] = useState<{
+		studentId: string
+		studentName: string
+		classId: string
+	} | null>(null)
+	// 【v2.6】保存成功回调中闭包值可能过期，用 ref 缓存最新输入
+	const latestStudentInfoRef = useRef<{ studentId: string; studentName: string; classId: string } | null>(null)
 	// 【v2.5】学生工作区日志文件路径（JSONL），提交时附带。
 	// 初始为空；组件挂载时向后端请求"自动工作区日志路径"，
 	// 由后端在用户打开文件夹时自动创建 <root>/.cline-logs/student_interactions.log
@@ -350,6 +358,11 @@ const AssignmentTab: FC = () => {
 		cachedVsCodeApi.postMessage({
 			type: "assignment_command",
 			command: "queryAutoLogPath",
+		})
+		// 2) 【v2.6】进入实验任务窗口时，加载已持久化的学生信息并回填表单
+		cachedVsCodeApi.postMessage({
+			type: "assignment_command",
+			command: "loadStudentInfo",
 		})
 	}, [cachedVsCodeApi])
 
@@ -405,6 +418,10 @@ const AssignmentTab: FC = () => {
 					if (message.success) {
 						setStatusMessage({ type: "success", text: "✅ 学生信息已保存" })
 						setShowStudentForm(false)
+						const latest = latestStudentInfoRef.current
+						if (latest) {
+							setSavedStudentInfo(latest)
+						}
 					} else {
 						setStatusMessage({
 							type: "error",
@@ -412,6 +429,33 @@ const AssignmentTab: FC = () => {
 						})
 					}
 					break
+
+				// 【v2.6】加载已持久化学生信息 → 回填表单 + 折叠区摘要
+				case "loadStudentInfo": {
+					if (!message.success) {
+						break
+					}
+					const data = message.data as
+						| { studentId?: string; studentName?: string; classId?: string; logFilePath?: string }
+						| null
+						| undefined
+					if (data?.studentId && data?.studentName && data?.classId) {
+						setStudentId(data.studentId)
+						setStudentName(data.studentName)
+						setClassId(data.classId)
+						setSavedStudentInfo({
+							studentId: data.studentId,
+							studentName: data.studentName,
+							classId: data.classId,
+						})
+						if (data.logFilePath) {
+							setLogFilePath(data.logFilePath)
+						}
+					} else {
+						setSavedStudentInfo(null)
+					}
+					break
+				}
 
 				// 【v2.3 增量】createOneFile 响应处理
 				case "createOneFile":
@@ -580,6 +624,13 @@ const AssignmentTab: FC = () => {
 			return
 		}
 		if (!vscodeApi) return
+
+		// 【v2.6】缓存最新输入，供 saveStudentInfo 成功回调更新折叠区摘要
+		latestStudentInfoRef.current = {
+			studentId: studentId.trim(),
+			studentName: studentName.trim(),
+			classId: classId.trim(),
+		}
 
 		vscodeApi.postMessage({
 			type: "assignment_command",
@@ -896,6 +947,25 @@ const AssignmentTab: FC = () => {
 				}}>
 				{showStudentForm ? "▾ 收起学生信息设置" : "▸ 学生信息设置"}
 			</div>
+
+			{/* 【v2.6】已保存学生信息摘要（折叠状态下也能看到） */}
+			{savedStudentInfo && (
+				<div
+					style={{
+						fontSize: 11,
+						color: "var(--vscode-testing-iconPassed)",
+						padding: "2px 2px 6px 2px",
+						display: "flex",
+						alignItems: "center",
+						gap: 4,
+					}}>
+					<span>✅ 已保存：</span>
+					<span>
+						{savedStudentInfo.studentName}（学号 {savedStudentInfo.studentId}，班级{" "}
+						{savedStudentInfo.classId}）
+					</span>
+				</div>
+			)}
 
 			{showStudentForm && (
 				<div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>

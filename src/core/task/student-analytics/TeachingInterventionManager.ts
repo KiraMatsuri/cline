@@ -64,6 +64,14 @@ export class TeachingInterventionManager {
 	/** 最近一次阻断式干预消息（用于冷却期间展示提示） */
 	private lastBlockingIntervention: InterventionMessage | null = null
 
+	// ===================== 跨会话全局阻断状态 =====================
+	// 【v2.7】阻断状态提升为全局静态，防止学生"退出对话 → 新建对话"绕过 180s 锁定。
+	// 所有 Task/对话共享同一份阻断状态；阻断到期后自动清除。
+	/** 全局阻断冷却结束时间戳（0 = 无全局阻断） */
+	private static globalBlockingEndsAt = 0
+	/** 全局最近一次阻断干预消息（新建对话展示提醒用） */
+	private static globalLastBlockingIntervention: InterventionMessage | null = null
+
 	constructor(taskId: string, options?: InterventionManagerOptions) {
 		this.taskId = taskId
 		this.options = { ...DEFAULT_OPTIONS, ...options }
@@ -90,8 +98,13 @@ export class TeachingInterventionManager {
 			return null
 		}
 
-		// 检查阻断冷却是否仍在进行中
-		if (this.blockingActive && !this.isBlockingCooldownExpired()) {
+		// 检查阻断冷却是否仍在进行中（实例状态 + 全局跨会话状态）
+		// 【v2.7】新建对话后新 Task 无实例阻断状态，但全局阻断仍有效 → 继续拦截
+		const endsAt = this.getBlockingEndsAt()
+		if (endsAt > 0 && !this.isBlockingCooldownExpired()) {
+			// 同步实例状态（新任务用全局恢复）
+			this.blockingActive = true
+			this.blockingEndsAt = endsAt
 			const remaining = this.getBlockingRemainingSeconds()
 			Logger.info(
 				`[TeachingIntervention][${this.taskId}] blocking cooldown active (${remaining}s remaining), returning reminder`,
@@ -100,11 +113,13 @@ export class TeachingInterventionManager {
 			return this.getBlockingReminderMessage()
 		}
 
-		// 阻断冷却到期，重置阻断状态
-		if (this.blockingActive && this.isBlockingCooldownExpired()) {
+		// 阻断冷却到期，重置阻断状态（实例 + 全局）
+		if (endsAt > 0 && this.isBlockingCooldownExpired()) {
 			Logger.info(`[TeachingIntervention][${this.taskId}] blocking cooldown expired, releasing block`)
 			this.blockingActive = false
 			this.blockingEndsAt = 0
+			TeachingInterventionManager.globalBlockingEndsAt = 0
+			TeachingInterventionManager.globalLastBlockingIntervention = null
 		}
 
 		// 检查是否有待处理的警报
@@ -162,6 +177,10 @@ export class TeachingInterventionManager {
 			this.blockingActive = true
 			this.blockingEndsAt = Date.now() + this.options.blockingCooldownMs
 
+			// 【v2.7】同步全局阻断状态（退出/新建对话后仍生效）
+			TeachingInterventionManager.globalBlockingEndsAt = this.blockingEndsAt
+			TeachingInterventionManager.globalLastBlockingIntervention = intervention
+
 			// 保存阻断干预消息（用于冷却期间展示提醒）
 			this.lastBlockingIntervention = intervention
 
@@ -203,31 +222,46 @@ export class TeachingInterventionManager {
 	}
 
 	/**
-	 * 阻断冷却是否已过期
+	 * 阻断冷却是否已过期（基于实例 + 全局取较晚者）
 	 */
 	private isBlockingCooldownExpired(): boolean {
-		return Date.now() >= this.blockingEndsAt
+		return Date.now() >= this.getBlockingEndsAt()
 	}
 
 	/**
 	 * 获取阻断剩余秒数
 	 */
 	private getBlockingRemainingSeconds(): number {
-		return Math.max(0, Math.ceil((this.blockingEndsAt - Date.now()) / 1000))
+		return Math.max(0, Math.ceil((this.getBlockingEndsAt() - Date.now()) / 1000))
 	}
 
 	/**
 	 * 检查当前是否处于阻断激活状态
+	 * 【v2.7】实例状态或全局跨会话状态任一激活即视为激活
 	 */
 	public isBlockingActive(): boolean {
-		return this.blockingActive && !this.isBlockingCooldownExpired()
+		if (this.blockingActive && !this.isBlockingCooldownExpired()) {
+			return true
+		}
+		return TeachingInterventionManager.globalBlockingEndsAt > Date.now()
 	}
 
 	/**
-	 * 获取阻断冷却结束时间戳
+	 * 获取阻断冷却结束时间戳（实例与全局取较晚者，全局跨会话延续）
 	 */
 	public getBlockingEndsAt(): number {
-		return this.blockingEndsAt
+		return Math.max(this.blockingEndsAt, TeachingInterventionManager.globalBlockingEndsAt)
+	}
+
+	/**
+	 * 跨会话获取全局阻断状态（供 Controller 倒计时组件读取，无需 Task 实例）。
+	 * 即使当前无任务（用户退出对话），只要全局阻断未过期即返回状态。
+	 */
+	public static getGlobalBlockingState(): { active: boolean; endsAt: number } | null {
+		if (TeachingInterventionManager.globalBlockingEndsAt > Date.now()) {
+			return { active: true, endsAt: TeachingInterventionManager.globalBlockingEndsAt }
+		}
+		return null
 	}
 
 	/**
@@ -239,9 +273,11 @@ export class TeachingInterventionManager {
 		const seconds = remaining % 60
 		const timeDisplay = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
 
-		if (this.lastBlockingIntervention) {
+		// 【v2.7】实例无阻断消息时回退到全局（新建对话场景）
+		const lastIntervention = this.lastBlockingIntervention ?? TeachingInterventionManager.globalLastBlockingIntervention
+		if (lastIntervention) {
 			return [
-				`<teaching_intervention rule="${this.lastBlockingIntervention.ruleId}" severity="strong" style="blocking" interventionType="blocking">`,
+				`<teaching_intervention rule="${lastIntervention.ruleId}" severity="strong" style="blocking" interventionType="blocking">`,
 				`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】`,
 				"",
 				"系统仍处于阻断模式。代码生成与工具执行功能暂不可用。",

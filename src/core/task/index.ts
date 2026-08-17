@@ -953,6 +953,20 @@ export class Task {
 	}
 
 	/**
+	 * 【教学】获取当前阻隔式干预状态，供 webview 顶部实时倒计时组件使用。
+	 * @returns 处于阻断冷却中返回 { active: true, endsAt }，否则返回 null
+	 */
+	public getBlockingState(): { active: boolean; endsAt: number } | null {
+		const interventionManager = this.getInterventionManager()
+		if (!interventionManager) {
+			return null
+		}
+		return interventionManager.isBlockingActive()
+			? { active: true, endsAt: interventionManager.getBlockingEndsAt() }
+			: null
+	}
+
+	/**
 	 * 旁路上报行为事件（不阻塞主流程）
 	 */
 	private monitorBehavior(log: StudentInteractionLog): void {
@@ -2228,6 +2242,16 @@ export class Task {
 			Logger.warn("[Task] Wiki RAG 注入失败，使用原 systemPrompt:", e)
 		}
 
+		// 【教学】默认隐藏思考链：在最终 system prompt 上追加约束，
+		// 要求模型不输出任何思考过程/思维链/推理步骤，直接给出最终回答。
+		// （即使模型没有独立的 reasoning 通道、把思考写进正文，也能被此约束抑制。）
+		systemPromptFinal =
+			systemPromptFinal +
+			"\n\n【教学约束】\n" +
+			"- 你的回复中不得出现任何思考过程、思维链、推理步骤或内部想法的文字。\n" +
+			"- 不要以我在思考、首先、其次等表述来复述推理过程。\n" +
+			"- 直接、简洁地给出最终答案与必要的解释即可。"
+
 		const contextManagementMetadata = await this.contextManager.getNewContextMessagesAndMetadata(
 			this.messageStateHandler.getApiConversationHistory(),
 			this.messageStateHandler.getClineMessages(),
@@ -3045,14 +3069,9 @@ export class Task {
 								redacted_data: chunk.redacted_data,
 							})
 
-							// fixes bug where cancelling task > aborts task > for loop may be in middle of streaming reasoning > say function throws error before we get a chance to properly clean up and cancel the task.
-							if (!this.taskState.abort) {
-								const thinkingBlock = reasonsHandler.getCurrentReasoning()
-								if (thinkingBlock?.thinking && chunk.reasoning) {
-									await this.say("reasoning", thinkingBlock.thinking, undefined, undefined, true)
-								}
-							}
-
+							// 【教学】默认隐藏思考链：不再通过 say("reasoning", ...) 把模型的
+							// 推理过程推送给 webview 显示。reasonsHandler 内部状态仍正常维护，
+							// 推理内容照常进入 API 请求上下文，只是学生端 UI 不再展示。
 							break
 						}
 						case "tool_calls": {
@@ -3078,12 +3097,8 @@ export class Task {
 							break
 						}
 						case "text": {
-							// If we have reasoning content, finalize it before processing text (only once)
-							const currentReasoning = reasonsHandler.getCurrentReasoning()
-							if (currentReasoning?.thinking && assistantMessage.length === 0) {
-								// Complete the reasoning message (only once)
-								await this.say("reasoning", currentReasoning.thinking, undefined, undefined, false)
-							}
+							// 【教学】默认隐藏思考链：禁用"完成 reasoning 消息"逻辑，
+							// 不再推送模型的推理内容到 UI（reasonsHandler 状态不受影响）。
 							if (chunk.signature) {
 								assistantTextSignature = chunk.signature
 							}
