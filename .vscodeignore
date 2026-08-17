@@ -21,6 +21,10 @@ eslint-rules/**
 .github/**
 .husky/**
 .env
+.venv/
+**/.venv/**
+.cline-logs/
+.cline/
 
 # cli
 cli/**
