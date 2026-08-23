@@ -33,13 +33,14 @@ import { HookDiscoveryCache } from "./core/hooks/HookDiscoveryCache"
 import { HookProcessRegistry } from "./core/hooks/HookProcessRegistry"
 import { Task } from "./core/task"
 import { CodeEditTracker } from "./core/task/student-analytics/CodeEditTracker"
+import { PasteLimitManager } from "./core/teaching/PasteLimitManager"
 import { workspaceResolver } from "./core/workspace"
 import { findMatchingNotebookCell, getContextForCommand, showWebview } from "./hosts/vscode/commandUtils"
 import { abortCommitGeneration, generateCommitMsg } from "./hosts/vscode/commit-message-generator"
 import { registerClineOutputChannel } from "./hosts/vscode/hostbridge/env/debugLog"
 import {
-    disposeVscodeCommentReviewController,
-    getVscodeCommentReviewController,
+	disposeVscodeCommentReviewController,
+	getVscodeCommentReviewController,
 } from "./hosts/vscode/review/VscodeCommentReviewController"
 import { VscodeTerminalManager } from "./hosts/vscode/terminal/VscodeTerminalManager"
 import { VscodeDiffViewProvider } from "./hosts/vscode/VscodeDiffViewProvider"
@@ -64,6 +65,12 @@ https://github.com/microsoft/vscode-webview-ui-toolkit-samples/tree/main/framewo
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export async function activate(context: vscode.ExtensionContext) {
+	// 【教学部署】关闭全局 TLS 证书校验：
+	// 学生端通过 https://<服务器IP> 访问教学后端，而证书是为域名签发的，
+	// Node 默认校验证书会因 IP 与证书不匹配而失败。教学内部部署关闭校验以便连接。
+	// ⚠️ 注意：这会让所有 HTTPS 请求跳过证书验证，仅适用于受控的教学环境。
+	process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+
 	setupHostProvider(context)
 
 	// Initialize hook discovery cache for performance optimization
@@ -91,6 +98,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	)
 
 	const webview = (await initialize(context)) as VscodeWebviewProvider
+
+	// 🚫 教学限制模式：编辑器粘贴限行（Ctrl/Cmd+V 拦截，未启用时零影响）
+	PasteLimitManager.register(context)
 
 	// Clean up old temp files in background (non-blocking) and start periodic cleanup every 24 hours
 	ClineTempManager.startPeriodicCleanup()

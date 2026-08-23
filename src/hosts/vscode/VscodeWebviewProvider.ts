@@ -29,6 +29,8 @@ export type WikiCommand =
 			apiKey: string
 			model: string
 			enableTools: boolean
+			/** 【v2.8】教学限制模式（可选，旧版前端不传） */
+			pasteLimit?: boolean
 	  }
 	| { type: "wiki_command"; command: "testLLMConnection"; baseUrl: string; apiKey: string; model: string }
 
@@ -320,7 +322,14 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 				case "saveLLMSettings": {
 					// 转发到 LLMSettingsViewProvider 的 _handleMessage（已经处理过）；
 					// 这里做兜底：如果消息没有先经过 LLMSettingsViewProvider，则直接写入 .env + 推送到后端
-					await this._proxyLLMSettings(msg.provider, msg.baseUrl, msg.apiKey, msg.model, msg.enableTools)
+					await this._proxyLLMSettings(
+						msg.provider,
+						msg.baseUrl,
+						msg.apiKey,
+						msg.model,
+						msg.enableTools,
+						typeof msg.pasteLimit === "boolean" ? msg.pasteLimit : undefined,
+					)
 					respond("saveLLMSettings", true)
 					return
 				}
@@ -361,12 +370,19 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		apiKey: string,
 		model: string,
 		enableTools: boolean,
+		pasteLimit?: boolean,
 	): Promise<void> {
+		// 【v2.8】教学限制模式：同步 VS Code 配置（键绑定生效开关）
+		if (typeof pasteLimit === "boolean") {
+			await vscode.workspace
+				.getConfiguration("clineTeaching")
+				.update("pasteLimitEnabled", pasteLimit, vscode.ConfigurationTarget.Global)
+		}
 		const url = `${LLMWikiService.getInstance().getServerUrl()}/api/v1/internal/llm-env`
 		await fetch(url, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ provider, baseUrl, apiKey, model, enableTools }),
+			body: JSON.stringify({ provider, baseUrl, apiKey, model, enableTools, pasteLimit }),
 		})
 	}
 

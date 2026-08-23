@@ -96,11 +96,11 @@ export const Navbar = () => {
 				</Tooltip>
 			))}
 
-			{/* 【v1.3 增量】周数选择器 —— 直接在主工具栏显示，可随时切换 */}
-			<WikiWeekSelector />
-
 			{/* 【v1.3 增量】服务器设置按钮 —— 点击弹出 Modal 修改 serverUrl */}
 			<ServerSettingsButton />
+
+			{/* 【v2.9.1】周数选择器 —— 移至服务器设置按钮右侧，顺序：tab图标 → 服务器设置 → 周数 */}
+			<WikiWeekSelector />
 		</nav>
 	)
 }

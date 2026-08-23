@@ -206,6 +206,59 @@ export class AssignmentManager {
 	}
 
 	/**
+	 * 【v2.7 网络稳定性】带自动重试的 fetch。
+	 *
+	 * 背景：热点 / 校园网等不稳定网络下，HTTPS 请求会间歇性 Connection reset
+	 * （未备案 IP 被运营商 DPI 概率性干扰），导致"获取任务有时成功有时失败"。
+	 * 这里对网络层错误（ECONNRESET / ECONNREFUSED / ETIMEDOUT 等）自动重试，
+	 * 最多 attempts 次，间隔按 2 的幂退避。
+	 * 非网络层错误（HTTP 4xx/5xx 等业务错误）不重试，直接返回响应 / 抛出。
+	 */
+	private async fetchWithRetry(
+		url: string,
+		init?: RequestInit,
+		options: { attempts?: number; retryDelayMs?: number } = {},
+	): Promise<Response> {
+		const attempts = options.attempts ?? 4 // 1 次原始请求 + 最多 3 次重试
+		const retryDelayMs = options.retryDelayMs ?? 800
+		let lastError: unknown
+
+		for (let attempt = 1; attempt <= attempts; attempt++) {
+			try {
+				const response = await fetch(url, init)
+				// 已拿到响应（无论 2xx/4xx/5xx），业务错误由调用方处理，不在此重试
+				return response
+			} catch (error) {
+				lastError = error
+				const causeCode = (error as { cause?: { code?: string } })?.cause?.code
+				const isNetworkError =
+					error instanceof TypeError &&
+					(typeof causeCode !== "string" ||
+						[
+							"ECONNRESET",
+							"ECONNREFUSED",
+							"ECONNABORTED",
+							"ETIMEDOUT",
+							"EPIPE",
+							"ENOTFOUND",
+							"UND_ERR_SOCKET",
+							"UND_ERR_CONNECT_TIMEOUT",
+						].includes(causeCode))
+
+				if (!isNetworkError || attempt >= attempts) {
+					throw error
+				}
+
+				// 退避等待后重试
+				const delay = retryDelayMs * Math.pow(2, attempt - 1)
+				await new Promise((resolve) => setTimeout(resolve, delay))
+			}
+		}
+
+		throw lastError
+	}
+
+	/**
 	 * 释放资源。卸载插件时调用。
 	 */
 	public dispose(): void {
@@ -445,8 +498,8 @@ export class AssignmentManager {
 	 */
 	private async handleFetchAssignments(postMessage: (response: AssignmentResponse) => void): Promise<void> {
 		try {
-			// ----- 调用后端 API 获取任务列表 -----
-			const response = await fetch(`${this.apiBase}/api/v1/assignments`, {
+			// ----- 调用后端 API 获取任务列表（带网络重试，缓解热点下间歇性 reset）-----
+			const response = await this.fetchWithRetry(`${this.apiBase}/api/v1/assignments`, {
 				method: "GET",
 				headers: { "Content-Type": "application/json" },
 			})
@@ -571,7 +624,7 @@ export class AssignmentManager {
 	 */
 	private async fetchAssignmentById(assignmentId: string): Promise<Assignment | undefined> {
 		try {
-			const response = await fetch(`${this.apiBase}/api/v1/assignments`, {
+			const response = await this.fetchWithRetry(`${this.apiBase}/api/v1/assignments`, {
 				method: "GET",
 				headers: { "Content-Type": "application/json" },
 			})
@@ -688,7 +741,7 @@ export class AssignmentManager {
 			const downloadUrl = `${this.apiBase}/api/v1/assignments/${encodeURIComponent(
 				assignmentId,
 			)}/attachments/${fileId}/download`
-			const response = await fetch(downloadUrl, {
+			const response = await this.fetchWithRetry(downloadUrl, {
 				method: "GET",
 			})
 			if (!response.ok) {
@@ -816,8 +869,8 @@ export class AssignmentManager {
 				submitted_at: new Date().toISOString(),
 			}
 
-			// ----- ⑤ POST 提交至云端后端 -----
-			const response = await fetch(`${this.apiBase}/api/v1/submissions`, {
+			// ----- ⑤ POST 提交至云端后端（带网络重试，缓解热点下间歇性 reset）-----
+			const response = await this.fetchWithRetry(`${this.apiBase}/api/v1/submissions`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(submissionPayload),

@@ -2,7 +2,7 @@
 	"name": "student-cline",
 	"displayName": "学生端 Cline（教学版）",
 	"description": "面向编程教学的学生端 AI 编程助手：实验任务管理、行为分析、LLM 答疑（基于 Cline 的教学定制版）",
-	"version": "1.0.0",
+	"version": "1.0.2",
 	"icon": "assets/icons/icon.png",
 	"engines": {
 		"vscode": "^1.84.0"
@@ -133,6 +133,11 @@
 		},
 		"commands": [
 			{
+				"command": "cline.teachingPasteWithLimit",
+				"title": "教学限制模式：粘贴（限 5 行）",
+				"category": "Cline"
+			},
+			{
 				"command": "cline.plusButtonClicked",
 				"title": "New Task",
 				"icon": "$(add)"
@@ -248,6 +253,12 @@
 			}
 		],
 		"keybindings": [
+			{
+				"command": "cline.teachingPasteWithLimit",
+				"key": "ctrl+v",
+				"mac": "cmd+v",
+				"when": "config.clineTeaching.pasteLimitEnabled && editorTextFocus && !editorReadonly"
+			},
 			{
 				"command": "editor.action.submitComment",
 				"key": "enter",
@@ -447,6 +458,12 @@
 					"type": "string",
 					"default": "",
 					"description": "v2.0：当前生效教材 ID（为空则不拉取教材章节）"
+				},
+				"clineTeaching.pasteLimitEnabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "教学限制模式：启用后编辑器内单次粘贴最多允许 5 行（超出拦截并提示）",
+					"scope": "machine"
 				}
 			}
 		}

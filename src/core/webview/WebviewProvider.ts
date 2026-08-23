@@ -81,11 +81,11 @@ export abstract class WebviewProvider {
 		// The CSS file from the React build output
 		const stylesUrl = this.getExtensionUrl("webview-ui", "build", "assets", "index.css")
 
-		// The codicon font from the React build output
-		// https://github.com/microsoft/vscode-extension-samples/blob/main/webview-codicons-sample/src/extension.ts
-		// we installed this package in the extension so that we can access it how its intended from the extension (the font file is likely bundled in vscode), and we just import the css fileinto our react app we don't have access to it
+		// The codicon font — 【v2.8】改从 webview 构建产物加载（scripts/copy-codicons.mjs 拷入），
+		// 不再引用 node_modules：vsce 打包时 node_modules/ 被整体排除，市场安装版字体 404
+		// 会导致全部 codicon 图标渲染异常。
 		// don't forget to add font-src ${webview.cspSource};
-		const codiconsUrl = this.getExtensionUrl("node_modules", "@vscode", "codicons", "dist", "codicon.css")
+		const codiconsUrl = this.getExtensionUrl("webview-ui", "build", "assets", "codicon.css")
 
 		// Use a nonce to only allow a specific script to be run.
 		/*
@@ -182,7 +182,8 @@ export abstract class WebviewProvider {
 
 		const nonce = getNonce()
 		const stylesUrl = this.getExtensionUrl("webview-ui", "build", "assets", "index.css")
-		const codiconsUrl = this.getExtensionUrl("node_modules", "@vscode", "codicons", "dist", "codicon.css")
+		// 【v2.8】与 getHtmlContent 同步：codicon 从构建产物加载
+		const codiconsUrl = this.getExtensionUrl("webview-ui", "build", "assets", "codicon.css")
 
 		const scriptEntrypoint = "src/main.tsx"
 		const scriptUrl = `http://${localServerUrl}/${scriptEntrypoint}`

@@ -49,6 +49,8 @@ export interface LLMSettings {
 	apiKey: string
 	model: string
 	enableTools: boolean
+	/** 【v2.8】教学限制模式：编辑器粘贴限行开关 */
+	pasteLimit?: boolean
 }
 
 /** 加载时回填的数据（不含 apiKey，只显示是否已配置） */
@@ -58,6 +60,8 @@ interface LLMSettingsStatus {
 	baseUrl?: string
 	model?: string
 	enableTools?: boolean
+	/** 【v2.8】教学限制模式回显 */
+	pasteLimit?: boolean
 	/** API Key 仅显示前 4 位 + 后 4 位，中间省略 */
 	apiKeyMasked?: string
 }
@@ -118,6 +122,8 @@ const LLMSettingsView: FC = () => {
 	const [baseUrl, setBaseUrl] = useState<string>(PRESET_MODELS[0].baseUrl)
 	const [apiKey, setApiKey] = useState<string>("")
 	const [enableTools, setEnableTools] = useState<boolean>(false)
+	// 【v2.8】教学限制模式：启用后编辑器单次粘贴最多 5 行
+	const [pasteLimit, setPasteLimit] = useState<boolean>(false)
 	const [testing, setTesting] = useState<boolean>(false)
 	const [saving, setSaving] = useState<boolean>(false)
 	const [testStatus, setTestStatus] = useState<"idle" | "success" | "fail">("idle")
@@ -153,6 +159,7 @@ const LLMSettingsView: FC = () => {
 				if (cfg.baseUrl) setBaseUrl(cfg.baseUrl)
 				if (cfg.apiKeyMasked) setApiKey(cfg.apiKeyMasked) // 仅做占位提示，不回填真值
 				if (typeof cfg.enableTools === "boolean") setEnableTools(cfg.enableTools)
+				if (typeof cfg.pasteLimit === "boolean") setPasteLimit(cfg.pasteLimit)
 			}
 		}
 		window.addEventListener("message", handler)
@@ -260,6 +267,7 @@ const LLMSettingsView: FC = () => {
 			apiKey,
 			model: selectedModelId,
 			enableTools,
+			pasteLimit,
 		})
 	}
 
@@ -269,6 +277,7 @@ const LLMSettingsView: FC = () => {
 		setBaseUrl(PRESET_MODELS[0].baseUrl)
 		setApiKey("")
 		setEnableTools(false)
+		setPasteLimit(false)
 		setTestStatus("idle")
 		setTestMessage("")
 	}
@@ -343,7 +352,7 @@ const LLMSettingsView: FC = () => {
 
 			<hr style={styles.divider} />
 
-			{/* 高级选项：工具调用答疑 */}
+			{/* 高级选项：工具调用答疑 + 教学限制模式（v2.8） */}
 			<Section title="⚙ 高级选项">
 				<label style={styles.toggleRow}>
 					<input
@@ -364,6 +373,28 @@ const LLMSettingsView: FC = () => {
 						<br />• 平均 token 消耗增加 30%~80%
 						<br />• 答疑延迟可能 +2~5 秒
 						<br />• 建议在"对比"、"综合"类提问时开启
+					</p>
+				</div>
+
+				<hr style={styles.divider} />
+
+				{/* 教学限制模式：编辑器粘贴限行 */}
+				<label style={styles.toggleRow}>
+					<input
+						checked={pasteLimit}
+						onChange={(e) => setPasteLimit(e.target.checked)}
+						style={{ marginRight: 8 }}
+						type="checkbox"
+					/>
+					<span style={{ fontWeight: 600 }}>教学限制模式：限制编辑器粘贴（单次最多 5 行）</span>
+				</label>
+				<div style={styles.toggleHint}>
+					<p>
+						开启后，VS Code 编辑器内单次粘贴超过 5 行会被拦截并提示（防整段拷贝代码/答案）。
+						仅影响编辑器内 Ctrl/⌘+V，关闭后立即恢复正常粘贴。
+					</p>
+					<p style={{ color: "var(--vscode-editorWarning-foreground)" }}>
+						⚠ 属软限制：拖放插入、外部编辑器、终端粘贴不受限。
 					</p>
 				</div>
 			</Section>
