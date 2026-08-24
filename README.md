@@ -1,18 +1,8 @@
-# 学生端 Cline（教学版）
+# 学生端编程教学助手
 
-<p align="center"><b>面向编程教学的学生端 AI 编程助手</b><br/>实验任务 · 行为分析 · LLM 答疑 · 思考链隐藏 · 阻隔式干预</p>
+<p align="center"><b>面向高校编程教学的学生端 AI 助手</b><br/>实验任务 · 行为分析 · LLM 答疑 · 思考链隐藏 · 阻隔式干预</p>
 
-<div align="center">
-<table>
-<tbody>
-<td align="center">
-<a href="https://marketplace.visualstudio.com/items?itemName=MagicTeatime.student-cline" target="_blank"><strong>从 VS Marketplace 安装</strong></a>
-</td>
-</tbody>
-</table>
-</div>
-
-> 本扩展基于开源 [Cline](https://github.com/cline/cline)（Apache-2.0）进行教学定制，供课程实验环境中的学生使用，与教学辅助系统（教师端 Web、teaching-server、学情看板）打通。
+> 本扩展基于 Apache-2.0 开源项目二次开发，供课程实验环境中的学生使用，与教学辅助系统（教师端 Web、teaching-server、学情看板）打通。
 
 ---
 
@@ -33,7 +23,7 @@
 
 ### 🤖 LLM 答疑（可选）
 - 教师端配置 LLM（如 DeepSeek），支持 karpathy 式工具调用答疑
-- 与 Cline 主对话模型解耦，可按教学场景独立选模型
+- 与主对话模型解耦，可按教学场景独立选模型
 
 ### 🧠 教学干预与行为分析
 - **隐藏思考链**：默认不显示模型推理过程，引导学生独立思考
@@ -48,10 +38,10 @@
 ## 🚀 安装
 
 ### 方式一：VS Marketplace
-在 VS Code 扩展面板搜索 **`student-cline`** 或 **`学生端 Cline`** 安装。
+在 VS Code 扩展面板搜索 **`student-teaching-assistant`** 或 **`学生端编程教学助手`** 安装。
 
 ### 方式二：VSIX
-下载 `student-cline-<version>.vsix` → VS Code 扩展面板 → `...` → **从 VSIX 安装...**
+下载 `student-teaching-assistant-<version>.vsix` → VS Code 扩展面板 → `...` → **从 VSIX 安装...**
 
 ---
 
@@ -72,7 +62,7 @@
 
 ## 📖 使用流程（学生）
 
-1. 打开 VS Code，点击侧边栏 **Cline 图标** → 进入「实验任务」
+1. 打开 VS Code，点击侧边栏 **「学生编程助手」图标** → 进入「实验任务」
 2. 点击 **📥 获取实验任务**，从云端拉取任务列表
 3. **双击**某个任务项，自动创建对应源码文件到当前工作区
 4. 根据实验指导书 / 附件完成实验（可借助 AI 辅助）
@@ -84,7 +74,7 @@
 ## 🏗 架构
 
 ```
-学生端 Cline（本扩展）
+学生端编程教学助手（本扩展）
    │  HTTP (REST)
    ▼
 teaching-server（教学后端：Express + SQLite + LLM/OCR）
@@ -108,4 +98,4 @@ teaching-server（教学后端：Express + SQLite + LLM/OCR）
 
 ---
 
-*基于 [Cline](https://github.com/cline/cline)（© Cline Bot Inc.）定制。*
+*基于 [Cline](https://github.com/cline/cline)（© Cline Bot Inc.，Apache-2.0）二次开发，致谢原作者。*

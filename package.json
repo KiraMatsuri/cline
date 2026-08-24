@@ -1,7 +1,7 @@
 {
-	"name": "student-cline",
-	"displayName": "学生端 Cline（教学版）",
-	"description": "面向编程教学的学生端 AI 编程助手：实验任务管理、行为分析、LLM 答疑（基于 Cline 的教学定制版）",
+	"name": "student-teaching-assistant",
+	"displayName": "学生端编程教学助手",
+	"description": "面向高校编程教学的学生端 AI 助手：实验任务管理、学习行为分析、LLM 答疑、教学干预（教学定制版）",
 	"version": "1.0.2",
 	"icon": "assets/icons/icon.png",
 	"engines": {
@@ -26,7 +26,6 @@
 		"Testing"
 	],
 	"keywords": [
-		"cline",
 		"teaching",
 		"education",
 		"student",
@@ -109,7 +108,7 @@
 			"activitybar": [
 				{
 					"id": "claude-dev-ActivityBar",
-					"title": "Cline",
+					"title": "学生编程助手",
 					"icon": "assets/icons/icon.svg"
 				}
 			]
