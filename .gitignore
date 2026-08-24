@@ -4,7 +4,8 @@ dist-standalone
 node_modules
 tmp
 .vscode-test/
-*.vsix
+student-cline-1.0.0.vsix
+student-cline-1.0.1.vsix
 
 .DS_Store
 .idea
@@ -65,4 +66,3 @@ src/**/*.d.ts.map
 # ====================================================
 utputFormat
 *.code-workspace
-*.vsix

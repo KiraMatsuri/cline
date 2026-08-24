@@ -1,0 +1,55 @@
+# =============================================================================
+#  Marketplace 发布重试（v1.0.2 应急通道）
+#
+#  背景：发布者身份被 VSID Concurrency 限流（本地/服务器/换 PAT 均被拦），
+#  频繁重试会刷新封锁窗口。本工作流每 6 小时从 GitHub 美国 runner 做一次
+#  单发尝试（低频不刷配额），发布成功后自动变空跑。
+#
+#  使用前提（一次性）：
+#   1. 仓库 Settings → Secrets and variables → Actions → 新增 VSCE_PAT
+#      （Azure DevOps PAT，scope=Marketplace→Manage，org=MagicTeatime）
+#   2. 把 student-cline-1.0.2.vsix 提交到仓库根目录（发布成功后删除）
+#   3. push 后在 Actions 页面手动 Run once 验证，之后靠 cron 自动跑
+#
+#  发布成功后：删除本文件与仓库里的 vsix，恢复正常本地发布流程。
+# =============================================================================
+name: Marketplace publish retry
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "17 */6 * * *" # 每 6 小时一次（避开整点，降低撞车概率）
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check marketplace current version
+        id: check
+        run: |
+          RESPONSE=$(curl -s --max-time 30 \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json;api-version=3.0-preview.1" \
+            -d '{"filters":[{"criteria":[{"filterType":7,"value":"MagicTeatime.student-cline"}]}],"flags":914}')
+          VER=$(echo "$RESPONSE" | jq -r '.results[0].extensions[0].versions[0].version // "none"' 2>/dev/null || echo "none")
+          echo "marketplace=$VER" >> "$GITHUB_OUTPUT"
+          echo "Marketplace current version: $VER"
+
+      - name: Already published — nothing to do
+        if: steps.check.outputs.marketplace == '1.0.2'
+        run: echo "✅ 1.0.2 already live on marketplace. You can delete this workflow now."
+
+      - name: Publish
+        if: steps.check.outputs.marketplace != '1.0.2'
+        run: |
+          ls -la student-cline-1.0.2.vsix
+          npx --yes @vscode/vsce@latest publish \
+            --packagePath student-cline-1.0.2.vsix \
+            --pat "${{ secrets.VSCE_PAT }}"
