@@ -92,10 +92,12 @@ teaching-server（教学后端：Express + SQLite + LLM/OCR）
 
 ---
 
-## 📄 许可证
+## 📄 许可证与开源声明
 
 [Apache-2.0](LICENSE)
 
----
+本项目基于开源项目 [Cline](https://github.com/cline/cline)（Apache-2.0）修改。
 
-*基于 [Cline](https://github.com/cline/cline)（© Cline Bot Inc.，Apache-2.0）二次开发，致谢原作者。*
+- 原项目版权 © 2025 Cline Bot Inc.，许可证全文见 [LICENSE](LICENSE)
+- 修改内容：面向高校编程教学的功能定制（实验任务管理、学习行为分析、LLM 答疑、教学干预、思考链隐藏等）
+- 修改后的本项目同样以 Apache-2.0 发布
