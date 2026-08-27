@@ -9,7 +9,6 @@ import SettingsView from "./components/settings/SettingsView"
 import { AssignmentErrorBoundary } from "./components/teaching/AssignmentErrorBoundary"
 import AssignmentTab from "./components/teaching/AssignmentTab"
 import LLMSettingsView from "./components/teaching/LLMSettingsView"
-import WelcomeView from "./components/welcome/WelcomeView"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
 import { useExtensionState } from "./context/ExtensionStateContext"
@@ -50,7 +49,6 @@ const AppContent = () => {
 		showAnnouncement,
 		showTeaching,
 		setShowTeaching,
-		onboardingModels,
 		setShowAnnouncement,
 		setShouldShowAnnouncement,
 		closeMcpView,
@@ -84,7 +82,8 @@ const AppContent = () => {
 	}
 
 	if (showWelcome) {
-		return onboardingModels ? <OnboardingView onboardingModels={onboardingModels} /> : <WelcomeView />
+		// v1.0.3 教学版：Onboarding 不再依赖云端模型列表（去 Cline 账号路线，仅 BYOK 配置）
+		return <OnboardingView />
 	}
 
 	return (

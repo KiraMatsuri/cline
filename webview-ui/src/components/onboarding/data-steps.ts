@@ -1,54 +1,28 @@
-export enum NEW_USER_TYPE {
-	FREE = "free",
-	POWER = "power",
-	BYOK = "byok",
-}
+/**
+ * Onboarding 流程配置（v1.0.3 教学版重写）
+ *
+ * 【改动】去除 Cline 品牌与官方账号登录（FREE/POWER 路线全部移除），
+ * 仅保留 BYOK（自带 API Key）配置路线，供学生填写课程提供的 AI 服务。
+ *
+ * 流程：step 0 欢迎页 → step 1 API 配置 → 完成
+ */
 
-type UserTypeSelection = {
-	title: string
-	description: string
-	type: NEW_USER_TYPE
+export enum NEW_USER_TYPE {
+	BYOK = "byok",
 }
 
 export const STEP_CONFIG = {
 	0: {
-		title: "How will you use Cline?",
-		description: "Select an option below to get started.",
-		buttons: [
-			{ text: "Continue", action: "next", variant: "default" },
-			{ text: "Login to Cline", action: "signin", variant: "secondary" },
-		],
-	},
-	[NEW_USER_TYPE.FREE]: {
-		title: "Select a free model",
-		buttons: [
-			{ text: "Create my Account", action: "signup", variant: "default" },
-			{ text: "Back", action: "back", variant: "secondary" },
-		],
-	},
-	[NEW_USER_TYPE.POWER]: {
-		title: "Select your model",
-		buttons: [
-			{ text: "Create my Account", action: "signup", variant: "default" },
-			{ text: "Back", action: "back", variant: "secondary" },
-		],
+		title: "欢迎使用学生端编程教学助手",
+		description: "配置课程提供的 AI 服务后即可开始使用，全程数据保留在本地与课程服务器。",
+		buttons: [{ text: "开始配置", action: "next", variant: "default" }],
 	},
 	[NEW_USER_TYPE.BYOK]: {
-		title: "Configure your provider",
+		title: "配置 AI 服务",
+		description: "填写课程提供的 API 地址与密钥（OpenAI Compatible）。完成配置后即可开始实验。",
 		buttons: [
-			{ text: "Continue", action: "done", variant: "default" },
-			{ text: "Back", action: "back", variant: "secondary" },
+			{ text: "完成配置", action: "done", variant: "default" },
+			{ text: "返回", action: "back", variant: "secondary" },
 		],
 	},
-	2: {
-		title: "Almost there!",
-		description: "Complete account creation in your browser. Then come back here to finish up.",
-		buttons: [{ text: "Back", action: "back", variant: "secondary" }],
-	},
 } as const
-
-export const USER_TYPE_SELECTIONS: UserTypeSelection[] = [
-	{ title: "Absolutely Free", description: "Get started at no cost", type: NEW_USER_TYPE.FREE },
-	{ title: "Frontier Model", description: "Claude 4.5, GPT-5 Codex, etc", type: NEW_USER_TYPE.POWER },
-	{ title: "Bring my own API key", description: "Use Cline with your provider of choice", type: NEW_USER_TYPE.BYOK },
-]
