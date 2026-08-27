@@ -1,6 +1,6 @@
 {
 	"name": "student-teaching-assistant-edu",
-	"displayName": "学生端编程教学助手",
+	"displayName": "学生编程教学助手",
 	"description": "面向高校编程教学的学生端 AI 助手：实验任务管理、学习行为分析、LLM 答疑、教学干预（教学定制版）",
 	"version": "1.0.3",
 	"icon": "assets/icons/icon.png",

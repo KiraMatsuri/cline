@@ -1,4 +1,4 @@
-# 学生端编程教学助手
+# 学生编程教学助手
 
 <p align="center"><b>面向高校编程教学的学生端 AI 助手</b><br/>实验任务 · 行为分析 · LLM 答疑 · 思考链隐藏 · 阻隔式干预</p>
 
@@ -38,7 +38,7 @@
 ## 🚀 安装
 
 ### 方式一：VS Marketplace
-在 VS Code 扩展面板搜索 **`student-teaching-assistant-edu`** 或 **`学生端编程教学助手`** 安装。
+在 VS Code 扩展面板搜索 **`student-teaching-assistant-edu`** 或 **`学生编程教学助手`** 安装。
 
 ### 方式二：VSIX
 下载 `student-teaching-assistant-edu-<version>.vsix` → VS Code 扩展面板 → `...` → **从 VSIX 安装...**
