@@ -74,7 +74,7 @@
 ## 🏗 架构
 
 ```
-学生端编程教学助手（本扩展）
+学生编程教学助手（本扩展）
    │  HTTP (REST)
    ▼
 teaching-server（教学后端：Express + SQLite + LLM/OCR）
