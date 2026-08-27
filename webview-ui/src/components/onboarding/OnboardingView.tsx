@@ -14,6 +14,7 @@ import { AlertCircleIcon } from "lucide-react"
 import { useCallback, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { StateServiceClient } from "@/services/grpc-client"
 import ApiConfigurationSection from "../settings/sections/ApiConfigurationSection"
 import { NEW_USER_TYPE, STEP_CONFIG } from "./data-steps"
 
@@ -38,7 +39,10 @@ const OnboardingView = () => {
 					setStepNumber(stepNumber - 1)
 					break
 				case "done":
-					await setShowWelcome(false)
+					// 【v1.0.3 修复】必须先持久化 welcomeViewCompleted=true（扩展端全局状态），
+					// 否则每次状态刷新（如打开设置）都会重新弹出 onboarding
+					await StateServiceClient.setWelcomeViewCompleted({ value: true }).catch(() => {})
+					setShowWelcome(false)
 					await finishOnboarding()
 					break
 			}

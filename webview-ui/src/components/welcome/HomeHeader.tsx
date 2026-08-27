@@ -1,7 +1,4 @@
 import { EmptyRequest } from "@shared/proto/cline/common"
-import ClineLogoSanta from "@/assets/ClineLogoSanta"
-import ClineLogoVariable from "@/assets/ClineLogoVariable"
-import { useExtensionState } from "@/context/ExtensionStateContext"
 import { UiServiceClient } from "@/services/grpc-client"
 
 interface HomeHeaderProps {
@@ -9,8 +6,6 @@ interface HomeHeaderProps {
 }
 
 const HomeHeader = ({ shouldShowQuickWins = false }: HomeHeaderProps) => {
-	const { environment } = useExtensionState()
-
 	const handleTakeATour = async () => {
 		try {
 			await UiServiceClient.openWalkthrough(EmptyRequest.create())
@@ -19,17 +14,16 @@ const HomeHeader = ({ shouldShowQuickWins = false }: HomeHeaderProps) => {
 		}
 	}
 
-	// Check if it's December for festive logo
-	const isDecember = new Date().getMonth() === 11 // 11 = December (0-indexed)
-	const LogoComponent = isDecember ? ClineLogoSanta : ClineLogoVariable
-
 	return (
 		<div className="flex flex-col items-center mb-5">
-			<div className="my-7">
-				<LogoComponent className="size-20" environment={environment} />
+			{/* v1.0.3 教学版：品牌标识改为 </> 徽标（与市场图标风格一致，替代原 Cline 机器人 Logo） */}
+			<div
+				className="my-7 flex items-center justify-center rounded-3xl bg-button-background text-button-foreground font-bold"
+				style={{ width: 72, height: 72, fontSize: 28 }}>
+				{"</>"}
 			</div>
 			<div className="text-center flex items-center justify-center px-4">
-				<h1 className="m-0 font-bold">What can I do for you?</h1>
+				<h1 className="m-0 font-bold">今天想完成什么？</h1>
 			</div>
 			{shouldShowQuickWins && (
 				<div className="mt-4">
