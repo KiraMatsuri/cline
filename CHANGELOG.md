@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.0.3] — 学生编程教学助手（市场重发布版）
+
+> 市场标识变更：`ShiinaMatsuri.student-teaching-assistant-edu`，显示名「学生编程教学助手」。
+
+### Changed
+
+- **首次使用引导（onboarding）去品牌重构**：移除 Cline 官方 Logo、"How will you use Cline?"、Login to Cline / Create my Account 账号路线与 cline.bot OAuth——仅保留 API 自助配置路线（BYOK），流程为「中文欢迎页 → API 配置 → 完成」；品牌标识改为 `</>` 徽标（与市场图标风格一致）
+- **主对话欢迎区去品牌**：Cline 机器人图标 → `</>` 徽标；"What can I do for you?" → 「今天想完成什么？」
+- **设置 About 页改版**：移除 Cline 社区/文档链接，改为教学版功能描述、使用帮助与开源声明（基于 Cline Apache-2.0 二次开发 + 版权致谢）
+- 扩展元数据全面去品牌（name/displayName/description/keywords/图标），README 同步更新
+
+### Fixed
+
+- **修复 onboarding 每次打开设置都重复弹出**：「完成配置」未持久化 `welcomeViewCompleted`，导致扩展端状态刷新时误判引导未完成；现已正确写入全局状态，仅首次安装时出现
+- 遥测上报（captureOnboardingProgress → cline.bot）移除，学生端不再向外部服务发送引导数据
+
 ## [1.0.2] — 学生端教学版
 
 ### Added
