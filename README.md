@@ -38,10 +38,10 @@
 ## 🚀 安装
 
 ### 方式一：VS Marketplace
-在 VS Code 扩展面板搜索 **`student-teaching-assistant`** 或 **`学生端编程教学助手`** 安装。
+在 VS Code 扩展面板搜索 **`student-teaching-assistant-edu`** 或 **`学生端编程教学助手`** 安装。
 
 ### 方式二：VSIX
-下载 `student-teaching-assistant-<version>.vsix` → VS Code 扩展面板 → `...` → **从 VSIX 安装...**
+下载 `student-teaching-assistant-edu-<version>.vsix` → VS Code 扩展面板 → `...` → **从 VSIX 安装...**
 
 ---
 

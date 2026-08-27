@@ -1,5 +1,5 @@
 {
-	"name": "student-teaching-assistant",
+	"name": "student-teaching-assistant-edu",
 	"displayName": "学生端编程教学助手",
 	"description": "面向高校编程教学的学生端 AI 助手：实验任务管理、学习行为分析、LLM 答疑、教学干预（教学定制版）",
 	"version": "1.0.3",
@@ -468,7 +468,7 @@
 		}
 	},
 	"scripts": {
-		"vscode:prepublish": "echo prepublish-skip",
+		"vscode:prepublish": "npm run package",
 		"compile": "npm run check-types && npm run lint && node esbuild.mjs",
 		"compile-standalone": "npm run check-types && npm run lint && node esbuild.mjs --standalone",
 		"compile-standalone-npm": "npm run protos && npm run protos-go && npm run check-types && npm run lint && node esbuild.mjs --standalone",
