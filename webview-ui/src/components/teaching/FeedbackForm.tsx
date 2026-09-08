@@ -139,9 +139,7 @@ const FeedbackForm: FC = () => {
 	return (
 		<div style={styles.container}>
 			<h2 style={styles.title}>📝 问题反馈</h2>
-			<p style={styles.subtitle}>
-				发现 bug 或有改进建议？告诉我们。反馈提交至教学服务器，开发者会尽快查看处理。
-			</p>
+			<p style={styles.subtitle}>发现 bug 或有改进建议？告诉我们。反馈提交至教学服务器，开发者会尽快查看处理。</p>
 
 			<label style={styles.label}>反馈类型</label>
 			<div style={styles.categoryRow}>
@@ -186,9 +184,7 @@ const FeedbackForm: FC = () => {
 				value={studentId}
 			/>
 
-			<p style={styles.privacyHint}>
-				🔒 提交时自动附带插件版本与操作系统信息（仅用于定位问题），不收集其他数据。
-			</p>
+			<p style={styles.privacyHint}>🔒 提交时自动附带插件版本与操作系统信息（仅用于定位问题），不收集其他数据。</p>
 
 			{error && <div style={styles.errorNotice}>❌ {error}</div>}
 
@@ -196,10 +192,7 @@ const FeedbackForm: FC = () => {
 				<button onClick={onClose} style={{ ...styles.button, ...styles.secondaryButton }}>
 					取消
 				</button>
-				<button
-					disabled={submitting}
-					onClick={onSubmit}
-					style={{ ...styles.button, ...styles.primaryButton }}>
+				<button disabled={submitting} onClick={onSubmit} style={{ ...styles.button, ...styles.primaryButton }}>
 					{submitting ? "提交中..." : "提交反馈"}
 				</button>
 			</div>

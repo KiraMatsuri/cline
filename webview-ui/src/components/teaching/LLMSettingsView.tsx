@@ -398,8 +398,8 @@ const LLMSettingsView: FC = () => {
 				</label>
 				<div style={styles.toggleHint}>
 					<p>
-						开启后，VS Code 编辑器内单次粘贴超过 5 行会被拦截并提示（防整段拷贝代码/答案）。
-						仅影响编辑器内 Ctrl/⌘+V，关闭后立即恢复正常粘贴。
+						开启后，VS Code 编辑器内单次粘贴超过 5 行会被拦截并提示（防整段拷贝代码/答案）。 仅影响编辑器内
+						Ctrl/⌘+V，关闭后立即恢复正常粘贴。
 					</p>
 					<p style={{ color: "var(--vscode-editorWarning-foreground)" }}>
 						⚠ 属软限制：拖放插入、外部编辑器、终端粘贴不受限。

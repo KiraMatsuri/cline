@@ -60,17 +60,12 @@ export class FeedbackPanelProvider {
 			return
 		}
 
-		const panel = vscode.window.createWebviewPanel(
-			FeedbackPanelProvider.viewId,
-			"📝 问题反馈",
-			vscode.ViewColumn.Active,
-			{
-				enableScripts: true,
-				localResourceRoots: [this._extensionUri],
-				// 表单填写中途切换标签不丢已填内容（面板存续期间保留 webview 状态）
-				retainContextWhenHidden: true,
-			},
-		)
+		const panel = vscode.window.createWebviewPanel(FeedbackPanelProvider.viewId, "📝 问题反馈", vscode.ViewColumn.Active, {
+			enableScripts: true,
+			localResourceRoots: [this._extensionUri],
+			// 表单填写中途切换标签不丢已填内容（面板存续期间保留 webview 状态）
+			retainContextWhenHidden: true,
+		})
 		this._panel = panel
 
 		panel.webview.html = this._getHtmlForWebview(panel.webview)
