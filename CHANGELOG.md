@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]（待发 1.0.4）
+
+### Fixed
+
+- **服务器地址尾斜杠兼容**：用户在「服务器设置」填 `http://localhost:4001/`（尾斜杠）时，API 拼接产生 `//api/v1/...` 双斜杠路径导致 404。新增 `normalizeApiBase()` 归一化（去首尾空白 + 去尾斜杠），覆盖构造函数、配置读取、`setApiBase()` 全部赋值入口
+
 ## [1.0.3] — 学生编程教学助手（市场重发布版）
 
 > 市场标识变更：`ShiinaMatsuri.student-teaching-assistant-edu`，显示名「学生编程教学助手」。
