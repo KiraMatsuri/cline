@@ -8,6 +8,7 @@ import OnboardingView from "./components/onboarding/OnboardingView"
 import SettingsView from "./components/settings/SettingsView"
 import { AssignmentErrorBoundary } from "./components/teaching/AssignmentErrorBoundary"
 import AssignmentTab from "./components/teaching/AssignmentTab"
+import FeedbackForm from "./components/teaching/FeedbackForm"
 import LLMSettingsView from "./components/teaching/LLMSettingsView"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
@@ -33,6 +34,11 @@ const AppContent = () => {
 	// 【v1.3 增量】独立的 LLMSettingsView webview：跳过主侧边栏全部状态，直接渲染
 	if (currentView === "clineLLMSettings") {
 		return <LLMSettingsView />
+	}
+
+	// 【v2.9.2 增量】编辑器区反馈面板（FeedbackPanelProvider 创建）：全页反馈表单
+	if (currentView === "clineFeedbackPanel") {
+		return <FeedbackForm />
 	}
 
 	const {

@@ -12,7 +12,7 @@
  *   4. "测试连接"按钮 → POST /api/v1/internal/llm-test
  *   5. 工具调用答疑开关（karpathy 式）+ 说明文案
  *   6. "保存"按钮 → 写本地 ~/.cline/teaching-llm.env + 推送到后端
- *   7. 【v2.9】"问题反馈"按钮 → 弹窗提交 bug/建议 → POST /api/v1/feedback（开发者经 web 端 #/dev-feedback 查看）
+ *   7. 【v2.9.2】"问题反馈"按钮 → 在编辑器区（窗口正中）打开反馈面板（FeedbackForm），彻底避开侧栏高度限制
  *
  * 【数据流】
  *   学生填写 → postMessage({command: 'saveLLMSettings', ...})
@@ -104,13 +104,6 @@ const PRESET_MODELS: PresetModel[] = [
 	{ id: "custom", label: "自定义（手动填 baseUrl）", baseUrl: "" },
 ]
 
-/** 【v2.9】反馈类型选项（与 teaching-server FEEDBACK_CATEGORIES 对齐） */
-const FEEDBACK_CATEGORY_OPTIONS: { value: "bug" | "feature" | "other"; label: string }[] = [
-	{ value: "bug", label: "🐛 Bug 反馈" },
-	{ value: "feature", label: "💡 功能建议" },
-	{ value: "other", label: "📝 其他" },
-]
-
 /** 从 model id 推断 provider（用于 .env 的 TEACHING_LLM_PROVIDER 字段） */
 function inferProvider(modelId: string): string {
 	if (modelId.startsWith("gpt-")) return "openai"
@@ -138,13 +131,6 @@ const LLMSettingsView: FC = () => {
 	const [testMessage, setTestMessage] = useState<string>("")
 	const [savedNotice, setSavedNotice] = useState<string>("")
 	const [toolsConfirmVisible, setToolsConfirmVisible] = useState<boolean>(false)
-	// 【v2.9】问题反馈弹窗（提交至 teaching-server，开发者经 #/dev-feedback 查看）
-	const [feedbackVisible, setFeedbackVisible] = useState<boolean>(false)
-	const [feedbackCategory, setFeedbackCategory] = useState<"bug" | "feature" | "other">("bug")
-	const [feedbackContent, setFeedbackContent] = useState<string>("")
-	const [feedbackStudentId, setFeedbackStudentId] = useState<string>("")
-	const [feedbackSubmitting, setFeedbackSubmitting] = useState<boolean>(false)
-	const [feedbackError, setFeedbackError] = useState<string>("")
 
 	// ----- VS Code API -----
 	const getVsCodeApi = (): VsCodeApi | null => {
@@ -245,20 +231,6 @@ const LLMSettingsView: FC = () => {
 					setSavedNotice(`❌ 保存失败：${msg.error ?? "未知错误"}`)
 				}
 			}
-			// 【v2.9】反馈提交结果：成功 → 关弹窗+清空+全局提示；失败 → 弹窗内红字，内容保留
-			if (msg?.command === "submitFeedback") {
-				setFeedbackSubmitting(false)
-				if (msg.success) {
-					setFeedbackVisible(false)
-					setFeedbackContent("")
-					setFeedbackStudentId("")
-					setFeedbackError("")
-					setSavedNotice("📬 反馈已提交，感谢你的支持！")
-					setTimeout(() => setSavedNotice(""), 4000)
-				} else {
-					setFeedbackError(msg.error ?? "提交失败，请稍后重试")
-				}
-			}
 		}
 		window.addEventListener("message", handler)
 		return () => window.removeEventListener("message", handler)
@@ -311,27 +283,11 @@ const LLMSettingsView: FC = () => {
 		setTestMessage("")
 	}
 
-	// ----- 【v2.9】提交问题反馈（经插件主进程转发到 teaching-server） -----
-	const onSubmitFeedback = () => {
-		const text = feedbackContent.trim()
-		if (!text) {
-			setFeedbackError("请填写反馈内容")
-			return
-		}
+	// ----- 【v2.9.2】打开问题反馈（编辑器区面板，窗口正中） -----
+	const onOpenFeedback = () => {
 		const api = getVsCodeApi()
-		if (!api) {
-			setFeedbackError("VS Code API 不可用")
-			return
-		}
-		setFeedbackSubmitting(true)
-		setFeedbackError("")
-		api.postMessage({
-			type: "wiki_command",
-			command: "submitFeedback",
-			category: feedbackCategory,
-			content: text,
-			studentId: feedbackStudentId.trim(),
-		})
+		if (!api) return
+		api.postMessage({ type: "wiki_command", command: "openFeedback" })
 	}
 
 	// ----- 渲染 -----
@@ -464,14 +420,14 @@ const LLMSettingsView: FC = () => {
 			</div>
 			{savedNotice && <div style={styles.notice}>{savedNotice}</div>}
 
-			{/* 【v2.9】问题反馈入口 —— 反馈提交至开发者隐藏页（web 端 #/dev-feedback） */}
+			{/* 【v2.9.2】问题反馈入口 —— 在编辑器区（窗口正中）打开反馈面板，避开侧栏高度限制 */}
 			<hr style={styles.divider} />
 			<div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-				<button onClick={() => setFeedbackVisible(true)} style={{ ...styles.button, ...styles.secondaryButton }}>
+				<button onClick={onOpenFeedback} style={{ ...styles.button, ...styles.secondaryButton }}>
 					📝 问题反馈
 				</button>
 				<span style={{ fontSize: 11, color: "var(--vscode-descriptionForeground)" }}>
-					发现 bug 或有改进建议？告诉我们
+					发现 bug 或有改进建议？在窗口中心打开反馈表单
 				</span>
 			</div>
 
@@ -495,77 +451,6 @@ const LLMSettingsView: FC = () => {
 						</button>
 						<button onClick={confirmTools} style={{ ...styles.button, ...styles.primaryButton }}>
 							确认开启
-						</button>
-					</div>
-				</ResponsiveModal>
-			)}
-
-			{/* 【v2.9】问题反馈弹窗 —— ESC/遮罩关闭不丢已填内容；提交成功后自动清空 */}
-			{feedbackVisible && (
-				<ResponsiveModal maxWidth={480} onClose={() => setFeedbackVisible(false)} visible={feedbackVisible}>
-					<h3 style={{ marginTop: 0 }}>📝 问题反馈</h3>
-
-					<label style={styles.label}>反馈类型</label>
-					<div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-						{FEEDBACK_CATEGORY_OPTIONS.map((opt) => (
-							<button
-								key={opt.value}
-								onClick={() => setFeedbackCategory(opt.value)}
-								style={{
-									...styles.button,
-									...(feedbackCategory === opt.value ? styles.primaryButton : styles.secondaryButton),
-									padding: "6px 12px",
-									fontSize: 12,
-								}}>
-								{opt.label}
-							</button>
-						))}
-				</div>
-				<label style={styles.label}>反馈内容 *</label>					<textarea
-						maxLength={5000}
-						onChange={(e) => setFeedbackContent(e.target.value)}
-						placeholder={"请描述遇到的问题或建议。\nBug 请尽量说明：操作步骤 → 期望结果 → 实际结果"}
-						rows={6}
-						style={styles.textarea}
-						value={feedbackContent}
-					/>
-					<div
-						style={{
-							textAlign: "right",
-							fontSize: 11,
-							color: "var(--vscode-descriptionForeground)",
-							marginBottom: 10,
-						}}>
-						{feedbackContent.length}/5000
-					</div>
-
-					<label style={styles.label}>学号（选填）</label>
-					<input
-						maxLength={50}
-						onChange={(e) => setFeedbackStudentId(e.target.value)}
-						placeholder="选填，便于我们回访澄清问题"
-						style={styles.input}
-						type="text"
-						value={feedbackStudentId}
-					/>
-
-					<p style={{ ...styles.hint, marginTop: 10 }}>
-						🔒 提交时自动附带插件版本与操作系统信息（仅用于定位问题），不收集其他数据。
-					</p>
-
-					{feedbackError && (
-						<div style={{ ...styles.notice, color: "var(--vscode-errorForeground)" }}>❌ {feedbackError}</div>
-					)}
-
-					<div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-						<button onClick={() => setFeedbackVisible(false)} style={{ ...styles.button, ...styles.secondaryButton }}>
-							取消
-						</button>
-						<button
-							disabled={feedbackSubmitting}
-							onClick={onSubmitFeedback}
-							style={{ ...styles.button, ...styles.primaryButton }}>
-							{feedbackSubmitting ? "提交中..." : "提交反馈"}
 						</button>
 					</div>
 				</ResponsiveModal>
@@ -618,18 +503,6 @@ const styles: Record<string, React.CSSProperties> = {
 		border: "1px solid var(--vscode-input-border)",
 		borderRadius: 4,
 		fontSize: 13,
-		boxSizing: "border-box",
-	},
-	textarea: {
-		width: "100%",
-		padding: "6px 10px",
-		background: "var(--vscode-input-background)",
-		color: "var(--vscode-input-foreground)",
-		border: "1px solid var(--vscode-input-border)",
-		borderRadius: 4,
-		fontSize: 13,
-		fontFamily: "inherit",
-		resize: "vertical",
 		boxSizing: "border-box",
 	},
 	hint: {

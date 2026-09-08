@@ -155,6 +155,8 @@ CREATE INDEX IF NOT EXISTS idx_feedback_created ON feedback(created_at);
 
 ## 六、插件端设计（D:\cline）
 
+> **v2.9.2 修订**：原方案 6.1-6.3（LLM 设置内 ResponsiveModal 弹窗）在设置页视口较矮时弹窗显示不全（侧栏 webview 无法越出自身边界，两个 webview 也互不隶属）。最终落地：反馈表单迁移至**编辑器区 WebviewPanel**（`FeedbackPanelProvider` 单例，`reveal()` 打开/聚焦，窗口正中），全页渲染无高度限制；LLM 设置底部按钮仅发 `openFeedback` 命令转发打开面板。提交链路（版本/平台元数据附加、`POST /api/v1/feedback`、错误处理）与原设计一致，由 `FeedbackPanelProvider._handleMessage` 承接。
+
 ### 6.1 入口按钮（`webview-ui/src/components/teaching/LLMSettingsView.tsx`）
 
 - 位置：保存按钮区（`savedNotice` 提示区之后），新增分隔线 + "📝 问题反馈"按钮；

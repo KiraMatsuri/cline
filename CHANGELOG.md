@@ -4,7 +4,7 @@
 
 ### Added
 
-- **问题反馈入口**：「教学 LLM 设置」底部新增"📝 问题反馈"按钮，弹窗提交 bug / 功能建议 / 其他（可选填学号，默认匿名）；经插件主进程转发至 teaching-server `POST /api/v1/feedback`，自动附带插件版本与操作系统信息；ESC/关闭弹窗保留已填内容，提交失败内容不丢失；设计文档见 `docs/design/feedback-feature-design.md`
+- **问题反馈入口（编辑器区面板）**：「教学 LLM 设置」底部新增"📝 问题反馈"按钮，在**编辑器区以标签页面板**（窗口正中）打开全页反馈表单——彻底避开侧栏 webview 高度限制（弹窗方案在设置页较矮时会显示不全，已废弃）；表单含 bug / 功能建议 / 其他三类（可选填学号，默认匿名），自动附带插件版本与操作系统信息；切换标签不丢已填内容（`retainContextWhenHidden`），提交成功自动关闭面板，失败内容保留；设计文档见 `docs/design/feedback-feature-design.md`
 
 ### Fixed
 
