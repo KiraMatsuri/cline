@@ -83,7 +83,16 @@ export interface SubmissionPayload {
 
 /** Webview → Extension 的 IPC 消息协议 */
 export interface AssignmentMessage {
-	command: "fetchAssignments" | "createOneFile" | "submitTask" | "openFile" | "downloadAttachment" | "saveStudentInfo" | "loadStudentInfo" | "exitToChat" | "queryAutoLogPath"
+	command:
+		| "fetchAssignments"
+		| "createOneFile"
+		| "submitTask"
+		| "openFile"
+		| "downloadAttachment"
+		| "saveStudentInfo"
+		| "loadStudentInfo"
+		| "exitToChat"
+		| "queryAutoLogPath"
 	payload?: Record<string, unknown>
 }
 
@@ -141,7 +150,16 @@ export class AssignmentManager {
 
 	constructor(apiBase?: string) {
 		// 若调用方未传值，使用默认兜底；后续可通过 refreshApiBaseFromConfig 或 setApiBase 覆盖
-		this.apiBase = apiBase ?? AssignmentManager.DEFAULT_API_BASE
+		this.apiBase = AssignmentManager.normalizeApiBase(apiBase ?? AssignmentManager.DEFAULT_API_BASE)
+	}
+
+	/**
+	 * 【v2.10】归一化 API 地址：去首尾空白 + 去尾部斜杠。
+	 * 用户在「服务器设置」填 `http://localhost:4001/`（尾斜杠）时，
+	 * 拼接 `/api/v1/...` 会产生双斜杠路径 `//api/...`，Express 返回 404。
+	 */
+	private static normalizeApiBase(url: string): string {
+		return url.trim().replace(/\/+$/, "")
 	}
 
 	/**
@@ -155,7 +173,8 @@ export class AssignmentManager {
 		const teachingCfg = vscode.workspace.getConfiguration("clineTeaching")
 		const serverUrl = teachingCfg.get<string>("serverUrl")
 		if (typeof serverUrl === "string" && serverUrl.trim()) {
-			this.apiBase = serverUrl.trim()
+			// 【v2.10】归一化：去尾斜杠，避免拼接出 //api 双斜杠 404
+			this.apiBase = AssignmentManager.normalizeApiBase(serverUrl)
 			return
 		}
 
@@ -163,7 +182,7 @@ export class AssignmentManager {
 		const config = vscode.workspace.getConfiguration(AssignmentManager.CONFIG_SECTION)
 		const fromConfig = config.get<string>(AssignmentManager.CONFIG_API_BASE)
 		if (typeof fromConfig === "string" && fromConfig.trim()) {
-			this.apiBase = fromConfig.trim()
+			this.apiBase = AssignmentManager.normalizeApiBase(fromConfig)
 		}
 	}
 
@@ -195,7 +214,7 @@ export class AssignmentManager {
 		if (!url || typeof url !== "string") {
 			throw new Error("setApiBase: URL 必须是非空字符串")
 		}
-		this.apiBase = url.trim()
+		this.apiBase = AssignmentManager.normalizeApiBase(url)
 	}
 
 	/**
@@ -250,7 +269,7 @@ export class AssignmentManager {
 				}
 
 				// 退避等待后重试
-				const delay = retryDelayMs * Math.pow(2, attempt - 1)
+				const delay = retryDelayMs * 2 ** (attempt - 1)
 				await new Promise((resolve) => setTimeout(resolve, delay))
 			}
 		}
@@ -330,9 +349,7 @@ export class AssignmentManager {
 		} catch {
 			// 忽略
 		}
-		Logger.log(
-			`[AssignmentManager] 工作区日志路径: ${path}（${created ? "新建" : "已存在"}）`,
-		)
+		Logger.log(`[AssignmentManager] 工作区日志路径: ${path}（${created ? "新建" : "已存在"}）`)
 	}
 
 	/**
@@ -542,7 +559,7 @@ export class AssignmentManager {
 			// 【诊断增强】展示当前生效的 apiBase + 具体网络错误（cause），
 			// 便于定位"配置未生效 / 端口不通 / 代理拦截"等问题
 			const cause = error instanceof Error && (error as { cause?: { code?: string; message?: string } }).cause
-			const causeDetail = cause ? (cause.code || cause.message || String(cause)) : ""
+			const causeDetail = cause ? cause.code || cause.message || String(cause) : ""
 			const msg = error instanceof Error ? error.message : String(error)
 			const detail = `${msg}${causeDetail ? ` (${causeDetail})` : ""} [apiBase=${this.apiBase}]`
 			vscode.window.showErrorMessage(`❌ 获取实验任务失败: ${detail}`)
@@ -780,10 +797,7 @@ export class AssignmentManager {
 
 			// ----- 打开文件（PDF 等二进制用 showTextDocument 可能乱码，走系统默认应用） -----
 			const uri = vscode.Uri.file(targetPath)
-			const isTextLike =
-				/\.(txt|md|py|js|ts|json|c|cpp|h|java|html|css|xml|yml|yaml|log|sql|sh)$/i.test(
-					safeFileName,
-				)
+			const isTextLike = /\.(txt|md|py|js|ts|json|c|cpp|h|java|html|css|xml|yml|yaml|log|sql|sh)$/i.test(safeFileName)
 			if (isTextLike) {
 				const document = await vscode.workspace.openTextDocument(uri)
 				await vscode.window.showTextDocument(document, { preview: false })
@@ -990,8 +1004,20 @@ export class AssignmentManager {
 				{ ts: new Date().toISOString(), eventType: "turn_message", role: "user", category: "code_generation" },
 				{ ts: new Date().toISOString(), eventType: "turn_message", role: "assistant", category: "code_generation" },
 				{ ts: new Date().toISOString(), eventType: "code_edit", role: "user", category: "refactoring" },
-				{ ts: new Date().toISOString(), eventType: "adoption_infer", role: "user", category: "other", adoptionStatus: "adopted" },
-				{ ts: new Date().toISOString(), eventType: "adoption_infer", role: "user", category: "other", adoptionStatus: "adopted" },
+				{
+					ts: new Date().toISOString(),
+					eventType: "adoption_infer",
+					role: "user",
+					category: "other",
+					adoptionStatus: "adopted",
+				},
+				{
+					ts: new Date().toISOString(),
+					eventType: "adoption_infer",
+					role: "user",
+					category: "other",
+					adoptionStatus: "adopted",
+				},
 			],
 		}
 	}
@@ -1155,9 +1181,7 @@ export class AssignmentManager {
 	 * 间接让 WebviewStateContext 的 navigateToChat() 被调用，
 	 * 从而关闭实验任务视图。
 	 */
-	private async handleExitToChat(
-		postMessage: (response: AssignmentResponse) => void,
-	): Promise<void> {
+	private async handleExitToChat(postMessage: (response: AssignmentResponse) => void): Promise<void> {
 		try {
 			// 通过命令面板触发 + 新建任务按钮的相同逻辑
 			await vscode.commands.executeCommand("cline.plusButtonClicked")
