@@ -2,6 +2,10 @@
 
 ## [Unreleased]（待发 1.0.4）
 
+### Added
+
+- **问题反馈入口**：「教学 LLM 设置」底部新增"📝 问题反馈"按钮，弹窗提交 bug / 功能建议 / 其他（可选填学号，默认匿名）；经插件主进程转发至 teaching-server `POST /api/v1/feedback`，自动附带插件版本与操作系统信息；ESC/关闭弹窗保留已填内容，提交失败内容不丢失；设计文档见 `docs/design/feedback-feature-design.md`
+
 ### Fixed
 
 - **服务器地址尾斜杠兼容**：用户在「服务器设置」填 `http://localhost:4001/`（尾斜杠）时，API 拼接产生 `//api/v1/...` 双斜杠路径导致 404。新增 `normalizeApiBase()` 归一化（去首尾空白 + 去尾斜杠），覆盖构造函数、配置读取、`setApiBase()` 全部赋值入口

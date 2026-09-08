@@ -6,10 +6,11 @@
  *
  * 【职责】
  * 在 VS Code 侧边栏注册独立的 WebviewView，承载 LLMSettingsView.tsx UI。
- * 处理三类 IPC 消息：
+ * 处理四类 IPC 消息：
  *   - loadLLMSettings    → 回填当前配置（apiKey 仅返回掩码）
  *   - saveLLMSettings    → 写本地 ~/.cline/teaching-llm.env + 推送到后端
  *   - testLLMConnection  → 转发到后端 /api/v1/internal/llm-test
+ *   - submitFeedback     → 【v2.9】学生反馈转发到后端 /api/v1/feedback
  *
  * 【与现有模式的对齐】
  * 借鉴 VscodeWebviewProvider 的 message 路由模式，但本类独立工作：
@@ -23,6 +24,7 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as vscode from "vscode"
+import { ExtensionRegistryInfo } from "@/registry"
 import { Logger } from "@/shared/services/Logger"
 
 // ============================================================================
@@ -221,6 +223,54 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 							error: friendlyMsg,
 						})
 						Logger.warn(`[LLMSettingsViewProvider] testLLMConnection 后端不可达: ${rawMsg}`)
+					}
+					break
+				}
+
+				case "submitFeedback": {
+					// 【v2.9】学生问题反馈：转发到 teaching-server，开发者经 web 端 #/dev-feedback 查看
+					const category = (msg["category"] as string) ?? "other"
+					const content = (msg["content"] as string) ?? ""
+					const studentId = (msg["studentId"] as string) ?? ""
+
+					if (!content.trim() || content.length > 5000) {
+						post({ command: "submitFeedback", success: false, error: "反馈内容必须为 1~5000 字符" })
+						return
+					}
+
+					const serverUrl = this._getServerUrl()
+					try {
+						const resp = await fetch(`${serverUrl}/api/v1/feedback`, {
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: JSON.stringify({
+								category,
+								content: content.trim(),
+								studentId: studentId.trim(),
+								extensionVersion: ExtensionRegistryInfo.version,
+								platform: `${os.platform()} ${os.release()}`,
+							}),
+						})
+						const data = (await resp.json()) as { ok: boolean; message?: string }
+						if (!resp.ok || !data.ok) {
+							post({
+								command: "submitFeedback",
+								success: false,
+								error: data.message ?? `提交失败 (HTTP ${resp.status})`,
+							})
+							return
+						}
+						post({ command: "submitFeedback", success: true, data })
+						Logger.log("[LLMSettingsViewProvider] 学生反馈已提交")
+					} catch (e) {
+						// 网络不可达时给出友好提示（校园网/热点下间歇性 RST 为已知问题）
+						const rawMsg = e instanceof Error ? e.message : String(e)
+						const isFetchFailed = /fetch failed|ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT/i.test(rawMsg)
+						const friendlyMsg = isFetchFailed
+							? `无法连接服务器 ${serverUrl}，请稍后重试；若持续失败可尝试切换网络`
+							: `提交失败: ${rawMsg}`
+						post({ command: "submitFeedback", success: false, error: friendlyMsg })
+						Logger.warn(`[LLMSettingsViewProvider] submitFeedback 失败: ${rawMsg}`)
 					}
 					break
 				}
