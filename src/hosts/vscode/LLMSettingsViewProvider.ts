@@ -24,7 +24,6 @@ import * as fs from "fs"
 import * as os from "os"
 import * as path from "path"
 import * as vscode from "vscode"
-import { ExtensionRegistryInfo } from "@/registry"
 import { FeedbackPanelProvider } from "@/hosts/vscode/FeedbackPanelProvider"
 import { Logger } from "@/shared/services/Logger"
 

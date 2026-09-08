@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]（待发 1.0.4）
+## [1.0.4] — 2026-09-08
 
 ### Added
 
