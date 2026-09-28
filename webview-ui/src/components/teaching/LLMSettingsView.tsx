@@ -1,28 +1,27 @@
 /**
  * =============================================================================
- *  LLMSettingsView — 教学 LLM 设置 WebviewView（v1.3 增量）
+ *  LLMSettingsView — 教学 LLM 状态与偏好设置 WebviewView（v1.3 增量 / v2.11 改版）
  *  基于 Cline 的编程学习行为分析与教学辅助系统
  * =============================================================================
  *
  * 【职责】
- * 提供给学生的 LLM API 配置面板：
- *   1. 预置模型下拉框（GPT-4o-mini / GPT-4o / Claude-3.5 / DeepSeek / Qwen-Long / 自定义）
- *   2. 选择模型后自动填充 baseUrl
- *   3. 手动填写 API Key（密码框）
- *   4. "测试连接"按钮 → POST /api/v1/internal/llm-test
- *   5. 工具调用答疑开关（karpathy 式）+ 说明文案
- *   6. "保存"按钮 → 写本地 ~/.cline/teaching-llm.env + 推送到后端
- *   7. 【v2.9.2】"问题反馈"按钮 → 在编辑器区（窗口正中）打开反馈面板（FeedbackForm），彻底避开侧栏高度限制
+ * 面向学生的教学 LLM **只读状态面板 + 本机偏好设置**：
+ *   1. 展示教师在后端配置的 LLM 信息（provider / model / baseUrl / 密钥掩码，只读）
+ *   2. "测试连接" → POST /api/v1/internal/llm-test-current（用后端已配置的 Key 测连通，学生无需填 Key）
+ *   3. 工具调用答疑开关（karpathy 式）+ 教学限制模式开关（本机偏好，可保存）
+ *   4. 【v2.9.2】"问题反馈"按钮 → 编辑器区反馈面板（窗口正中），避开侧栏高度限制
  *
  * 【数据流】
- *   学生填写 → postMessage({command: 'saveLLMSettings', ...})
- *     → 插件主进程写 ~/.cline/teaching-llm.env
- *     → POST /api/v1/internal/llm-env → 后端写 teaching-server/.env
- *     → 后端热加载 LLM 配置（无需重启）
+ *   加载：postMessage({command:'loadLLMSettings'})
+ *     → 宿主读后端 GET /api/v1/internal/llm-status（只读、密钥脱敏）+ VS Code 本机偏好
+ *   保存：postMessage({command:'saveLLMSettings', enableTools, pasteLimit})
+ *     → 仅写 VS Code 全局配置（不再写本地 env、不再向后端推送密钥）
  *
- * 【v1.3 决策】
- *   - 8.A：API Key 走插件设置页 → 后端 .env（与 Cline 主对话模型解耦）
- *   - 8.C：工具调用开关默认关闭 + 设置页开启提示
+ * 【v2.11 决策】
+ *   - 教学 LLM 的 API Key / 模型 / Base URL 由教师直接写入 teaching-server/.env
+ *   - 插件端**不再持有、不再保存、不再推送** API Key（此前掩码被当真 key 推送，
+ *     覆盖有效密钥导致全部 LLM 功能 401；学生也无权修改教师配置）
+ *   - 与 Cline 主对话模型仍解耦（本页配置仅用于教学功能）
  *
  * =============================================================================
  */
@@ -36,25 +35,7 @@ import ResponsiveModal from "../common/ResponsiveModal"
 //  类型定义
 // ============================================================================
 
-/** 预置模型定义 */
-interface PresetModel {
-	id: string
-	label: string
-	baseUrl: string
-}
-
-/** 保存到 .env 的完整 LLM 配置 */
-export interface LLMSettings {
-	provider: string
-	baseUrl: string
-	apiKey: string
-	model: string
-	enableTools: boolean
-	/** 【v2.8】教学限制模式：编辑器粘贴限行开关 */
-	pasteLimit?: boolean
-}
-
-/** 加载时回填的数据（不含 apiKey，只显示是否已配置） */
+/** 【v2.11】LLM 配置由教师维护，前端只读回显（密钥仅掩码） */
 interface LLMSettingsStatus {
 	configured: boolean
 	provider?: string
@@ -63,8 +44,12 @@ interface LLMSettingsStatus {
 	enableTools?: boolean
 	/** 【v2.8】教学限制模式回显 */
 	pasteLimit?: boolean
-	/** API Key 仅显示前 4 位 + 后 4 位，中间省略 */
+	/** API Key 掩码（由后端返回；前端不持有明文） */
 	apiKeyMasked?: string
+	/** 配置归属：teacher */
+	managedBy?: string
+	/** 未配置 / 后端不可达时的提示 */
+	message?: string
 }
 
 /** Extension → Webview 的响应 */
@@ -86,42 +71,14 @@ interface VsCodeApi {
 //  常量
 // ============================================================================
 
-/** 预置模型列表（v1.3 决策） */
-const PRESET_MODELS: PresetModel[] = [
-	{ id: "gpt-4o-mini", label: "GPT-4o-mini (OpenAI) · 推荐", baseUrl: "https://api.openai.com/v1" },
-	{ id: "gpt-4o", label: "GPT-4o (OpenAI)", baseUrl: "https://api.openai.com/v1" },
-	{
-		id: "claude-3-5-sonnet-20241022",
-		label: "Claude 3.5 Sonnet (Anthropic)",
-		baseUrl: "https://api.anthropic.com/v1",
-	},
-	{ id: "deepseek-chat", label: "DeepSeek Chat", baseUrl: "https://api.deepseek.com/v1" },
-	{
-		id: "qwen-long",
-		label: "通义千问 Qwen-Long (DashScope)",
-		baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-	},
-	{ id: "custom", label: "自定义（手动填 baseUrl）", baseUrl: "" },
-]
-
-/** 从 model id 推断 provider（用于 .env 的 TEACHING_LLM_PROVIDER 字段） */
-function inferProvider(modelId: string): string {
-	if (modelId.startsWith("gpt-")) return "openai"
-	if (modelId.startsWith("claude-")) return "anthropic"
-	if (modelId.startsWith("deepseek-")) return "deepseek"
-	if (modelId.startsWith("qwen-")) return "qwen"
-	return "custom"
-}
-
 // ============================================================================
 //  组件
 // ============================================================================
 
 const LLMSettingsView: FC = () => {
 	// ----- 状态 -----
-	const [selectedModelId, setSelectedModelId] = useState<string>("gpt-4o-mini")
-	const [baseUrl, setBaseUrl] = useState<string>(PRESET_MODELS[0].baseUrl)
-	const [apiKey, setApiKey] = useState<string>("")
+	// 【v2.11】LLM 配置（模型 / Base URL / 密钥）由教师维护：前端仅只读展示后端返回的状态
+	const [status, setStatus] = useState<LLMSettingsStatus>({ configured: false })
 	const [enableTools, setEnableTools] = useState<boolean>(false)
 	// 【v2.8】教学限制模式：启用后编辑器单次粘贴最多 5 行
 	const [pasteLimit, setPasteLimit] = useState<boolean>(false)
@@ -142,7 +99,7 @@ const LLMSettingsView: FC = () => {
 		return api as VsCodeApi
 	}
 
-	// ----- 加载已有配置 -----
+	// ----- 加载配置状态（LLM 配置来自后端，本机偏好来自 VS Code 配置） -----
 	useEffect(() => {
 		const api = getVsCodeApi()
 		if (!api) return
@@ -152,13 +109,8 @@ const LLMSettingsView: FC = () => {
 			const msg = event.data as WikiResponse
 			if (msg?.command === "loadLLMSettings" && msg.success && msg.data) {
 				const cfg = msg.data as LLMSettingsStatus
-				if (cfg.model && PRESET_MODELS.some((m) => m.id === cfg.model)) {
-					setSelectedModelId(cfg.model)
-				} else if (cfg.model) {
-					setSelectedModelId("custom")
-				}
-				if (cfg.baseUrl) setBaseUrl(cfg.baseUrl)
-				if (cfg.apiKeyMasked) setApiKey(cfg.apiKeyMasked) // 仅做占位提示，不回填真值
+				// 【v2.11】只读展示教师配置的 LLM 信息（密钥仅掩码），不回填任何可编辑字段
+				setStatus(cfg)
 				if (typeof cfg.enableTools === "boolean") setEnableTools(cfg.enableTools)
 				if (typeof cfg.pasteLimit === "boolean") setPasteLimit(cfg.pasteLimit)
 			}
@@ -167,28 +119,8 @@ const LLMSettingsView: FC = () => {
 		return () => window.removeEventListener("message", handler)
 	}, [])
 
-	// ----- 切换模型时自动填 baseUrl -----
-	const onModelChange = (modelId: string) => {
-		setSelectedModelId(modelId)
-		if (modelId !== "custom") {
-			const preset = PRESET_MODELS.find((m) => m.id === modelId)
-			if (preset) setBaseUrl(preset.baseUrl)
-		}
-	}
-
-	// ----- 测试连接 -----
+	// ----- 测试连接（用后端已配置的 Key 测连通，学生无需、也无法提供 Key） -----
 	const onTest = useCallback(async () => {
-		if (!apiKey || !baseUrl || !selectedModelId || selectedModelId === "custom") {
-			setTestStatus("fail")
-			setTestMessage("请填写完整的 baseUrl / API Key / 模型")
-			return
-		}
-		if (selectedModelId === "custom" && !baseUrl.trim()) {
-			setTestStatus("fail")
-			setTestMessage("自定义模式必须填写 baseUrl")
-			return
-		}
-
 		setTesting(true)
 		setTestStatus("idle")
 		setTestMessage("")
@@ -199,14 +131,8 @@ const LLMSettingsView: FC = () => {
 			setTestMessage("VS Code API 不可用")
 			return
 		}
-		api.postMessage({
-			type: "wiki_command",
-			command: "testLLMConnection",
-			baseUrl,
-			apiKey,
-			model: selectedModelId,
-		})
-	}, [apiKey, baseUrl, selectedModelId])
+		api.postMessage({ type: "wiki_command", command: "testLLMConnection" })
+	}, [])
 
 	// ----- 监听测试结果 -----
 	useEffect(() => {
@@ -225,7 +151,8 @@ const LLMSettingsView: FC = () => {
 			if (msg?.command === "saveLLMSettings") {
 				setSaving(false)
 				if (msg.success) {
-					setSavedNotice("✅ 已保存到本地 + 后端 .env（热加载立即生效）")
+					// 【v2.11】保存的只是本机偏好；LLM 模型与密钥由教师统一配置
+					setSavedNotice("✅ 本机偏好已保存（LLM 模型与密钥由教师统一配置）")
 					setTimeout(() => setSavedNotice(""), 3500)
 				} else {
 					setSavedNotice(`❌ 保存失败：${msg.error ?? "未知错误"}`)
@@ -251,36 +178,20 @@ const LLMSettingsView: FC = () => {
 		setToolsConfirmVisible(false)
 	}
 
-	// ----- 保存 -----
+	// ----- 保存（仅本机偏好：工具调用开关 / 教学限制模式） -----
 	const onSave = () => {
-		if (!apiKey || !baseUrl || !selectedModelId) {
-			setSavedNotice("❌ 请填写完整的配置")
-			return
-		}
 		setSaving(true)
 		const api = getVsCodeApi()
-		if (!api) return
+		if (!api) {
+			setSaving(false)
+			return
+		}
 		api.postMessage({
 			type: "wiki_command",
 			command: "saveLLMSettings",
-			provider: inferProvider(selectedModelId),
-			baseUrl,
-			apiKey,
-			model: selectedModelId,
 			enableTools,
 			pasteLimit,
 		})
-	}
-
-	// ----- 恢复默认 -----
-	const onReset = () => {
-		setSelectedModelId("gpt-4o-mini")
-		setBaseUrl(PRESET_MODELS[0].baseUrl)
-		setApiKey("")
-		setEnableTools(false)
-		setPasteLimit(false)
-		setTestStatus("idle")
-		setTestMessage("")
 	}
 
 	// ----- 【v2.9.2】打开问题反馈（编辑器区面板，窗口正中） -----
@@ -293,50 +204,45 @@ const LLMSettingsView: FC = () => {
 	// ----- 渲染 -----
 	return (
 		<div style={styles.container}>
-			<h2 style={styles.title}>📚 教学 LLM 设置</h2>
+			<h2 style={styles.title}>📚 教学 LLM 状态</h2>
 			<p style={styles.subtitle}>
-				为 Wiki 资料清洗与工具调用答疑配置 LLM。
+				教学 LLM 的模型、Base URL 与 API Key 由教师统一配置（写入教学服务器 teaching-server/.env）。
 				<br />
-				<span style={styles.warning}>⚠ 与 Cline 主对话模型解耦 —— 此处的配置仅用于教学功能，不会影响 AI 编程对话。</span>
+				<span style={styles.warning}>
+					⚠ 与 Cline 主对话模型解耦 —— 此处配置仅用于教学功能（资料清洗 / 约束答疑），不影响 AI 编程对话。
+				</span>
 			</p>
 
-			{/* 模型选择 */}
-			<Section title="模型选择">
-				<select onChange={(e) => onModelChange(e.target.value)} style={styles.select} value={selectedModelId}>
-					{PRESET_MODELS.map((m) => (
-						<option key={m.id} value={m.id}>
-							{m.label}
-						</option>
-					))}
-				</select>
-				<p style={styles.hint}>选择预置模型后，baseUrl 会自动填充。也可选"自定义"手动填 baseUrl。</p>
-			</Section>
-
-			{/* Base URL */}
-			<Section title="Base URL">
-				<input
-					disabled={selectedModelId !== "custom"}
-					onChange={(e) => setBaseUrl(e.target.value)}
-					placeholder="https://api.openai.com/v1"
-					style={styles.input}
-					type="text"
-					value={baseUrl}
-				/>
-			</Section>
-
-			{/* API Key */}
-			<Section title="API Key">
-				<input
-					autoComplete="off"
-					onChange={(e) => setApiKey(e.target.value)}
-					placeholder="sk-..."
-					style={styles.input}
-					type="password"
-					value={apiKey}
-				/>
+			{/* 【v2.11】服务端 LLM 配置：只读展示（教师维护，密钥仅掩码） */}
+			<Section title="服务端 LLM 配置（教师维护 · 只读）">
+				<div style={styles.statusCard}>
+					{status.configured ? (
+						<>
+							<div style={styles.statusRow}>
+								<span style={styles.statusKey}>模型</span>
+								<span>{status.model ?? "-"}</span>
+							</div>
+							<div style={styles.statusRow}>
+								<span style={styles.statusKey}>Base URL</span>
+								<span style={{ wordBreak: "break-all" }}>{status.baseUrl ?? "-"}</span>
+							</div>
+							<div style={styles.statusRow}>
+								<span style={styles.statusKey}>API Key</span>
+								<span>{status.apiKeyMasked ?? "已配置"}</span>
+							</div>
+							<div style={styles.statusRow}>
+								<span style={styles.statusKey}>服务商</span>
+								<span>{status.provider ?? "-"}</span>
+							</div>
+						</>
+					) : (
+						<p style={{ ...styles.hint, margin: 0, color: "var(--vscode-editorWarning-foreground)" }}>
+							⚠ {status.message ?? "服务端尚未配置 LLM"}
+						</p>
+					)}
+				</div>
 				<p style={styles.hint}>
-					🔒 API Key 仅写入本地 <code>~/.cline/teaching-llm.env</code> 与后端 <code>teaching-server/.env</code>
-					，不会上传至任何远程。
+					🔒 密钥由教师写入服务器 <code>.env</code>：插件端不保存、不上传，也无法修改。
 				</p>
 			</Section>
 
@@ -409,14 +315,14 @@ const LLMSettingsView: FC = () => {
 
 			<hr style={styles.divider} />
 
-			{/* 保存按钮 */}
-			<div style={{ display: "flex", gap: 12 }}>
+			{/* 保存：仅保存本机偏好（LLM 模型/密钥由教师维护，无需在此保存） */}
+			<div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
 				<button disabled={saving} onClick={onSave} style={{ ...styles.button, ...styles.primaryButton }}>
-					{saving ? "保存中..." : "💾 保存"}
+					{saving ? "保存中..." : "💾 保存本机偏好"}
 				</button>
-				<button onClick={onReset} style={{ ...styles.button, ...styles.secondaryButton }}>
-					🔄 恢复默认
-				</button>
+				<span style={{ fontSize: 11, color: "var(--vscode-descriptionForeground)" }}>
+					仅保存工具调用开关与教学限制模式（LLM 配置由教师维护）
+				</span>
 			</div>
 			{savedNotice && <div style={styles.notice}>{savedNotice}</div>}
 
@@ -510,6 +416,22 @@ const styles: Record<string, React.CSSProperties> = {
 		fontSize: 11,
 		color: "var(--vscode-descriptionForeground)",
 		lineHeight: 1.5,
+	},
+	statusCard: {
+		padding: "8px 10px",
+		border: "1px solid var(--vscode-panel-border)",
+		borderRadius: 4,
+		background: "var(--vscode-textBlockQuote-background)",
+		fontSize: 12,
+		lineHeight: 1.8,
+	},
+	statusRow: {
+		display: "flex",
+		gap: 8,
+	},
+	statusKey: {
+		flex: "0 0 72px",
+		color: "var(--vscode-descriptionForeground)",
 	},
 	button: {
 		padding: "8px 18px",

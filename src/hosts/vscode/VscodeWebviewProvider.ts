@@ -320,14 +320,11 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 				}
 
 				case "saveLLMSettings": {
-					// 转发到 LLMSettingsViewProvider 的 _handleMessage（已经处理过）；
-					// 这里做兜底：如果消息没有先经过 LLMSettingsViewProvider，则直接写入 .env + 推送到后端
-					await this._proxyLLMSettings(
-						msg.provider,
-						msg.baseUrl,
-						msg.apiKey,
-						msg.model,
-						msg.enableTools,
+					// 【v2.11】兜底路径同样只保存本机偏好：
+					// LLM 的密钥/模型/Base URL 由教师写入 teaching-server/.env，
+					// 插件端（含此前的兜底推送）一律不再写入或推送密钥，避免覆盖教师配置
+					await this._saveLocalTeachingPrefs(
+						Boolean(msg.enableTools),
 						typeof msg.pasteLimit === "boolean" ? msg.pasteLimit : undefined,
 					)
 					respond("saveLLMSettings", true)
@@ -335,16 +332,8 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 				}
 
 				case "testLLMConnection": {
-					// 转发到后端测试接口
-					const resp = await fetch(`${llm.getServerUrl()}/api/v1/internal/llm-test`, {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({
-							baseUrl: msg.baseUrl,
-							apiKey: msg.apiKey,
-							model: msg.model,
-						}),
-					})
+					// 【v2.11】用后端已配置的 Key 测试连通性（学生无需、也无法提供 Key）
+					const resp = await fetch(`${llm.getServerUrl()}/api/v1/internal/llm-test-current`, { method: "POST" })
 					const data = (await resp.json()) as { ok: boolean; message?: string }
 					respond("testLLMConnection", data.ok, data, data.ok ? undefined : data.message)
 					return
@@ -361,29 +350,18 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 	}
 
 	/**
-	 * 兜底：直接保存 LLM 配置（若 LLMSettingsViewProvider 未先处理）
-	 * 实际主路径走 LLMSettingsViewProvider._handleMessage，此处仅作为 fallback
+	 * 【v2.11】保存本机教学偏好（工具调用开关 / 教学限制模式）。
+	 *
+	 * 说明：教学 LLM 的密钥 / 模型 / Base URL 由教师写入 teaching-server/.env，
+	 *       插件端（含此前的兜底推送逻辑）一律不再写入或推送密钥——曾因掩码被当真 key
+	 *       推送而覆盖有效密钥，导致全部 LLM 功能 401。
 	 */
-	private async _proxyLLMSettings(
-		provider: string,
-		baseUrl: string,
-		apiKey: string,
-		model: string,
-		enableTools: boolean,
-		pasteLimit?: boolean,
-	): Promise<void> {
-		// 【v2.8】教学限制模式：同步 VS Code 配置（键绑定生效开关）
+	private async _saveLocalTeachingPrefs(enableTools: boolean, pasteLimit?: boolean): Promise<void> {
+		const cfg = vscode.workspace.getConfiguration("clineTeaching")
+		await cfg.update("llmEnableTools", enableTools, vscode.ConfigurationTarget.Global)
 		if (typeof pasteLimit === "boolean") {
-			await vscode.workspace
-				.getConfiguration("clineTeaching")
-				.update("pasteLimitEnabled", pasteLimit, vscode.ConfigurationTarget.Global)
+			await cfg.update("pasteLimitEnabled", pasteLimit, vscode.ConfigurationTarget.Global)
 		}
-		const url = `${LLMWikiService.getInstance().getServerUrl()}/api/v1/internal/llm-env`
-		await fetch(url, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ provider, baseUrl, apiKey, model, enableTools, pasteLimit }),
-		})
 	}
 
 	override async dispose() {

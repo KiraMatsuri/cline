@@ -20,9 +20,6 @@
  * =============================================================================
  */
 
-import * as fs from "fs"
-import * as os from "os"
-import * as path from "path"
 import * as vscode from "vscode"
 import { FeedbackPanelProvider } from "@/hosts/vscode/FeedbackPanelProvider"
 import { Logger } from "@/shared/services/Logger"
@@ -31,18 +28,14 @@ import { Logger } from "@/shared/services/Logger"
 //  类型定义
 // ============================================================================
 
-/** 与前端 LLMSettings 字段对齐 */
-export interface LLMSettings {
-	provider: string
-	baseUrl: string
-	apiKey: string
-	model: string
+/** 【v2.11】本机教学偏好：LLM 的密钥/模型/Base URL 由教师维护，插件端只保存本机开关 */
+export interface LocalTeachingPrefs {
 	enableTools: boolean
 	/** 【v2.8】教学限制模式：编辑器粘贴限行开关（可选，向后兼容） */
 	pasteLimit?: boolean
 }
 
-/** 回填到前端的"脱敏"状态 */
+/** 回填到前端的只读状态（LLM 配置来自后端只读接口，密钥仅掩码） */
 export interface LLMSettingsStatus {
 	configured: boolean
 	provider?: string
@@ -51,22 +44,12 @@ export interface LLMSettingsStatus {
 	enableTools?: boolean
 	/** 【v2.8】教学限制模式回显（以 VS Code 配置为准，其为生效开关） */
 	pasteLimit?: boolean
+	/** API Key 掩码（由后端返回；插件端不持有明文） */
 	apiKeyMasked?: string
-}
-
-// ============================================================================
-//  常量
-// ============================================================================
-
-/** 本地 .env 路径（用户主目录下，避免污染 Cline 仓库） */
-function getLocalEnvPath(): string {
-	return path.resolve(os.homedir(), ".cline", "teaching-llm.env")
-}
-
-/** API Key 掩码（前 4 + 后 4，中间省略） */
-function maskApiKey(key: string): string {
-	if (!key || key.length < 8) return "****"
-	return `${key.slice(0, 4)}...${key.slice(-4)}`
+	/** 【v2.11】配置归属标识：teacher */
+	managedBy?: string
+	/** 未配置 / 后端不可达时的提示文案 */
+	message?: string
 }
 
 // ============================================================================
@@ -150,79 +133,53 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 		try {
 			switch (cmd) {
 				case "loadLLMSettings": {
-					const status = this._loadLocalStatus()
+					// 【v2.11】LLM 配置（含密钥）由教师维护，插件端只读回显 + 读取本机偏好
+					const status = await this._loadStatus()
 					post({ command: "loadLLMSettings", success: true, data: status })
 					break
 				}
 
 				case "saveLLMSettings": {
-					const settings: LLMSettings = {
-						provider: (msg["provider"] as string) ?? "",
-						baseUrl: (msg["baseUrl"] as string) ?? "",
-						apiKey: (msg["apiKey"] as string) ?? "",
-						model: (msg["model"] as string) ?? "",
+					// 【v2.11】只保存本机偏好（工具调用开关 / 教学限制模式）。
+					// API Key / 模型 / Base URL 由教师写入 teaching-server/.env，插件端不再保存与推送
+					// （历史事故：插件把掩码 "sk-x...1234" 当真的 key 推送，覆盖有效密钥导致全部 LLM 功能 401）
+					const prefs: LocalTeachingPrefs = {
 						enableTools: Boolean(msg["enableTools"]),
 						// 【v2.8】教学限制模式（未传则不改变现有开关状态）
 						pasteLimit: typeof msg["pasteLimit"] === "boolean" ? (msg["pasteLimit"] as boolean) : undefined,
 					}
 
-					if (!settings.provider || !settings.baseUrl || !settings.apiKey || !settings.model) {
-						post({ command: "saveLLMSettings", success: false, error: "字段不完整" })
-						return
-					}
-
-					// 1) 写本地 ~/.cline/teaching-llm.env
-					// 【v2.8】pasteLimit 为 undefined（旧版前端未传）时保留 env 中现有值
-					this._writeLocalEnv(settings)
-
-					// 2) 推送到后端 /api/v1/internal/llm-env
-					const serverUrl = this._getServerUrl()
-					await fetch(`${serverUrl}/api/v1/internal/llm-env`, {
-						method: "POST",
-						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(settings),
-					})
-
-					// 3) 同步 VS Code 配置（llmEnableTools 与 llmPresetModel）
-					await this._syncVSCodeConfig(settings)
+					await this._syncVSCodeConfig(prefs)
 
 					post({ command: "saveLLMSettings", success: true })
-					Logger.log("[LLMSettingsViewProvider] LLM 配置已保存并同步")
+					Logger.log("[LLMSettingsViewProvider] 本机教学偏好已保存（LLM 密钥由教师维护）")
 					break
 				}
 
 				case "testLLMConnection": {
-					const baseUrl = (msg["baseUrl"] as string) ?? ""
-					const apiKey = (msg["apiKey"] as string) ?? ""
-					const model = (msg["model"] as string) ?? ""
-
-					if (!baseUrl || !apiKey || !model) {
-						post({ command: "testLLMConnection", success: false, error: "字段不完整" })
-						return
-					}
-
+					// 【v2.11】用后端已配置的 Key 测试 LLM 连通性（学生无需、也无法提供 Key）：
+					// 既验证"插件 ↔ 教学服务器"连通，也验证"服务器 ↔ LLM 供应商"是否可用。
 					const serverUrl = this._getServerUrl()
 					try {
-						const resp = await fetch(`${serverUrl}/api/v1/internal/llm-test`, {
-							method: "POST",
-							headers: { "Content-Type": "application/json" },
-							body: JSON.stringify({ baseUrl, apiKey, model }),
+						const resp = await fetch(`${serverUrl}/api/v1/internal/llm-test-current`, { method: "POST" })
+						const data = (await resp.json()) as { ok: boolean; message?: string; model?: string }
+						post({
+							command: "testLLMConnection",
+							success: Boolean(data.ok),
+							data,
+							error: data.ok ? undefined : (data.message ?? `HTTP ${resp.status}`),
 						})
-						const data = (await resp.json()) as { ok: boolean; message?: string }
-						post({ command: "testLLMConnection", success: data.ok, data, error: data.ok ? undefined : data.message })
 					} catch (e) {
-						// 【v2.5】更友好的错误提示：teaching-server 未启动时给出明确指引
 						const rawMsg = e instanceof Error ? e.message : String(e)
 						const isFetchFailed = /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(rawMsg)
-						const friendlyMsg = isFetchFailed
-							? `无法连接 ${serverUrl}。请确认 teaching-server 已在 4001 端口启动（cd D:/web-dashboard/teaching-server && pnpm dev）`
-							: `请求后端失败: ${rawMsg}`
 						post({
 							command: "testLLMConnection",
 							success: false,
-							error: friendlyMsg,
+							error: isFetchFailed
+								? `无法连接教学服务器 ${serverUrl}，请检查「服务器设置」中的地址与网络`
+								: `请求后端失败: ${rawMsg}`,
 						})
-						Logger.warn(`[LLMSettingsViewProvider] testLLMConnection 后端不可达: ${rawMsg}`)
+						Logger.warn(`[LLMSettingsViewProvider] llm-test-current 不可达: ${rawMsg}`)
 					}
 					break
 				}
@@ -243,84 +200,39 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 	}
 
 	// ============================================================================
-	//  本地 .env 读写
+	//  配置读取（LLM 配置来自后端只读接口；本机偏好来自 VS Code 配置）
 	// ============================================================================
 
-	private _writeLocalEnv(s: LLMSettings): void {
-		const envPath = getLocalEnvPath()
-		fs.mkdirSync(path.dirname(envPath), { recursive: true })
-		// 【v2.8】pasteLimit 未传（undefined）时保留文件中现有值，避免旧版前端覆盖
-		let pasteLimitValue: string
-		if (typeof s.pasteLimit === "boolean") {
-			pasteLimitValue = s.pasteLimit ? "true" : "false"
-		} else {
-			const existing = this._readEnvValue("TEACHING_LLM_PASTE_LIMIT")
-			pasteLimitValue = existing ?? "false"
-		}
-		const content = [
-			`# Auto-generated by Cline LLMSettingsView at ${new Date().toISOString()}`,
-			`TEACHING_LLM_PROVIDER=${s.provider}`,
-			`TEACHING_LLM_BASE_URL=${s.baseUrl}`,
-			`TEACHING_LLM_API_KEY=${s.apiKey}`,
-			`TEACHING_LLM_MODEL=${s.model}`,
-			`TEACHING_LLM_ENABLE_TOOLS=${s.enableTools ? "true" : "false"}`,
-			`TEACHING_LLM_PASTE_LIMIT=${pasteLimitValue}`,
-			"",
-		].join("\n")
-		fs.writeFileSync(envPath, content, "utf8")
-	}
-
-	/** 读取本地 env 中指定键的当前值（不存在返回 undefined） */
-	private _readEnvValue(key: string): string | undefined {
-		const envPath = getLocalEnvPath()
-		if (!fs.existsSync(envPath)) return undefined
-		try {
-			for (const line of fs.readFileSync(envPath, "utf8").split("\n")) {
-				const trimmed = line.trim()
-				if (!trimmed || trimmed.startsWith("#")) continue
-				const eqIdx = trimmed.indexOf("=")
-				if (eqIdx > 0 && trimmed.slice(0, eqIdx).trim() === key) {
-					return trimmed.slice(eqIdx + 1).trim()
-				}
-			}
-		} catch {
-			// 读取失败按不存在处理
-		}
-		return undefined
-	}
-
-	private _loadLocalStatus(): LLMSettingsStatus {
-		const envPath = getLocalEnvPath()
-		// 【v2.8】教学限制模式回显：以 VS Code 配置为准（keybinding 的 when 子句读的就是它）
-		const pasteLimitFromConfig = vscode.workspace.getConfiguration("clineTeaching").get<boolean>("pasteLimitEnabled")
-		if (!fs.existsSync(envPath)) return { configured: false, pasteLimit: pasteLimitFromConfig }
+	/**
+	 * 【v2.11】读取配置状态：
+	 *   - LLM 配置（provider / model / baseUrl / 密钥掩码）→ 后端只读接口（教师维护，插件不持有明文）
+	 *   - 本机偏好（工具调用开关 / 教学限制模式）→ VS Code 全局配置
+	 *
+	 * 注：此前实现会写本地 ~/.cline/teaching-llm.env 并推送密钥到后端 .env；
+	 *     因"掩码被当真的 key 写入"覆盖有效密钥（导致全部 LLM 功能 401），该链路已彻底移除。
+	 */
+	private async _loadStatus(): Promise<LLMSettingsStatus> {
+		const cfg = vscode.workspace.getConfiguration("clineTeaching")
+		const pasteLimit = cfg.get<boolean>("pasteLimitEnabled")
+		const enableTools = cfg.get<boolean>("llmEnableTools") ?? false
+		const base: LLMSettingsStatus = { configured: false, enableTools, pasteLimit }
 
 		try {
-			const content = fs.readFileSync(envPath, "utf8")
-			const map: Record<string, string> = {}
-			for (const line of content.split("\n")) {
-				const trimmed = line.trim()
-				if (!trimmed || trimmed.startsWith("#")) continue
-				const eqIdx = trimmed.indexOf("=")
-				if (eqIdx > 0) {
-					map[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim()
-				}
-			}
-
-			const apiKey = map["TEACHING_LLM_API_KEY"] ?? ""
-			if (!apiKey) return { configured: false, pasteLimit: pasteLimitFromConfig }
-
+			const resp = await fetch(`${this._getServerUrl()}/api/v1/internal/llm-status`)
+			const data = (await resp.json()) as LLMSettingsStatus & { ok?: boolean }
 			return {
-				configured: true,
-				provider: map["TEACHING_LLM_PROVIDER"],
-				baseUrl: map["TEACHING_LLM_BASE_URL"],
-				model: map["TEACHING_LLM_MODEL"],
-				enableTools: (map["TEACHING_LLM_ENABLE_TOOLS"] ?? "false") === "true",
-				pasteLimit: pasteLimitFromConfig,
-				apiKeyMasked: maskApiKey(apiKey),
+				...base,
+				configured: Boolean(data.configured),
+				provider: data.provider,
+				baseUrl: data.baseUrl,
+				model: data.model,
+				apiKeyMasked: data.apiKeyMasked,
+				managedBy: data.managedBy,
+				message: data.message,
 			}
 		} catch {
-			return { configured: false, pasteLimit: pasteLimitFromConfig }
+			// 后端不可达：仍返回本机偏好，便于学生查看/修改本机开关
+			return { ...base, message: "无法连接教学服务器，未能读取 LLM 配置状态" }
 		}
 	}
 
@@ -339,13 +251,13 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 		return "http://localhost:4001"
 	}
 
-	private async _syncVSCodeConfig(s: LLMSettings): Promise<void> {
+	/** 【v2.11】只同步本机偏好（不再写 llmPresetModel —— 模型由教师在后端 .env 维护） */
+	private async _syncVSCodeConfig(p: LocalTeachingPrefs): Promise<void> {
 		const cfg = vscode.workspace.getConfiguration("clineTeaching")
-		await cfg.update("llmEnableTools", s.enableTools, vscode.ConfigurationTarget.Global)
-		await cfg.update("llmPresetModel", s.model, vscode.ConfigurationTarget.Global)
+		await cfg.update("llmEnableTools", p.enableTools, vscode.ConfigurationTarget.Global)
 		// 【v2.8】教学限制模式：同步到 pasteLimitEnabled（键绑定 when 子句的生效开关）
-		if (typeof s.pasteLimit === "boolean") {
-			await cfg.update("pasteLimitEnabled", s.pasteLimit, vscode.ConfigurationTarget.Global)
+		if (typeof p.pasteLimit === "boolean") {
+			await cfg.update("pasteLimitEnabled", p.pasteLimit, vscode.ConfigurationTarget.Global)
 		}
 	}
 

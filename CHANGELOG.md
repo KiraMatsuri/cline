@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.5] — 2026-09-28
+
+### Changed
+
+- **教学 LLM 配置改为「教师维护」**：模型 / Base URL / API Key 由教师直接写入教学服务器 `teaching-server/.env`；插件端**不再保存、不再推送**密钥（此前掩码被当真 key 推送会覆盖有效密钥，导致全部 LLM 功能 401）
+- **「教学 LLM 设置」页改版为「只读状态 + 本机偏好」**：移除模型下拉、Base URL、API Key 输入框与「恢复默认」按钮；改为只读展示服务端 LLM 配置（模型 / Base URL / 密钥掩码，来源为新增只读接口 `GET /api/v1/internal/llm-status`）；仅保留「工具调用答疑开关」「教学限制模式」两个本机偏好的保存
+- **「测试连接」语义调整**：不再要求填写 Key，改为调用 `POST /api/v1/internal/llm-test-current` —— 用后端已配置的 Key 验证「插件 ↔ 教学服务器 ↔ LLM 供应商」整条链路
+- 设置视图标题 `LLM 设置` → `LLM 状态`；移除失效配置项 `clineTeaching.llmPresetModel`
+
+### Fixed
+
+- **保存 LLM 设置静默失败**：后端写入失败/不可达时不再报「保存成功」（现保存仅涉及本机偏好，错误会明确提示）
+- 清理 `VscodeWebviewProvider` 中的兜底密钥推送路径（`_proxyLLMSettings`），统一为「只写本机偏好」，杜绝任何插件侧密钥写入
+
 ## [1.0.4] — 2026-09-08
 
 ### Added
