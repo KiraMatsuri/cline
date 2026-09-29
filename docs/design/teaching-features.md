@@ -60,6 +60,13 @@
 **修复**：`src/core/teaching/assistantTextSanitizer.ts` 的 `stripLeakedToolCallMarkup()`，
 在 `presentAssistantMessage` 的 `say("text")` 之前调用（`src/core/task/index.ts`）。
 
+**❗ 初版做法被实测证伪（重要教训）**：v2.13 初版写的是「逐行剔除带标记的行」。
+后续实测（taskId=1790692089951）发现学生依旧看到一行 `- [ ] 检索第 1 周资料内容`：
+`task_progress` 是**多行参数值**，只有首尾两行碰得到标记，**中间行完全干净** ——
+逐行过滤恰好把它留下（431 字符 → 17 字符，没根治）。
+现改为「从第一行带标记的行到**最后**一行带标记的行，整段吞掉」。
+回归测试：`assistantTextSanitizer.test.ts` 里的「多行参数值：中间那行不带标记也必须一并吞掉」。
+
 **为何不做“通用 XML / 标签清洗”**：学生正文里合法出现代码、尖括号、比较符号是常态
 （例如 `a < b`、markdown 表格的 `|`），宽泛清洗极易误删正常内容。
 因此只认**实测确认**的那一个特征：不含全角竖线 U+FF5C → **恒等变换**；
@@ -76,6 +83,48 @@
 **⚠️ 边界**：只隐藏 `say` 变体。`ask:use_mcp_server` 携带“批准 / 拒绝”按钮，
 一并隐藏会让未 `autoApprove` 的工具无法确认。`filterVisibleMessages` 先 `ask` 后 `say`
 两个独立 switch，分支天然只作用于 `say`。
+
+### ③ 关掉 focus chain（task_progress 清单）
+
+**背景**：上一条的残留根因就在 focus chain —— 是它驱动模型每次工具调用都附带
+`task_progress` 清单。另外每轮用户消息还会被追加一段约 **838 字符**的
+`# task_progress RECOMMENDED` 提醒（实测 7 轮任务因此多烧约 5.9k 字符）。
+
+**修复**（学生端硬编码关闭，与「隐藏思考链」同一策略）：
+- `src/shared/FocusChainSettings.ts`：`DEFAULT_FOCUS_CHAIN_SETTINGS.enabled` → `false`
+- 三个**读取点**就地强制覆盖为 `enabled: false`：
+  - `src/core/task/index.ts`（Task 初始化的 FocusChainManager）
+  - `src/core/task/index.ts`（系统提示词上下文）
+  - `src/core/controller/index.ts`（下发给 webview 的 state）
+
+**为何不只改默认值**：该值来自 `ExtensionContext.globalState`，只要历史上被写过
+`enabled: true`（老师点过设置页开关），默认值就不再生效。学生端需要"关得住"。
+**代价**：设置页那个开关会恒显为关，点了也不会生效。
+
+### ④ 改写「连续错误」提示（mistake_limit_reached）
+
+原文案（非 claude 分支）会告诉学生：
+
+> Cline uses complex prompts and iterative task execution that may be challenging for less capable models.
+> For best results, it's recommended to use Claude 4 Sonnet…
+
+对教学产品有两个问题：
+1. **根因判断错**：实测本处的真因是模型吐出了**非标准的工具调用方言**（Cline 解析不出 `tool_use`），
+   而不是"模型弱" —— 同一会话里模型下一轮自己换成正确格式后就一次成功了；
+2. **导向错**：它把学生引向"换模型 / 换工具"，而不是引导他们改进提问方式。
+
+**修复**：`src/core/task/index.ts` 的 `ask("mistake_limit_reached", …)` 改为教学化表述 ——
+只讲"怎么把问题问好"（拆小 / 说清目标 / 贴上下文），**不提模型能力，也不提任何替代产品**。
+次数用 `consecutiveMistakeCount` 动态插值，避免把可配置的 `maxConsecutiveMistakes` 写死。
+
+### ⑤ 方言归一化（**暂缓，仅记录**）
+
+真正治本的做法：在流式文本里把模型私有方言（实测是 DeepSeek 的 DSML 标记）
+**翻译成 Cline 自己的 XML 工具标签**，让工具调用真正成功 —— 模型就不会再白跑 3 轮、
+也不会触发 `mistake_limit_reached`。
+
+**为何暂缓**：它要改核心对话链路（解析 / 流式路径），且需要覆盖多种私有方言，
+回归面大。当前用 ①+③+④ 已经能把学生端症状盖住。
 
 ### 取证方法（以后排查同类问题直接复用）
 
