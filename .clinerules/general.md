@@ -18,6 +18,25 @@ This file is the secret sauce for working effectively in this codebase. It captu
 - When adding new feature flags, see this PR as a reference https://github.com/cline/cline/pull/7566
 - Additional instructions about making requests: @.clinerules/network.md
 
+## MCP Settings File Location
+
+`cline_mcp_settings.json` is **NOT** at `<globalStorage>/cline_mcp_settings.json`. It lives at `<globalStorage>/settings/cline_mcp_settings.json`.
+
+**Why this is a trap:** `getMcpSettingsFilePath(dir)` does *not* append a `settings/` segment — it only does `path.join(dir, "cline_mcp_settings.json")`. The `settings/` part comes from the *argument*:
+
+```ts
+ensureSettingsDirectoryExists()            // = getGlobalStorageDir("settings") → <globalStorage>/settings
+McpHub:  getMcpSettingsFilePath(await ensureSettingsDirectoryExists())
+// ⇒ <globalStorage>/settings/cline_mcp_settings.json
+```
+
+So if you pass `context.globalStorageUri.fsPath` directly, you write to `<globalStorage>/cline_mcp_settings.json` — a file **McpHub never reads**. Nothing errors; the feature just silently does nothing. Always pass `await ensureSettingsDirectoryExists()` (the same no-arg call `McpHub` uses) rather than hardcoding or deriving the directory.
+
+Two more facts worth knowing when writing to this file:
+
+- **No McpHub API call needed after writing.** `McpHub.watchMcpSettingsFile()` uses chokidar (`awaitWriteFinish.stabilityThreshold: 100`, `atomic: true`) and reloads on external change. It skips only when `isUpdatingClineSettings` / `isUpdatingFromRemoteConfig` is set — and those flags are only set when Cline itself edits `autoApprove`/`timeout`/`disabled`.
+- **Only `autoApprove` and `timeout` avoid a restart.** `configsRequireRestart()` compares everything else, so changing `args` / `command` / `env` / `disabled` kills and re-spawns the server (there is a brief window where that server is unavailable).
+
 ## Unit Tests (`npm run test:unit`)
 
 `package.json` declared the script and `.mocharc.json` existed, yet **`npm run test:unit` could not run at all**. Everything below was learned the hard way.
