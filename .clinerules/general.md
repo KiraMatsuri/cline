@@ -36,6 +36,8 @@ Two more facts worth knowing when writing to this file:
 
 - **No McpHub API call needed after writing.** `McpHub.watchMcpSettingsFile()` uses chokidar (`awaitWriteFinish.stabilityThreshold: 100`, `atomic: true`) and reloads on external change. It skips only when `isUpdatingClineSettings` / `isUpdatingFromRemoteConfig` is set — and those flags are only set when Cline itself edits `autoApprove`/`timeout`/`disabled`.
 - **Only `autoApprove` and `timeout` avoid a restart.** `configsRequireRestart()` compares everything else, so changing `args` / `command` / `env` / `disabled` kills and re-spawns the server (there is a brief window where that server is unavailable).
+- **A UTF-8 BOM in that file silently disables the reload.** PowerShell 5.1's `Set-Content -Encoding utf8` writes a BOM; `readAndValidateMcpSettingsFile()` then fails `JSON.parse` and **skips the reload with no visible error** — from the outside it just looks like "my edit did nothing". Write it without a BOM (`[System.IO.File]::WriteAllText($p, $t, (New-Object System.Text.UTF8Encoding $false))`), or via Cline's own code (`fs.writeFile(..., "utf-8")` never emits a BOM).
+- **McpHub rewrites this file itself** when the user toggles auto-approve / timeout / disabled in the MCP panel. It re-serializes its zod-parsed config, so the key order and a materialized `disabled: false` will differ from whatever your code wrote. Harmless — but note `env` **is** preserved across that rewrite. (If `ELECTRON_RUN_AS_NODE` were ever dropped, the next spawn of a `Code.exe <script>` server would pop open a VS Code window instead of running as node, and it would look like "the MCP server won't start".)
 
 ## Unit Tests (`npm run test:unit`)
 

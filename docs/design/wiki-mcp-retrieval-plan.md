@@ -1597,13 +1597,13 @@ Expected: `10 passing`（含 ★ 尊重 disabled 的那条）。
 	registerWikiMcpConfigWatcher(context)
 ```
 
-- [x] **Step 6: 手工验证（VS Code 内）** —— 不可执行，用自动化替代
+- [x] **Step 6: 手工验证（VS Code 内）** —— 已通过 **F5 开发宿主**完成
 
 Run: `npm run watch`（若已在跑则跳过），然后**重载 VS Code 窗口**（命令面板 → `Developer: Reload Window`）。
 
-> ⚠️ **无法执行**：该扩展并未安装在当前 VS Code profile（`~/.vscode/extensions` 下无 `shiinamatsuri.*`），
-> 因此无法重载窗口去观察 MCP 面板。改为**自动化端到端验证**（见文末），覆盖了本步骤想验证的
-> “删除→重建”以及另外两条边界。面板上是否 Connected 留给安装后的人工回归。
+> ✅ 原以为“扩展未安装 → 做不了”，实际上 **F5 开发宿主**是更好的路径：它直接加载当前源码，
+> 不需要打包/安装，且 `globalStorage` 与安装版**同一个目录**（按扩展 ID 寻址）。
+> 实测记录见文末「F5 开发宿主实测」。
 
 Expected:
 1. `cline_mcp_settings.json` 中出现 `wiki` 条目（含 `args: [... "--week", "5", "--server", ...]`）
@@ -1690,11 +1690,53 @@ export async function getMcpSettingsFilePath(settingsDirectoryPath: string): Pro
 > 该探针**不覆盖**路径推导本身（disk 层被打桩）—— 那条由上面的
 > 「★ 路径修正」的源码等价性保证。两处证据互补，不要只看一处。
 
-#### 遗留：仍待人工回归
+#### F5 开发宿主实测（2026-09-29，已全部完成）
 
-「MCP 面板显示 Connected」需要扩展安装后重载窗口才能确认。
-考虑到 Task 3/4 已用真实宿主链路（`Code.exe` + `ELECTRON_RUN_AS_NODE=1`）跑通了
-同一个产物与同一份 args 形式，风险已很低，但**不能声称已验证**。
+**前提修正**：按 F5 前必须先重建产物 —— `dist/extension.js` 当时比源码旧，**不含 `ensureWikiMcpServer`**。
+直接 F5 会跑到旧代码。已用「搜索产物字符串」确认接线已进 bundle（不靠时间戳推断）。
+
+| # | 验证项 | 证据 | 结果 |
+|---|---|---|---|
+| 1 | 条目写入**正确路径** | `<globalStorage>\settings\cline_mcp_settings.json` 出现 `wiki` 条目 | ✅ |
+| 2 | **反向判别**：错误位置未被误建 | `<globalStorage>\cline_mcp_settings.json` **不存在** | ✅ |
+| 3 | 无游离配置文件 | `Code/User` 全树只有 1 个 `cline_mcp_settings.json` | ✅ |
+| 4 | McpHub 真的 spawn 了它 | `PID 16008 :: Code.exe d:\cline\dist\mcp-wiki-server.js --week 1 --server http://localhost:4001` | ✅ |
+| 5 | **★ 删除→自动重建** | 手工删除条目 → `Developer: Reload Window` → 条目被重建 | ✅ |
+| 6 | **★ 外部写入触发 watcher 重载** | 无 BOM 写入空表后，`PID 16008` **立即退出** | ✅ |
+| 7 | **★ 周数变化 → args 重写 → server 重启** | 设置 `currentWeek` 1→2 后，条目变为 `--week 2`，新 `PID 14580` 命令行同步为 `--week 2` | ✅ |
+| 8 | MCP 面板呈现层 | 截图：绿点已连接、`Tools (3)`、三个工具及其参数、`Request Timeout: 30 seconds`、三个 Auto-approve 均勾选 | ✅ |
+| 9 | 进程确为 **node 模式**而非弹出的 VS Code 窗口 | `PID 14580` 工作集 100MB、**子进程数 = 0**（VS Code 窗口会有 renderer/gpu/utility 子进程） | ✅ |
+
+第 7 条本质上是 **Task 6 的主题**（周数变化监听），已提前获得实证。
+
+**L1 边界防线在 UI 上可见地成立**：面板里 `search_wiki` 的参数**只有** `query` / `limit`，
+`read_wiki_chunk` 只有 `chunk_id`，`list_wiki_weeks` 无参数 —— 没有任何周数字段。
+
+#### ★ 未预料到的发现：McpHub 会自己重写条目
+
+重载后观察到的条目 **键序与 `disabled` 字段和我们的写入器不一致**：
+
+```
+我们的写入器：{ type, command, args, env, autoApprove, timeout }
+磁盘上的实际值：{ autoApprove, disabled, timeout, type, command, args, env }
+```
+
+后者是 **zod 解析后的键序**，说明这是 **McpHub 自己重写的**（经由
+`updateServerAutoApprove` / `updateServerTimeout` / `toggleServerDisabled` 之一，
+例如用户在面板里勾选了 “Auto-approve all tools”）。
+
+这不影响正确性，反而排除了一个真实风险：**`env.ELECTRON_RUN_AS_NODE` 在 McpHub 重写后仍然保留**。
+若它被丢弃，下次 spawn 时 `Code.exe <script>` 会**弹出一个 VS Code 窗口**而不是跑 node，
+且该故障看起来只是“MCP server 起不来”，极难定位。
+
+#### ⚠️ 两个留给后续的坑
+
+1. **带 UTF-8 BOM 的配置文件会让 watcher 静默失效**。实测：用 PowerShell 5.1 的
+   `Set-Content -Encoding utf8` 写入（带 BOM）→ `JSON.parse` 失败 → McpHub **静默跳过重载**，
+   外部看只是“改了没反应”。产品自身用 `fs.writeFile(..., "utf-8")` **不写 BOM**，因此不受影响，
+   但这个现象值得记住（它也是本次一开始误判为“watcher 不工作”的原因）。
+2. **正式 .vsix 必须包含 `dist/mcp-wiki-server.js`**。F5 用的是仓库内路径，覆盖不到打包问题；
+   若发布包漏掉该文件，registrar 会写一个指向不存在文件的 args。属 Task 10 / 发版环节检查项。
 
 ---
 
