@@ -221,14 +221,40 @@ const e2eBuildConfig = {
 	plugins: [aliasResolverPlugin, esbuildProblemMatcherPlugin],
 }
 
+// Wiki MCP server configuration
+//
+// 这是一个**独立的 stdio MCP server 进程**，由插件以
+// `process.execPath` + ELECTRON_RUN_AS_NODE=1 拉起（见 docs/design/wiki-mcp-retrieval-design.md §D3）。
+// 因此：
+//   - 必须 `external: []`：它不能用 vscode API，也不需要把 vscode 留给宿主；
+//     @modelcontextprotocol/sdk 等依赖要真正打进产物里。
+//   - 不挂 copyWasmFiles：这个进程用不到 tree-sitter。
+//   - 产物固定为 `mcp-wiki-server.js`，与 WikiMcpRegistrar 里的 args 路径约定一致。
+const mcpWikiServerConfig = {
+	...baseConfig,
+	entryPoints: ["src/core/teaching/mcp-wiki-server.ts"],
+	outfile: `${destDir}/mcp-wiki-server.js`,
+	external: [],
+	plugins: [aliasResolverPlugin, esbuildProblemMatcherPlugin],
+}
+
 async function main() {
 	const config = standalone ? standaloneConfig : e2eBuild ? e2eBuildConfig : extensionConfig
-	const extensionCtx = await esbuild.context(config)
+
+	// e2e 构建只产出测试用产物，不产出 MCP server
+	const configs = e2eBuild ? [config] : [config, mcpWikiServerConfig]
+
 	if (watch) {
-		await extensionCtx.watch()
+		for (const c of configs) {
+			const ctx = await esbuild.context(c)
+			await ctx.watch()
+		}
 	} else {
-		await extensionCtx.rebuild()
-		await extensionCtx.dispose()
+		for (const c of configs) {
+			const ctx = await esbuild.context(c)
+			await ctx.rebuild()
+			await ctx.dispose()
+		}
 	}
 }
 
