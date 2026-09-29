@@ -1,5 +1,5 @@
 import { expect } from "chai"
-import { buildWikiServerEntry, decideWriteAction, mergeWikiServerEntry } from "../WikiMcpRegistrar"
+import { buildWikiServerEntry, decideWriteAction, detectDisabledTransition, mergeWikiServerEntry } from "../WikiMcpRegistrar"
 
 const base = {
 	execPath: "C:/vscode/Code.exe",
@@ -87,5 +87,34 @@ describe("decideWriteAction", () => {
 	it("★ 文件存在但解析失败 → 无论如何都 abort（不得清空其它 MCP server）", () => {
 		expect(decideWriteAction("broken", true)).to.equal("abort")
 		expect(decideWriteAction("broken", false)).to.equal("abort")
+	})
+})
+
+describe("detectDisabledTransition", () => {
+	it("false → true 视为禁用事件", () => {
+		expect(
+			detectDisabledTransition({} as never, { wiki: { type: "stdio", command: "c", disabled: true } } as never),
+		).to.equal(true)
+	})
+
+	it("本就是 true → 不重复提示", () => {
+		const prev = { wiki: { type: "stdio", command: "c", disabled: true } } as never
+		expect(detectDisabledTransition(prev, prev)).to.equal(false)
+	})
+
+	it("条目不存在 → 不提示", () => {
+		expect(detectDisabledTransition({} as never, {} as never)).to.equal(false)
+	})
+
+	it("★ 真实跃迁：启用（无 disabled 字段）→ 禁用 → 提示", () => {
+		const prev = { wiki: { type: "stdio", command: "c" } } as never
+		const next = { wiki: { type: "stdio", command: "c", disabled: true } } as never
+		expect(detectDisabledTransition(prev, next)).to.equal(true)
+	})
+
+	it("★ 反方向：禁用 → 启用 → 不提示", () => {
+		const prev = { wiki: { type: "stdio", command: "c", disabled: true } } as never
+		const next = { wiki: { type: "stdio", command: "c" } } as never
+		expect(detectDisabledTransition(prev, next)).to.equal(false)
 	})
 })

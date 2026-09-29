@@ -141,9 +141,14 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push({ dispose: () => llmWikiService.dispose() })
 
 	// 【v2.13】wiki MCP server 自注册（缺失即重建 / command·args 被篡改即覆盖；disabled 则尊重）
-	const { ensureWikiMcpServer, registerWikiMcpConfigWatcher } = await import("./core/teaching/WikiMcpRegistrar")
+	const { ensureWikiMcpServer, registerWikiMcpConfigWatcher, watchWikiServerDisabled } = await import(
+		"./core/teaching/WikiMcpRegistrar"
+	)
 	await ensureWikiMcpServer(context)
 	registerWikiMcpConfigWatcher(context)
+	// 【v2.13】wiki server 被禁用时提示后果并提供"重新启用"
+	// （禁用点击发生在 Cline 自带 MCP 面板里，无法直接拦截 → 配置变化后轮询检测，见 spec §D5）
+	watchWikiServerDisabled(context)
 
 	// 【v2.5】自动日志路径由 VscodeWebviewProvider.assignmentManager 统一处理
 	// （该实例已调用 startWatchingWorkspaceOpen，避免双实例导致 cachedAutoLogPath 不同步）

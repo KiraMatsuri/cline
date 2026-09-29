@@ -24,6 +24,8 @@ import { ensureSettingsDirectoryExists, getMcpSettingsFilePath } from "@core/sto
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as vscode from "vscode"
+import { HostProvider } from "@/hosts/host-provider"
+import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { clampWeek } from "./mcp/args"
 
@@ -37,7 +39,7 @@ export interface McpServerEntry {
 	disabled?: boolean
 }
 
-type McpServersMap = Record<string, McpServerEntry>
+export type McpServersMap = Record<string, McpServerEntry>
 
 export const WIKI_SERVER_NAME = "wiki"
 export const WIKI_TOOL_NAMES = ["search_wiki", "read_wiki_chunk", "list_wiki_weeks"]
@@ -188,4 +190,86 @@ export function registerWikiMcpConfigWatcher(context: vscode.ExtensionContext): 
 	})
 	context.subscriptions.push(disposable)
 	return disposable
+}
+
+/** 检测"由启用变为禁用"这一次状态跃迁（避免每次读文件都弹提示） */
+export function detectDisabledTransition(prev: McpServersMap, next: McpServersMap): boolean {
+	const p = prev[WIKI_SERVER_NAME]
+	const n = next[WIKI_SERVER_NAME]
+	if (!n) {
+		return false
+	}
+	const wasDisabled = p?.disabled === true
+	const nowDisabled = n.disabled === true
+	return !wasDisabled && nowDisabled
+}
+
+/** 轮询间隔。禁用动作发生在 Cline 自带的 MCP 面板里，我们无法直接拦截那次点击（见 spec §D5）。 */
+const DISABLED_POLL_MS = 2000
+
+/**
+ * 监听 wiki server 被禁用 → 提示后果并提供"重新启用"。
+ *
+ * 为什么用**轮询**而不是文件监听：
+ *   McpHub 写这个文件是**原子写**（临时文件 + rename），对单文件做 fs.watch 会被这种模式坑到；
+ *   而该文件很小，2s 读一次的开销可忽略。轮询同时也避开了跨平台差异。
+ *
+ * ⚠️ 首次读取**只作为基线**，不判定跃迁。否则"用户本来就把 server 禁用了"这种情况
+ * 会在每次激活时都弹一次警告 —— 那与 spec §D5「禁用可控（尊重学生选择）」直接矛盾。
+ */
+export function watchWikiServerDisabled(context: vscode.ExtensionContext): vscode.Disposable {
+	let lastMap: McpServersMap | undefined
+
+	const tick = async (): Promise<void> => {
+		try {
+			// 与 McpHub 用同一个函数取目录（切勿改成 context.globalStorageUri.fsPath）
+			const settingsDir = await ensureSettingsDirectoryExists()
+			const { map } = await readMcpSettings(settingsDir)
+			// 首次只建立基线：没有"上一次"就不存在"跃迁"
+			if (lastMap !== undefined && detectDisabledTransition(lastMap, map)) {
+				// 必须走 host bridge（项目规范禁止直接用 vscode.window），
+				// 且它在 JetBrains / CLI 宿主下也有实现
+				const res = await HostProvider.window.showMessage({
+					type: ShowMessageType.WARNING,
+					message: "课程资料检索已禁用：AI 将无法获取教师发布的课程资料，可能给出超出教学进度的回答。是否重新启用？",
+					options: { modal: false, items: ["重新启用", "保持禁用"] },
+				})
+				if (res.selectedOption === "重新启用") {
+					await reEnableWikiServer()
+				}
+			}
+			lastMap = map
+		} catch {
+			// 读配置失败不影响主流程
+		}
+	}
+
+	void tick()
+	const timer = setInterval(() => void tick(), DISABLED_POLL_MS)
+	const disposable = new vscode.Disposable(() => clearInterval(timer))
+	context.subscriptions.push(disposable)
+	return disposable
+}
+
+/** 把条目写回 disabled:false（用于学生在提示里选择"重新启用"） */
+export async function reEnableWikiServer(): Promise<void> {
+	try {
+		// 同样必须用 ensureSettingsDirectoryExists()，否则会写到 McpHub 看不到的位置
+		const settingsDir = await ensureSettingsDirectoryExists()
+		const { filePath, map, raw, outcome } = await readMcpSettings(settingsDir)
+		if (outcome === "broken") {
+			Logger.error(`[WikiMcpRegistrar] 配置文件无法解析，放弃重新启用: ${filePath}`)
+			return
+		}
+		const cur = map[WIKI_SERVER_NAME]
+		if (!cur) {
+			return
+		}
+		map[WIKI_SERVER_NAME] = { ...cur, disabled: false }
+		raw.mcpServers = map
+		await fs.writeFile(filePath, JSON.stringify(raw, null, 2), "utf-8")
+		Logger.log("[WikiMcpRegistrar] 已重新启用 wiki MCP server")
+	} catch (e) {
+		Logger.error("[WikiMcpRegistrar] 重新启用失败:", e as Error)
+	}
 }
