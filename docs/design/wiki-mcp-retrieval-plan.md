@@ -517,7 +517,7 @@ git commit -m "feat(wiki): add search endpoint with SQL-enforced week boundary"
   - `getChunk(db, { chunkId, week }): Promise<WikiChunkFull | null>` —— **越界返回 null**（视为不存在）
   - `listWeeks(db, { week }): Promise<Array<{ week: number; count: number }>>`
 
-- [ ] **Step 1: 追加验证用例（先失败）**
+- [x] **Step 1: 追加验证用例（先失败）**
 
 在 `verify-wiki-search.mjs` 的 `console.log(... passed ...)` 之前追加：
 
@@ -561,12 +561,14 @@ git commit -m "feat(wiki): add search endpoint with SQL-enforced week boundary"
 }
 ```
 
-- [ ] **Step 2: 跑脚本确认失败**
+- [x] **Step 2: 跑脚本确认失败**
 
 Run: `node scripts\verify-wiki-search.mjs`
 Expected: chunk / weeks 用例报 `❌`（404），其余通过。
+实测：`14 passed, 3 failed`（chunk 200、weeks 200、weeks 数组 三项 ❌）。
+⚠️ 此时“week=17 取不到第 18 周 chunk”是**空跑通过**（404 因为端点不存在）—— 必须在 Step 5 后确认它变为“因边界而 404”。
 
-- [ ] **Step 3: 实现两个查询函数**
+- [x] **Step 3: 实现两个查询函数**
 
 在 `wikiSearch.ts` 末尾追加：
 
@@ -615,7 +617,7 @@ export async function listWeeks(
 }
 ```
 
-- [ ] **Step 4: 在 server.ts 注册两个端点**
+- [x] **Step 4: 在 server.ts 注册两个端点**
 
 在 Task 1 新增的 `/api/v1/wiki/search` 之后插入：
 
@@ -676,7 +678,7 @@ export async function listWeeks(
 import { clampLimit, clampWeek, getChunk, listWeeks, searchWiki } from "./wikiSearch";
 ```
 
-- [ ] **Step 5: 跑完整验证确认通过**
+- [x] **Step 5: 跑完整验证确认通过**
 
 Run:
 ```powershell
@@ -686,13 +688,38 @@ $env:BASE_URL="http://127.0.0.1:4001"; node scripts\verify-wiki-search.mjs
 ```
 Expected: 全部 `✅`，`0 failed`，exit code 0。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd d:\web-dashboard
 git add teaching-server/src/wikiSearch.ts teaching-server/src/server.ts teaching-server/scripts/verify-wiki-search.mjs
 git commit -m "feat(wiki): add chunk and weeks retrieval endpoints"
 ```
+
+### Task 2 验证记录（2026-09-29 实测）
+
+`17 passed, 0 failed`，exit 0（红灯阶段为 `14 passed, 3 failed`）。
+
+**关键边界非空跑证明**（同一含斜杠 id，只改 week）：
+
+| 请求 | status | ok | content 长度 |
+|---|---|---|---|
+| `chunk?chunk_id=textbook_python/27__chunk0&week=18` | 200 | true | 2706 |
+| `chunk?chunk_id=textbook_python/27__chunk0&week=17` | 404 | false | — |
+
+→ 证明两件事：(1) **含斜杠 id 走 query 参数可用**（这是 Task 1 踩过的 404 根因，此处重测确认）；
+(2) 越界返回 404 是**真由 `applicable_week <= ?` 产生**，不是端点缺失造成的假通过。
+
+**参数校验**：`week=0` / `week=abc` / 缺 `chunk_id` → 全 400。
+
+**weeks 输出**（仅计数，无内容）：
+- `week=1` → `[{week:1,count:5}]`
+- `week=5` → `[{1,5},{2,7},{4,5},{5,3}]`
+- `week=18` → 13 个周，最大为 18 → 从不返回超过当前周的条目
+
+**类型检查**：`wikiSearch.ts` 自身 0 错误；新增 1 条与既有 3 条完全同型的 TS2835（仓库基线 10 → 11，均为历史遗留）。
+
+**提交**：`8629037` `feat(wiki): add chunk and weeks retrieval endpoints`（135+/1-）。
 
 ---
 
