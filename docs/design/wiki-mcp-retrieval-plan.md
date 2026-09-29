@@ -209,7 +209,7 @@ Expected（两种情况都要记录）：
 
 Run: `Remove-Item d:\cline\scripts\spike-*.mjs`（已执行，另含 `spike-run.ps1` / `spike-runtime.mjs`）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd d:\cline
@@ -233,7 +233,7 @@ git commit -m "docs(plan): add MCP retrieval implementation plan with spike resu
   - `searchWiki(db: Database, opts: { week: number; q: string; limit: number }): Promise<WikiSearchHit[]>`
   - `WikiSearchHit = { id: string; title: string; applicable_week: number; chunk_index: number; snippet: string }`
 
-- [ ] **Step 1: 写验证脚本（先失败）**
+- [x] **Step 1: 写验证脚本（先失败）**
 
 创建 `d:\web-dashboard\teaching-server\scripts\verify-wiki-search.mjs`：
 
@@ -313,7 +313,7 @@ console.log(`\n=== ${pass} passed, ${fail} failed ===\n`);
 process.exit(fail === 0 ? 0 : 1);
 ```
 
-- [ ] **Step 2: 跑脚本确认失败**
+- [x] **Step 2: 跑脚本确认失败**
 
 Run:
 ```powershell
@@ -321,8 +321,9 @@ cd d:\web-dashboard\teaching-server
 $env:BASE_URL="http://127.0.0.1:4001"; node scripts\verify-wiki-search.mjs
 ```
 Expected: 多项 `❌`（端点尚不存在，返回 404），最后 `exit code 1`。
+实测：`2 passed, 9 failed`（9 项均为 404；2 项"通过"是因为响应体为 null 时空数组断言恒真 —— 属预期的空跑通过）。
 
-- [ ] **Step 3: 实现检索模块**
+- [x] **Step 3: 实现检索模块**
 
 创建 `d:\web-dashboard\teaching-server\src\wikiSearch.ts`：
 
@@ -411,7 +412,7 @@ export async function searchWiki(
 }
 ```
 
-- [ ] **Step 4: 在 server.ts 注册 search 端点**
+- [x] **Step 4: 在 server.ts 注册 search 端点**
 
 在 `d:\web-dashboard\teaching-server\src\server.ts` 中，找到 `app.get("/api/v1/wiki", ...)`（学生端拉取资料）**之前**插入：
 
@@ -454,7 +455,7 @@ import { clampLimit, clampWeek, searchWiki } from "./wikiSearch";
 
 > ⚠️ teaching-server 的 import 未带 `.js` 扩展名（项目既有写法，`tsx` 运行时容忍）。**保持与既有 import 一致的风格**。
 
-- [ ] **Step 5: 跑验证脚本确认通过**
+- [x] **Step 5: 跑验证脚本确认通过**
 
 Run:
 ```powershell
@@ -465,13 +466,41 @@ $env:BASE_URL="http://127.0.0.1:4001"; node scripts\verify-wiki-search.mjs
 ```
 Expected: `✅ 全部通过`，`=== N passed, 0 failed ===`，exit code 0。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd d:\web-dashboard
 git add teaching-server/src/wikiSearch.ts teaching-server/src/server.ts teaching-server/scripts/verify-wiki-search.mjs
 git commit -m "feat(wiki): add search endpoint with SQL-enforced week boundary"
 ```
+
+### Task 1 验证记录（2026-09-29 实测）
+
+- **红灯→绿灯**：实现前 `2 passed, 9 failed`（均为 404）→ 实现后 `11 passed, 0 failed`，exit 0。
+- **边界非空跑证明**（这是本任务最关键的一点）：
+  | 请求 | 返回条数 | 实际 `applicable_week` |
+  |---|---|---|
+  | `week=1&q=` | 5 | 均 1 |
+  | `week=2&q=` | 10 | {2,1} |
+  | `week=4&q=` | 10 | {4,2} |
+  | `week=3&q=Git` | **2** | 均 2 |
+  | `week=18&q=Git` | **10** | 18×9 + 15 |
+  同一关键词在不同 week 下结果集不同，且严格满足 `applicable_week <= week` → SQL 级周数边界在真实数据（149 行）上生效。
+- **⚠️ 必要偏差 1 —— 验证脚本不能用 `process.exit()`**：
+  Node 24 + Windows 下，`fetch` 的 keep-alive socket 未收敛时调 `process.exit()` 会触发 libuv 断言崩溃
+  （`Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76`），
+  退出码变成 `-1073740791`，使脚本无法作为 CI 信号。
+  → 改用 `process.exitCode = fail === 0 ? 0 : 1`，让事件循环自然退出。**退出码语义不变**（失败仍为 1），已实测 exit 0。
+- **⚠️ 必要偏差 2 —— `tsc --noEmit` 是既有红灯**：
+  仓库基线就有 `officeParser.js` / `llmHelper.js` / `pdf-parse` / `pptx-parser` / `Mammoth` / 若干 implicit-any 错误。
+  本次新增的 `import "./wikiSearch"` 会产生同类 TS2835（与既有 4 条 import 完全同型）。
+  **不修复**：`deploy/Dockerfile.teaching-server` 的生产启动命令是 `npx tsx src/server.ts`（tsx 容忍无扩展名 import），
+  `tsc` 不在构建链路里 → 无回归。`wikiSearch.ts` 自身 0 错误。
+- **提交纪律**：发现工作区遗留了上一轮未提交的 v2.12 修复（同在 `server.ts`）。
+  已将两者拆分为两个准确提交，未丢弃任何代码：
+  - `0ab1581` `fix(wiki): v2.12 资料删除/重清洗改走 query 参数…`（260+/118-）
+  - `94dfe9c` `feat(wiki): add search endpoint with SQL-enforced week boundary`（188+/0-）
+  `CHANGELOG.md` / `deploy/*` / `frontend/*` / `cleanup-orphan-wiki.mjs` 仍保持未提交状态（留给用户处置）。
 
 ---
 
