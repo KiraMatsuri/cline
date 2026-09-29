@@ -18,6 +18,23 @@ This file is the secret sauce for working effectively in this codebase. It captu
 - When adding new feature flags, see this PR as a reference https://github.com/cline/cline/pull/7566
 - Additional instructions about making requests: @.clinerules/network.md
 
+## Unit Tests (`npm run test:unit`)
+
+`package.json` declared the script and `.mocharc.json` existed, yet **`npm run test:unit` could not run at all**. Everything below was learned the hard way.
+
+**1. The runner deps were not declared.** `mocha`, `ts-node` and `source-map-support` were missing from both `dependencies` and `devDependencies` (and from `node_modules`) → `Error: spawn mocha ENOENT`. They are now real `devDependencies`; keep them if you ever rebuild `node_modules`.
+
+**2. 846 stale `.js` files live under `src/` and shadow the `.ts` sources.** They are gitignored leftovers from an older non-esbuild build, but they sit *next to* the real sources, so `require("../utils/path")` resolves `path.js` before `path.ts`. Those artifacts still contain alias imports (`import { … } from "@core/workspace"`), which the ESM loader cannot resolve → `Error: Cannot find package '@core/workspace' imported from src/utils/path.js`.
+Fix (already applied): `"preferTsExts": true` under the `ts-node` key of `tsconfig.unit-test.json`. **Do NOT delete the `.js` files** — flipping resolution order is enough and non-destructive.
+
+**3. Baseline is green — use it as the bar.** `npm run test:unit` → `718 passing, 111 pending, 0 failing` in ~6s. Any failure you see is yours, not pre-existing.
+
+**4. Pass mocha flags after `--`**: `npm run test:unit -- --grep "parseMcpArgs"`.
+
+**5. Tests must not import `vscode` directly.** `src/test/requires.ts` stubs it (plus `@integrations/checkpoints`) via `src/test/vscode-mock.ts`. New tests go in `src/**/__tests__/*.ts`.
+
+**6. Adding an esbuild entry point?** Each entry is its own config object (`extensionConfig`, `standaloneConfig`, `e2eBuildConfig`) built inside `main()` — there is no shared `entryPoints` array to append to.
+
 ## gRPC/Protobuf Communication
 The extension and webview communicate via gRPC-like protocol over VS Code message passing.
 

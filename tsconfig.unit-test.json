@@ -9,6 +9,7 @@
 		]
 	},
 	"ts-node": {
+		"preferTsExts": true,
 		"require": [
 			"tsconfig-paths/register"
 		]
