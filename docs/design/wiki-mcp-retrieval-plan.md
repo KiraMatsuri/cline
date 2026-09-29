@@ -1083,7 +1083,7 @@ git commit -m "feat(mcp): add wiki stdio MCP server with three read-only tools"
 - Consumes: Task 3 的 `dist/mcp-wiki-server.js`；Task 1/2 的后端端点
 - Produces: 验证结论 —— 三个工具在真实后端上各自返回预期结构
 
-- [ ] **Step 1: 写 MCP 端到端验证脚本（先失败）**
+- [x] **Step 1: 写 MCP 端到端验证脚本（先失败）**
 
 创建 `d:\cline\scripts\verify-mcp-wiki-server.mjs`：
 
@@ -1239,7 +1239,7 @@ child.kill();
 process.exit(fail === 0 ? 0 : 1);
 ```
 
-- [ ] **Step 2: 跑脚本确认失败或部分通过**
+- [x] **Step 2: 跑脚本确认失败或部分通过**
 
 Run:
 ```powershell
@@ -1249,7 +1249,7 @@ node scripts\verify-mcp-wiki-server.mjs
 ```
 Expected: 若 Task 1/2 的后端未启动，应看到"后端不可达"相关断言通过、其余多项 `❌`。先启动后端再继续。
 
-- [ ] **Step 3: 启动后端并跑通**
+- [x] **Step 3: 启动后端并跑通**
 
 Run（teaching-server 另开终端 `npm run dev` 后）：
 ```powershell
@@ -1258,13 +1258,62 @@ $env:SERVER="http://127.0.0.1:4001"; $env:WEEK="5"; node scripts\verify-mcp-wiki
 ```
 Expected: 全部 `✅`，`0 failed`。**重点确认两条 ★ 用例**（工具参数无周数字段、结果不越界）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 cd d:\cline
 git add scripts/verify-mcp-wiki-server.mjs
 git commit -m "test(mcp): add end-to-end verification for wiki MCP server"
 ```
+
+### Task 4 验证记录（2026-09-29 实测）
+
+**提交**：`d9587ac0`（2 files, 235+/1-）。
+
+**用法**：
+```powershell
+cd d:\cline
+node esbuild.mjs
+$env:SERVER="http://127.0.0.1:4001"; $env:WEEK="5"; node scripts\verify-mcp-wiki-server.mjs
+```
+
+#### 结果
+
+| 场景 | 结果 |
+|---|---|
+| `process.execPath`（node.exe） | `16 passed, 0 failed`，exit 0 |
+| `Code.exe`（真实宿主链路，用 `MCP_RUNTIME` 指定） | `16 passed, 0 failed`，exit 0 |
+| 红灯对照（`SERVER=http://127.0.0.1:59999`） | **9 failed**，exit 1 |
+
+#### 按 spec §6 补齐的错误契约（本任务真正的代码改动）
+
+spec §6 规定了三种错误返回，其中第三条 Task 3 的骨架并未满足：
+
+| 场景 | spec 约定 | Task 3 骨架 | 现在 |
+|---|---|---|---|
+| 后端不可达 / 超时（5s） | `{"error":"wiki_backend_unreachable"}` | ✅ | ✅ |
+| 后端返回 4xx | 透传状态与消息 | ✅（只给 `http_404`） | ✅（优先透传 `reason`） |
+| `read_wiki_chunk` 越界 | **`{"error":"not_found_or_out_of_scope"}`** | ❌ 返回 `http_404` | ✅ |
+
+改法：`wikiBackend.getJson()` 在 `!resp.ok` 时先尝试解析响应体，若含字符串 `reason` 则用它作为 `error`，
+否则回退 `http_<status>`。这样模型才能区分「资料未在当前教学进度内发布」与「后端真的报错了」。
+
+#### 对计划脚本的 5 处加固（原脚本有真实缺陷）
+
+1. **★ 断言存在空跑通过风险（实测确认）**：原脚本只断言「没有越界条目」，
+   而后端不可达时接口返回**空数组** → 该断言平凡成立。加固：加非空前置。
+   加固前红灯只有 2 项失败，加固后是 **9 项失败** —— 数字本身就证明空跑已被堵死。
+2. **新增判别力断言组**：同一关键词在 week=3 / week=18 互相夹逼 ——
+   先证明 week=18 确有条目（否则 week=3 的「不越界」平凡成立），
+   再证明两次结果集不同（直接证明过滤器真的在生效）。这是「边界真的在过滤」的唯一硬证据。
+3. **越界断言收紧到 spec §6 的确切错误码**，并新增「**真实存在但越界**」的用例。
+   原脚本只测了不存在的 id（`__nope__`）—— 那只测得出 404，**测不出边界**。
+4. **新增 `MCP_RUNTIME` 环境变量**（默认 `process.execPath`）：同一脚本可指向 `Code.exe`
+   以验证真实宿主链路。脚本为子进程注入 `ELECTRON_RUN_AS_NODE=1`
+   而 node.exe 会忽略它 → 两种运行时通用。
+5. 退出码用 `process.exitCode` 而非 `process.exit()`（沿用 Task 1 学到的 libuv 崩溃教训）。
+
+> ❌ 计划里 Step 4 只提交脚本；实际还需提交 `wikiBackend.ts`（错误契约）。已一并提交。
 
 ---
 
