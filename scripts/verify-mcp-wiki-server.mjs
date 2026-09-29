@@ -181,7 +181,10 @@ let futureId = null
 
 	check(`week=3 检索 "${QUERY}" 非空`, (p3.data ?? []).length > 0, `count=${p3.data?.length}`)
 	check(`week=18 结果中存在 >3 周的条目（证明库中有后续周资料）`, maxOf(p18) > 3, `max=${maxOf(p18)}`)
-	check(`★ 同一关键词：week=3 时无越界条目`, (p3.data ?? []).every((d) => d.applicable_week <= 3))
+	check(
+		`★ 同一关键词：week=3 时无越界条目`,
+		(p3.data ?? []).every((d) => d.applicable_week <= 3),
+	)
 	check(`★ 判别力：week=3 与 week=18 结果集不同`, ids(p3) !== ids(p18))
 
 	futureId = p18.data?.[0]?.id ?? null

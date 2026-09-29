@@ -19,10 +19,11 @@
  *   - 写入后无需调用任何 McpHub API：chokidar watcher 会自动触发 updateServerConnections()
  *     （awaitWriteFinish 100ms 防抖、atomic: true）。只要不置位 isUpdatingClineSettings，重载必定发生。
  */
+
+import { ensureSettingsDirectoryExists, getMcpSettingsFilePath } from "@core/storage/disk"
 import * as fs from "fs/promises"
 import * as path from "path"
 import * as vscode from "vscode"
-import { ensureSettingsDirectoryExists, getMcpSettingsFilePath } from "@core/storage/disk"
 import { Logger } from "@/shared/services/Logger"
 import { clampWeek } from "./mcp/args"
 
@@ -59,10 +60,7 @@ export function buildWikiServerEntry(opts: {
 }
 
 /** 合并逻辑（纯函数，便于单测）：只补缺失与不一致，不动 disabled，不动其它 server */
-export function mergeWikiServerEntry(
-	existing: McpServersMap,
-	entry: McpServerEntry,
-): { changed: boolean; next: McpServersMap } {
+export function mergeWikiServerEntry(existing: McpServersMap, entry: McpServerEntry): { changed: boolean; next: McpServersMap } {
 	const next: McpServersMap = { ...existing }
 	const cur = next[WIKI_SERVER_NAME]
 
@@ -162,9 +160,7 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 
 		const action = decideWriteAction(outcome, changed)
 		if (action === "abort") {
-			Logger.error(
-				`[WikiMcpRegistrar] MCP 配置文件存在但无法解析，为避免清空其它 MCP server，本次放弃写入: ${filePath}`,
-			)
+			Logger.error(`[WikiMcpRegistrar] MCP 配置文件存在但无法解析，为避免清空其它 MCP server，本次放弃写入: ${filePath}`)
 			return
 		}
 		if (action === "skip") {
