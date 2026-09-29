@@ -82,3 +82,50 @@ describe("LLMWikiService.isWikiMcpAvailable", () => {
 		expect(svc.isWikiMcpAvailable()).to.equal(false)
 	})
 })
+
+describe("LLMWikiService.buildIndexGroups — 教材章节并入（v2.13）", () => {
+	type Internals = {
+		_wikiCache: Map<string, unknown[]>
+		_textbookChapters: unknown[]
+		_currentWeek: number
+	}
+
+	// 单例状态会跨用例残留，每个用例都显式写入三个字段（含收尾复位）
+	const setInternals = (svc: LLMWikiService, wiki: Map<string, unknown[]>, tb: unknown[], week: number): void => {
+		const internals = svc as unknown as Internals
+		internals._wikiCache = wiki
+		internals._textbookChapters = tb
+		internals._currentWeek = week
+	}
+
+	it("★ 教材章节标题并入索引（未 publish-as-wiki 时至少可见章节目录）", () => {
+		const svc = LLMWikiService.getInstance()
+		setInternals(svc, new Map(), [{ id: "t1", title: "第1章 变量", applicable_week: 1, content: "教材正文" }], 5)
+
+		const groups = svc.buildIndexGroups()
+		expect(groups).to.deep.equal([{ week: 1, titles: ["第1章 变量"] }])
+		// 只取标题，不得把教材正文带进索引
+		expect(JSON.stringify(groups).includes("教材正文")).to.equal(false)
+
+		setInternals(svc, new Map(), [], 1)
+	})
+
+	it("★ 教材章节同样受教学边界过滤，且与 wiki 标题跨来源去重", () => {
+		const svc = LLMWikiService.getInstance()
+		setInternals(
+			svc,
+			new Map([["a", [{ id: "a1", title: "第1章 变量 (1/2)", applicable_week: 1, content: "x" }]]]),
+			[
+				{ id: "t1", title: "第1章 变量 (2/2)", applicable_week: 1, content: "y" },
+				{ id: "t2", title: "未来章节", applicable_week: 9, content: "z" },
+			],
+			5,
+		)
+
+		const groups = svc.buildIndexGroups()
+		// 第 9 周章节被过滤；wiki 与教材同章（仅 (i/n) 后缀不同）合并为一条
+		expect(groups).to.deep.equal([{ week: 1, titles: ["第1章 变量"] }])
+
+		setInternals(svc, new Map(), [], 1)
+	})
+})

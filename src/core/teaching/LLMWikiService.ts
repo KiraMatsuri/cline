@@ -216,24 +216,39 @@ export class LLMWikiService {
    */
   public buildIndexGroups(): Array<{ week: number; titles: string[] }> {
     const byWeek = new Map<number, string[]>()
-    for (const chunks of this._wikiCache.values()) {
-      for (const c of chunks) {
-        if (c.applicable_week > this._currentWeek) {
-          continue
-        }
-        const title = normalizeIndexTitle(c.title)
-        if (!title) {
-          continue
-        }
-        if (!byWeek.has(c.applicable_week)) {
-          byWeek.set(c.applicable_week, [])
-        }
-        const arr = byWeek.get(c.applicable_week)!
-        if (!arr.includes(title)) {
-          arr.push(title)
-        }
+    const push = (week: number, rawTitle: string): void => {
+      if (week > this._currentWeek) {
+        return
+      }
+      const title = normalizeIndexTitle(rawTitle)
+      if (!title) {
+        return
+      }
+      let arr = byWeek.get(week)
+      if (!arr) {
+        arr = []
+        byWeek.set(week, arr)
+      }
+      if (!arr.includes(title)) {
+        arr.push(title)
       }
     }
+
+    for (const chunks of this._wikiCache.values()) {
+      for (const c of chunks) {
+        push(c.applicable_week, c.title)
+      }
+    }
+
+    // 【v2.13】教材章节也并入索引。
+    // 为什么必须并入：正文改由 MCP 检索，而 MCP 检索的是 `wiki_chunks`。
+    // 若教师尚未对某教材执行 publish-as-wiki，其正文根本不在 `wiki_chunks` 里
+    // —— 此时"索引里连章节目录都没有"会让教材内容对模型完全隐形。
+    // 只加"周 + 标题"（复用 normalizeIndexTitle 去重），不注入正文。
+    for (const ch of this._textbookChapters) {
+      push(ch.applicable_week, ch.title)
+    }
+
     return Array.from(byWeek.entries())
       .map(([week, titles]) => ({ week, titles }))
       .sort((a, b) => a.week - b.week)
