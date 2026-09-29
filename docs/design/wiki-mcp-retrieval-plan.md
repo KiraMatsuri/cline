@@ -737,7 +737,7 @@ git commit -m "feat(wiki): add chunk and weeks retrieval endpoints"
   - `clampWeek(n: unknown): number`
   - 可执行产物：`dist/mcp-wiki-server.js`
 
-- [ ] **Step 1: 写 args 单测（先失败）**
+- [x] **Step 1: 写 args 单测（先失败）**
 
 创建 `d:\cline\src\core\teaching\mcp\__tests__\args.test.ts`：
 
@@ -779,7 +779,7 @@ describe("clampWeek", () => {
 })
 ```
 
-- [ ] **Step 2: 跑单测确认失败**
+- [ ] **Step 2: 跑单测确认失败** ⛔ 被依赖阻断
 
 Run:
 ```powershell
@@ -788,7 +788,15 @@ npm run test:unit -- --grep "parseMcpArgs" 2>&1 | Select-Object -Last 20
 ```
 Expected: 失败并报 `Cannot find module '../args'`。
 
-- [ ] **Step 3: 实现 args.ts**
+> ⛔ **无法执行，且不是环境偶发**：本仓库 `package.json` 声明了 `test:unit`（`cross-env … mocha`）
+> 且 `.mocharc.json` 存在，但 **`mocha` / `ts-node` / `source-map-support` 三个包既未写入
+> `dependencies`/`devDependencies`，也未安装到 `node_modules`**（`node_modules/.bin/mocha` 不存在；
+> `mocha@10.8.2` 仅作为**传递依赖**存在于 `.pnpm` store；`ts-node`/`source-map-support` 在 store 中完全没有）。
+> 实测报错：`Error: spawn mocha ENOENT`。
+> → 本步与 Step 4 / Step 9 均无法按原计划执行，改用**等价替代**（见文末验证记录）。
+> → **需要决定**：补 `pnpm add -D mocha ts-node source-map-support`，还是全面改用脚本化验证（teaching-server 既有实践）。
+
+- [x] **Step 3: 实现 args.ts**
 
 创建 `d:\cline\src\core\teaching\mcp\args.ts`：
 
@@ -837,12 +845,13 @@ export function parseMcpArgs(argv: string[]): McpArgs {
 }
 ```
 
-- [ ] **Step 4: 跑单测确认通过**
+- [ ] **Step 4: 跑单测确认通过** ⛔ 被依赖阻断（同 Step 2）
 
 Run: `npm run test:unit -- --grep "parseMcpArgs" 2>&1 | Select-Object -Last 20`
 Expected: `4 passing`。
+替代验证：用 esbuild 单文件编译 `args.ts` 后直接断言，**逐条等价于本步骤 12 个断言**，结果 `12 passed, 0 failed`。
 
-- [ ] **Step 5: 实现 MCP server 骨架**
+- [x] **Step 5: 实现 MCP server 骨架**
 
 创建 `d:\cline\src\core\teaching\mcp-wiki-server.ts`：
 
@@ -935,7 +944,7 @@ await server.connect(new StdioServerTransport())
 
 > **注意**：三个工具的 `inputSchema` 中**没有任何周数字段** —— 这就是 spec §3.3 的 L1 边界防线。
 
-- [ ] **Step 6: 实现 backend 调用封装（Task 4 会补全细节，此处先让骨架可编译）**
+- [x] **Step 6: 实现 backend 调用封装（Task 4 会补全细节，此处先让骨架可编译）**
 
 创建 `d:\cline\src\core\teaching\mcp\wikiBackend.ts`：
 
@@ -976,7 +985,7 @@ export async function callListWeeks(serverUrl: string, week: number) {
 }
 ```
 
-- [ ] **Step 7: 在 esbuild.mjs 增加 MCP server 入口**
+- [x] **Step 7: 在 esbuild.mjs 增加 MCP server 入口**
 
 打开 `d:\cline\esbuild.mjs`，找到 `entryPoints: [...]`（或等价的 entry 定义），在数组中**追加**一项：
 
@@ -986,7 +995,7 @@ export async function callListWeeks(serverUrl: string, week: number) {
 
 并在构建输出里确认产物名为 `dist/mcp-wiki-server.js`（若 esbuild 配置用 `outdir` 则文件名自动由 entry 决定）。
 
-- [ ] **Step 8: 构建并验证产物能启动 + 握手**
+- [x] **Step 8: 构建并验证产物能启动 + 握手**
 
 Run:
 ```powershell
@@ -1000,18 +1009,59 @@ $listed = '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 Expected: 输出两段 JSON，第二段包含 `search_wiki` / `read_wiki_chunk` / `list_wiki_weeks` 三个工具定义。
 
-- [ ] **Step 9: 跑单测确认无回归**
+- [ ] **Step 9: 跑单测确认无回归** ⛔ 被依赖阻断（同 Step 2）
 
 Run: `npm run test:unit -- --grep "parseMcpArgs"`
 Expected: `4 passing`。
+替代验证：改动后重建 + 复跑两个探针 —— 参数断言 `12/0`、MCP 全流程 `16/0`，均无回归。
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 cd d:\cline
 git add src/core/teaching/mcp-wiki-server.ts src/core/teaching/mcp/args.ts src/core/teaching/mcp/wikiBackend.ts src/core/teaching/mcp/__tests__/args.test.ts esbuild.mjs
 git commit -m "feat(mcp): add wiki stdio MCP server with three read-only tools"
 ```
+
+### Task 3 验证记录（2026-09-29 实测）
+
+**提交**：`1a668472`（5 files, 252+/4-）。产物 `dist/mcp-wiki-server.js` = 1,531,191 bytes（含打包进来的 MCP SDK）。
+
+#### 与计划的 3 处必要偏差
+
+| # | 计划写法 | 实际写法 | 原因 |
+|---|---|---|---|
+| 1 | `await server.connect(...)` 顶层 await | 包成 `main()` + `.catch()` | 产物是 **CJS**（`format: "cjs"`），esbuild 不支持 CJS 下的顶层 await |
+| 2 | 全局 `fetch` | `@/shared/net` 的 `fetch` | `.clinerules/network.md` 明确禁止扩展代码用全局 fetch。该模块只依赖 `undici`、**不 import vscode**，且在非 standalone 下回落到全局 fetch → 对 MCP 进程是行为等价替换 |
+| 3 | 往 `entryPoints: [...]` 数组追加 | 新增独立的 `mcpWikiServerConfig`（`outfile` 形式） | 本项目每个入口都是各自独立的 config（`extensionConfig` / `standaloneConfig` / `e2eBuildConfig`），没有共享的 entryPoints 数组 |
+
+另：`clampWeek` 内的单行 `if (...) return X` 被本项目 Biome 判为 “Block statements are preferred”（3 个 error）→ 已改为块语句。
+
+#### 真实验证（`Code.exe` + `ELECTRON_RUN_AS_NODE=1`，与 McpHub 同一条 spawn 路径）
+
+`16 passed, 0 failed`：
+
+- 恰好暴露 3 个工具，命名精确匹配 `search_wiki` / `read_wiki_chunk` / `list_wiki_weeks`
+- **★ 三个工具的 `inputSchema` 中都没有任何周数字段**（逐个用 `/week|周/i` 扫描 `properties` + `required`）
+  → 这是 spec §3.3 的 **L1 边界防线**，已用断言固定，防止后续任务手滑把 week 暴露给模型
+- `week=5` 检索 `函数` → 8 条，`applicable_week=[5,5,4,2,2,2,1,1]`，全部 ≤ 5
+- `read_wiki_chunk` 用**含斜杠** id `textbook_python/7__chunk0` → 可取到（正文 4012 字符）
+- `list_wiki_weeks` @week=5 → 仅 `[1,2,4,5]`，无越界条目
+- **越界对照**（同一关键词）：`week=3` 检索 `Git` → 2 条（均 week 2）；`week=18` 下为 10 条
+- 缺少 `--server` → 返回 `wiki_backend_not_configured`，进程不崩溃（工具失败不得中断学生对话）
+- 未知工具名 → 返回 `unknown_tool`
+
+#### 被阻断的步骤与替代验证
+
+`npm run test:unit` 在本仓库**不可运行**（详见 Step 2 的图）。替代方案与结果：
+
+1. **参数语义**：用 esbuild 单文件编译 `src/core/teaching/mcp/args.ts` → `require` 后直接断言。
+   断言集与计划中的 mocha 用**逐条一致**（`--week`/`--server` 解析、缺参数回退、99/0/`abc` 的 clamp、尾斜杠剥离、`clampWeek` 四例）→ `12 passed, 0 failed`。
+2. **端到端**：上述真实验证探针（16/0）。
+
+单测文件已按计划落库（`src/core/teaching/mcp/__tests__/args.test.ts`），依赖补齐后即可用 mocha 运行。
+
+> 本任务与 Step 2 的阻断项**会同样影响 Task 5–8**（它们都要求 `npm run test:unit`），需在进入 Task 4 前定下策略。
 
 ---
 
