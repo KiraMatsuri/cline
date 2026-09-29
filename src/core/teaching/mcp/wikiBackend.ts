@@ -20,7 +20,19 @@ async function getJson(url: string): Promise<unknown> {
 		const resp = await fetch(url, { signal: ctrl.signal })
 		const text = await resp.text()
 		if (!resp.ok) {
-			return { error: `http_${resp.status}`, detail: text.slice(0, 200) }
+			// 后端在 404 等情况下会带结构化 reason（如 not_found_or_out_of_scope）。
+			// 优先透传它：spec §6 约定越界读取返回 {"error":"not_found_or_out_of_scope"}，
+			// 让模型能区分「资料未在当前教学进度内发布」与「后端真的报错了」。
+			let reason: string | undefined
+			try {
+				const body = JSON.parse(text) as { reason?: unknown }
+				if (typeof body?.reason === "string") {
+					reason = body.reason
+				}
+			} catch {
+				// 非 JSON 响应体（如 nginx 错误页）→ 退回状态码
+			}
+			return { error: reason ?? `http_${resp.status}`, detail: text.slice(0, 200) }
 		}
 		return JSON.parse(text)
 	} catch (e) {
