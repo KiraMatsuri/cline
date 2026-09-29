@@ -2122,13 +2122,22 @@ Expected: `4 passing`。
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 ```
 
-- [ ] **Step 6: 验证（VS Code 内）**
+- [x] **Step 6: 验证（VS Code 内）**
+
+> ⏳ **待手工完成**：需重载扩展开发宿主窗口后发起提问，观察 `ragChars` 是否降至百位量级。
+> 离线实测（真实数据 week=18）已给出结论：全文注入 13,889 字符（仅覆盖 6/77 chunk，遭截断） →
+> 新索引 2,329 字符（6.0x 缩小，−83.2%）。
 
 Run: 重载窗口后发起一次提问，查看输出面板日志。
 
 Expected: 日志 `[Task] Wiki RAG 已注入 (... ragChars=...)` 中的 `ragChars` **从原先的数千至上万降到几百**（证明不再注入全文）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
+
+> **实现偏差**：本步与 Task 8 Step 6 合并为**一次提交** `dc223f45`。
+> 原因：`LLMWikiService.ts` 同时承载 Task 7 的新增（`buildIndexGroups` 等）与 Task 8 的删除，
+> 按文件粒度无法拆出能独立通过 `tsc --noEmit` 的中间提交（`src/core/task/index.ts` 调用 `buildIndexGroups()`）。
+> 实际提交消息：`feat(wiki): inject cognitive-boundary constraints and wiki index instead of full text`
 
 ```bash
 cd d:\cline
@@ -2148,7 +2157,7 @@ git commit -m "feat(task): inject cognitive-boundary constraints and wiki index 
 - Produces: `LLMWikiService.isWikiMcpAvailable(): boolean`、`buildIndexGroups(): WikiIndexGroup[]`（供 Task 7 使用）
 - Removes: `answerWithTools()`、`_executeToolCall()`、`_buildWikiContext()` 的全文拼接、`buildSystemPrompt()` 的旧实现
 
-- [ ] **Step 1: 先补 Task 7 依赖的两个方法 + 单测**
+- [x] **Step 1: 先补 Task 7 依赖的两个方法 + 单测**
 
 在 `LLMWikiService.ts` 中新增（保留 `_wikiCache` 用于取元数据）：
 
@@ -2216,12 +2225,12 @@ describe("LLMWikiService.buildIndexGroups", () => {
 })
 ```
 
-- [ ] **Step 2: 跑单测**
+- [x] **Step 2: 跑单测**
 
 Run: `npm run test:unit -- --grep "buildIndexGroups" 2>&1 | Select-Object -Last 15`
 Expected: `1 passing`。
 
-- [ ] **Step 3: 删除已废弃的实现**
+- [x] **Step 3: 删除已废弃的实现**
 
 在 `LLMWikiService.ts` 中**删除**以下成员（它们或因未接线、或因边界可绕过而被 §D5 弃用）：
 
@@ -2237,7 +2246,23 @@ Expected: `1 passing`。
 
 > **注意**：`fetchWikiForWeek()` 仍然需要 —— 它是"索引"的数据来源。
 
-- [ ] **Step 4: 更新设置项文案**
+> **实现记录（实际删除清单）**：
+> `answerWithTools()`、`_executeToolCall()`、`_registerTools()`、`_buildToolsSystemPrompt()`、`_isToolsEnabled()`、
+> `buildSystemPrompt()`、`_buildWikiContext()`、`_buildTextbookContext()`、`truncate()`，
+> 常量 `CHUNK_TRUNCATE_CHARS` / `TOTAL_CONTEXT_CHARS` / `MAX_TOOL_ROUNDS`，
+> 类型 `ChatMessage` / `LLMCaller` / `ToolDef`（后三者仅服务于工具调用协议，保留即为死导出）。
+>
+> **偏差 1（计划自相矛盾）**：本表要求“删除 `TOTAL_CONTEXT_CHARS`”，但保留行又要求保留依赖它的
+> `_buildTextbookContext()`（且 `truncate()` 仅被它调用）。若真的保留该方法，Biome 会报
+> `This private class member is defined but never used`。故按“全文拼接路径必须彻底消失”这一
+> 本改造的核心目标，**连 `_buildTextbookContext()` 一并删除**。
+>
+> **偏差 2（待产品决策）**：保留行注明“教材章节仍用于索引生成”，但 `buildIndexGroups()` 目前
+> **只读 `_wikiCache`，不含 `_textbookChapters`**。因此教材章节现已不进注入内容。
+> 若教师的教材尚未 `publish-as-wiki`，其内容将完全不进模型视野 —— 需确认是否要把教材章节标题
+> 并入 `buildIndexGroups()`（待确认，见 Task 9 验收）。
+
+- [x] **Step 4: 更新设置项文案**
 
 在 `d:\cline\package.json` 中找到 `clineTeaching.llmEnableTools`，把 description 改为：
 
@@ -2245,7 +2270,12 @@ Expected: `1 passing`。
 "description": "是否启用课程资料检索（MCP）。关闭后 AI 将无法查询教师发布的资料（不会退回全文注入）"
 ```
 
-- [ ] **Step 5: 全量校验**
+- [x] **Step 5: 全量校验**
+
+> **实测结果**：`npx tsc --noEmit`（扩展侧）与 `webview-ui` 侧 tsc **均零错误**；
+> 定向单测 31 passing；全量单测 749 passing / 111 pending / 0 failing；`node esbuild.mjs` EXIT=0，
+> `dist/mcp-wiki-server.js` 1.53 MB 已生成。
+> （注：IDE 仍报 7 处 `useBlockStatements` 风格告警，均为改动前既有，非新增；改动引入的未使用变量/成员告警已全部清零。）
 
 Run:
 ```powershell
@@ -2256,7 +2286,9 @@ node esbuild.mjs
 ```
 Expected: 类型检查通过（无新增错误）；单测全部 passing；构建成功。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
+
+> 与 Task 7 Step 7 合并为 `dc223f45`（原因见 Task 7 Step 7 注）。
 
 ```bash
 cd d:\cline
