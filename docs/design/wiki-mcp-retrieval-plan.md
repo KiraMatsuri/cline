@@ -1750,7 +1750,7 @@ export async function getMcpSettingsFilePath(settingsDirectoryPath: string): Pro
 **Interfaces:**
 - Produces: `detectDisabledTransition(prev: McpServersMap, next: McpServersMap): boolean`
 
-- [ ] **Step 1: 写单测（先失败）**
+- [x] **Step 1: 写单测（先失败）**
 
 在 `WikiMcpRegistrar.test.ts` 末尾追加：
 
@@ -1777,12 +1777,13 @@ describe("detectDisabledTransition", () => {
 import { buildWikiServerEntry, detectDisabledTransition, mergeWikiServerEntry } from "../WikiMcpRegistrar"
 ```
 
-- [ ] **Step 2: 跑单测确认失败**
+- [x] **Step 2: 跑单测确认失败**
 
 Run: `npm run test:unit -- --grep "detectDisabledTransition" 2>&1 | Select-Object -Last 15`
 Expected: 失败（未导出该函数）。
+实测：`error TS2305: Module '"../WikiMcpRegistrar"' has no exported member 'detectDisabledTransition'`，exit 1 ✅
 
-- [ ] **Step 3: 实现禁用提示**
+- [x] **Step 3: 实现禁用提示**
 
 在 `WikiMcpRegistrar.ts` 末尾追加：
 
@@ -1850,12 +1851,13 @@ export async function reEnableWikiServer(context: vscode.ExtensionContext): Prom
 }
 ```
 
-- [ ] **Step 4: 跑单测确认通过**
+- [x] **Step 4: 跑单测确认通过**
 
 Run: `npm run test:unit -- --grep "detectDisabledTransition" 2>&1 | Select-Object -Last 15`
 Expected: `3 passing`。
+实测：**`5 passing`**（计划预期 3；我额外补了“真实跃迁（无 disabled 字段 → true）”与“反方向（true → 启用）不提示”两个方向）。
 
-- [ ] **Step 5: 在 extension.ts 接线**
+- [x] **Step 5: 在 extension.ts 接线**
 
 在 Task 5 的接线之后追加：
 
@@ -1864,19 +1866,81 @@ Expected: `3 passing`。
 	watchWikiServerDisabled(context, () => context.globalStorageUri.fsPath)
 ```
 
-- [ ] **Step 6: 手工验证**
+- [x] **Step 6: 手工验证**（已在 F5 开发宿主完成）
 
 在 VS Code 的 MCP 面板中把 `wiki` **禁用**。
 
 Expected: 约 2 秒内弹出警告框，含「重新启用 / 保持禁用」；点「重新启用」后 `disabled` 回到 false。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd d:\cline
 git add src/core/teaching/WikiMcpRegistrar.ts src/core/teaching/__tests__/WikiMcpRegistrar.test.ts src/extension.ts
 git commit -m "feat(mcp): warn on wiki server disable and offer re-enable"
 ```
+
+### Task 6 验证记录（2026-09-29 实测）
+
+**提交**：`5a92b6f6`（3 files, 121+/3-）。
+
+#### ★ 计划里的 3 处问题（已修正）
+
+| # | 问题 | 后果 | 修法 |
+|---|---|---|---|
+| 1 | `reEnableWikiServer` 用 `context.globalStorageUri.fsPath` | 写到 `<globalStorage>/cline_mcp_settings.json`，**McpHub 永远读不到**。同类错误在计划里出现了**第二次**（Task 5 已错过一次） | 改用 `ensureSettingsDirectoryExists()` |
+| 2 | `lastMap` 初始化为 `{}` | 只要学生在**激活前就已禁用**，`detectDisabledTransition({}, {wiki:{disabled:true}})` = true → **每次激活都弹一次警告**，与 spec §D5「禁用可控」直接矛盾 | 首次读取**只作基线**，不判跃迁 |
+| 3 | `watchWikiServerDisabled(context, resolveSettingsDir)` 多一个目录回调参数 | 把“目录怎么算”交给调用方 —— 正是第 1 条那个坑的来源 | **删掉该参数**，函数内部自己取 |
+
+另外两处遵从项目约定/工程判断：
+- 用 `HostProvider.window.showMessage` 而非 `vscode.window.showWarningMessage`：
+  项目 lint 规则禁止扩展代码直接用 `vscode.window`（实测报了 compileError），
+  且前者在 JetBrains / CLI 宿主下也有实现。
+- 用**轮询**而非文件监听：McpHub 写该文件是原子写（临时文件 + rename），
+  对单文件做 fs.watch 会被这种模式坑到；文件很小，2s 读一次开销可忽略，且避开跨平台差异。
+
+#### 验证一：单测
+
+- 本次新增 **5 条** `detectDisabledTransition` 断言（含真实跃迁的正、反两个方向）。
+- 全套：**`736 passing / 111 pending / 0 failing`**（基线 718，+18）。
+
+#### 验证二：写入路径探针（含 reEnableWikiServer）
+
+`18 passed / 0 failed`，新增 3 条：把 disabled 写回 false / 不破坏其它 server /
+条目不存在时安静返回不凭空创建。
+
+#### 验证三：F5 开发宿主真机实测
+
+| # | 场景 | 证据 | 结果 |
+|---|---|---|---|
+| 1 | **★ 已禁用时激活不应误报** | 文件置 `disabled:true`（无 BOM）→ 重载 → **无警告框** | ✅ 修正 2 生效 |
+| 2 | **★ 激活时零写入** | 重载后文件 **SHA256 与 mtime 完全未变**；日志仅一行 `wiki MCP 条目已是最新，跳过写入` | ✅ 字字节级证据 |
+| 3 | **★ 禁用 → ~2s 内弹警告** | 面板里禁用 `wiki` 后弹出警告（含重新启用 / 保持禁用） | ✅ |
+| 4 | 选“保持禁用”不重复打扰 | 点后不再弹 | ✅ |
+| 5 | 禁用后连接被拆除 | 被 spawn 的子进程 `PID 31832` 消失，无残留 | ✅ |
+| 6 | 日志可达 | `src/common.ts` 的 `Logger.subscribe` 把日志接到 Output → `Cline` 频道，可直接看到分支 | ✅ |
+
+#### 附带发现（上游 UI 璵疵，非本改造引入）
+
+**被主动禁用的 server 在面板里显示为红色状态点**，与“真的坏了”长得一模一样。
+根因在 `webview-ui/src/components/mcp/configuration/tabs/installed/server-row/ServerRow.tsx:272-274`：
+
+```tsx
+"bg-success": server.status === "connected",
+"bg-warning": server.status === "connecting",
+"bg-error":   server.status === "disconnected",   // ← 红色
+```
+
+而 McpHub 对 disabled 的 server 正是设 `status: "disconnected"`。
+这对**所有** MCP server 都成立，不只 wiki。不属本改造范围，但如果希望学生一眼区分
+“我关的”与“出错了”，可以后续给 disabled 单独一种颜色。
+
+#### 未覆盖的一步
+
+真机里**点“重新启用”** 按钮这一步没走到（用户在提示里选了「保持禁用」）。
+该分支的写入逻辑已由探针覆盖；返回值的正确性依赖 VS Code
+`showWarningMessage(msg, opts, ...items)` 返回被点击项的**原字符串**这一既有语义
+（`hostbridge/window/showMessage.ts` 是直接透传）。风险低，但**未直接观察到**。
 
 ---
 
