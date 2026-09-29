@@ -72,6 +72,7 @@ import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
+import { stripLeakedToolCallMarkup } from "@/core/teaching/assistantTextSanitizer"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
@@ -2541,6 +2542,10 @@ export class Task {
 						content = content.trimEnd().slice(0, -matchLength)
 					}
 				}
+
+				// 【教学】剔除“工具调用标记被当正文吐出来”的残渣（实测证据见 assistantTextSanitizer 注释）。
+				// 清洗后若为空串，webview 侧的 text 空值过滤会自然丢弃这条消息，无需在此额外判空。
+				content = stripLeakedToolCallMarkup(content)
 
 				await this.say("text", content, undefined, undefined, block.partial)
 				break

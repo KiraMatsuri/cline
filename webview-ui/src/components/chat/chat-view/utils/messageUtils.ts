@@ -85,6 +85,16 @@ export function filterVisibleMessages(messages: ClineMessage[]): ClineMessage[] 
 				}
 				break
 			case "mcp_server_request_started":
+			// 【教学】隐藏 MCP 检索过程本身。
+			// 实测（taskId=1790691098981）：一次「第一周学了什么」的提问推了 5 条
+			// mcp_server_response，合计 8,616 字符原始 JSON（单条最大 4,312，是整章教材正文），
+			// 而真正的答案 completion_result 只有 1,336 字符 —— 学生看到的噪声是答案的 6.5 倍。
+			//
+			// ⚠️ 只隐藏 `say` 变体：`ask:use_mcp_server` 携带「批准 / 拒绝」按钮，
+			// 若一并隐藏，未被 autoApprove 的工具会变得无法确认。
+			// 本函数有两个独立的 switch（先 ask 后 say），此分支只作用于 say，天然安全。
+			case "use_mcp_server":
+			case "mcp_server_response":
 				return false
 		}
 		return true
