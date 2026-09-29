@@ -9,15 +9,15 @@ import { EnvironmentContextTracker } from "@core/context/context-tracking/Enviro
 import { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
 import { ModelContextTracker } from "@core/context/context-tracking/ModelContextTracker"
 import {
-	getGlobalClineRules,
-	getLocalClineRules,
-	refreshClineRulesToggles,
+    getGlobalClineRules,
+    getLocalClineRules,
+    refreshClineRulesToggles,
 } from "@core/context/instructions/user-instructions/cline-rules"
 import {
-	getLocalAgentsRules,
-	getLocalCursorRules,
-	getLocalWindsurfRules,
-	refreshExternalRulesToggles,
+    getLocalAgentsRules,
+    getLocalCursorRules,
+    getLocalWindsurfRules,
+    refreshExternalRulesToggles,
 } from "@core/context/instructions/user-instructions/external-rules"
 import { sendPartialMessageEvent } from "@core/controller/ui/subscribeToPartialMessage"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
@@ -29,11 +29,11 @@ import { summarizeTask } from "@core/prompts/contextManagement"
 import { formatResponse } from "@core/prompts/responses"
 import { parseSlashCommands } from "@core/slash-commands"
 import {
-	ensureRulesDirectoryExists,
-	ensureTaskDirectoryExists,
-	GlobalFileNames,
-	getSavedApiConversationHistory,
-	getSavedClineMessages,
+    ensureRulesDirectoryExists,
+    ensureTaskDirectoryExists,
+    GlobalFileNames,
+    getSavedApiConversationHistory,
+    getSavedClineMessages,
 } from "@core/storage/disk"
 import { releaseTaskLock } from "@core/task/TaskLockUtils"
 import { isMultiRootEnabled } from "@core/workspace/multi-root-utils"
@@ -73,25 +73,26 @@ import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
+import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
 import {
-	CommandExecutor,
-	CommandExecutorCallbacks,
-	FullCommandExecutorConfig,
-	StandaloneTerminalManager,
+    CommandExecutor,
+    CommandExecutorCallbacks,
+    FullCommandExecutorConfig,
+    StandaloneTerminalManager,
 } from "@/integrations/terminal"
 import { ClineError, ClineErrorType, ErrorService } from "@/services/error"
 import { telemetryService } from "@/services/telemetry"
 import {
-	ClineAssistantContent,
-	ClineContent,
-	ClineImageContentBlock,
-	ClineMessageModelInfo,
-	ClineStorageMessage,
-	ClineTextContentBlock,
-	ClineToolResponseContent,
-	ClineUserContent,
+    ClineAssistantContent,
+    ClineContent,
+    ClineImageContentBlock,
+    ClineMessageModelInfo,
+    ClineStorageMessage,
+    ClineTextContentBlock,
+    ClineToolResponseContent,
+    ClineUserContent,
 } from "@/shared/messages"
 import { ApiFormat } from "@/shared/proto/cline/models"
 import { ShowMessageType } from "@/shared/proto/index.host"
@@ -108,15 +109,15 @@ import { FocusChainManager } from "./focus-chain"
 import { MessageStateHandler } from "./message-state"
 import { StreamResponseHandler } from "./StreamResponseHandler"
 import {
-	AdoptionTracker,
-	BehaviorMonitor,
-	CodeEditTracker,
-	contentAnalyzer,
-	type StudentInteractionLog,
-	StudentLogPersister,
-	type SuggestionType,
-	TeachingInterventionManager,
-	taskClassifier,
+    AdoptionTracker,
+    BehaviorMonitor,
+    CodeEditTracker,
+    contentAnalyzer,
+    type StudentInteractionLog,
+    StudentLogPersister,
+    type SuggestionType,
+    TeachingInterventionManager,
+    taskClassifier,
 } from "./student-analytics"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
@@ -2206,10 +2207,10 @@ export class Task {
 		const { systemPrompt, tools } = await getSystemPrompt(promptContext)
 		this.useNativeToolCalls = !!tools?.length
 
-		// 【v2.0 增量】进度感知 RAG：把 Wiki 上下文注入 System Prompt
-		// - 自动按 currentWeek 过滤 chunk
-		// - 包含教材章节（若 currentTextbookId 已设置）
-		// - 单 chunk <=4000 字 / 总上下文 <=16k 字 / 3 条认知边界约束
+		// 【v2.13】注入「认知边界约束 + 资料索引」，**不再注入全文**
+		// - 正文改由 MCP 工具（search_wiki / read_wiki_chunk）按需检索
+		// - 索引只含元数据（周 + 标题），避免旧的 16k 截断问题
+		// - 认知边界约束必须保留：它是 L2 防线（检索边界拦不住"凭通用知识超纲作答"）
 		let systemPromptFinal = systemPrompt
 		try {
 			const llmWiki = LLMWikiService.getInstance()
@@ -2224,16 +2225,15 @@ export class Task {
 					Logger.warn("[Task] 同步拉取 Wiki 超时/失败，使用空 RAG:", e instanceof Error ? e.message : e)
 				}
 			}
-			// 提取 taskState.userMessageContent 中的文本（用户最新消息）
-			const userQuery = (this.taskState.userMessageContent ?? [])
-				.map((b: unknown) => {
-					const t = (b as { text?: unknown }).text
-					return typeof t === "string" ? t : ""
-				})
-				.filter(Boolean)
-				.join("\n")
-				.slice(0, 2000)
-			const ragContext = llmWiki.buildSystemPrompt(userQuery)
+			// 【v2.13】改为注入「认知边界约束 + 资料索引」，不再注入全文（见 spec §D5/§D6）
+			// - 全文注入会导致 16k 截断（本次改造要解决的问题），且与 MCP 按需检索重复
+			// - 认知边界约束必须保留：检索边界拦不住模型"凭通用知识超纲作答"
+			// - 索引来自 _wikiCache 的元数据，因此上面的"缓存为空则同步拉取"仍然必要
+			const ragContext = buildWikiSystemPrompt({
+				week: llmWiki.getCurrentWeek(),
+				index: llmWiki.buildIndexGroups(),
+				mcpAvailable: llmWiki.isWikiMcpAvailable(),
+			})
 			systemPromptFinal = systemPrompt + "\n\n" + ragContext
 			Logger.log(
 				`[Task] Wiki RAG 已注入 (week=${llmWiki.getCurrentWeek()}, chunks=${llmWiki.getWikiCacheSize()}, ragChars=${ragContext.length})`,
