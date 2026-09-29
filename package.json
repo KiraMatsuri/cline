@@ -437,7 +437,7 @@
 				},
 				"clineTeaching.llmEnableTools": {
 					"type": "boolean",
-					"default": false,
+					"default": true,
 					"description": "是否启用课程资料检索（MCP）。关闭后 AI 将无法查询教师发布的资料（不会退回全文注入）"
 				},
 				"clineTeaching.currentTextbookId": {

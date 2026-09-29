@@ -1,5 +1,12 @@
 import { expect } from "chai"
-import { buildWikiServerEntry, decideWriteAction, detectDisabledTransition, mergeWikiServerEntry } from "../WikiMcpRegistrar"
+import {
+    buildWikiServerEntry,
+    decideWriteAction,
+    detectDisabledTransition,
+    isWikiServerConnected,
+    mergeWikiServerEntry,
+    removeWikiServerEntry,
+} from "../WikiMcpRegistrar"
 
 const base = {
 	execPath: "C:/vscode/Code.exe",
@@ -116,5 +123,68 @@ describe("detectDisabledTransition", () => {
 		const prev = { wiki: { type: "stdio", command: "c", disabled: true } } as never
 		const next = { wiki: { type: "stdio", command: "c" } } as never
 		expect(detectDisabledTransition(prev, next)).to.equal(false)
+	})
+})
+
+describe("removeWikiServerEntry（检索开关关闭时用删除而非 disabled）", () => {
+	it("条目存在 → 删除并标记 changed", () => {
+		const r = removeWikiServerEntry({ wiki: { type: "stdio", command: "c", args: [] } })
+		expect(r.changed).to.equal(true)
+		expect(r.next.wiki).to.equal(undefined)
+	})
+
+	it("条目不存在 → 不写入（幂等）", () => {
+		const r = removeWikiServerEntry({ other: { type: "stdio", command: "o", args: [] } })
+		expect(r.changed).to.equal(false)
+	})
+
+	it("★ 不破坏其它 server 条目", () => {
+		const r = removeWikiServerEntry({
+			wiki: { type: "stdio", command: "c", args: [] },
+			other: { type: "stdio", command: "o", args: [] },
+		})
+		expect(r.next.other).to.exist
+		expect(r.next.wiki).to.equal(undefined)
+	})
+
+	it("★ 不修改入参（纯函数）", () => {
+		const input = { wiki: { type: "stdio", command: "c", args: [] } } as never
+		removeWikiServerEntry(input)
+		expect(input).to.have.property("wiki")
+	})
+})
+
+describe("isWikiServerConnected", () => {
+	const hub = (servers: unknown[]): never => ({ getServers: () => servers }) as never
+
+	it("connected 且未禁用 → true", () => {
+		expect(isWikiServerConnected(hub([{ name: "wiki", status: "connected" }]))).to.equal(true)
+	})
+
+	it("★ 仍是 connecting → false（不得把“尚未连上”当成可用）", () => {
+		expect(isWikiServerConnected(hub([{ name: "wiki", status: "connecting" }]))).to.equal(false)
+	})
+
+	it("★ 存在但 disabled → false", () => {
+		expect(isWikiServerConnected(hub([{ name: "wiki", status: "connected", disabled: true }]))).to.equal(false)
+	})
+
+	it("条目不存在 → false（停掉检索后不得声称可用）", () => {
+		expect(isWikiServerConnected(hub([{ name: "other", status: "connected" }]))).to.equal(false)
+	})
+
+	it("★ hub 为 undefined / 无 getServers → false（设计稿的 McpHub.getInstance?.() 陷阱）", () => {
+		expect(isWikiServerConnected(undefined)).to.equal(false)
+		expect(isWikiServerConnected(null)).to.equal(false)
+		expect(isWikiServerConnected({} as never)).to.equal(false)
+	})
+
+	it("getServers 抛异常 → false（不得向上冒泡）", () => {
+		const bad = {
+			getServers: () => {
+				throw new Error("boom")
+			},
+		} as never
+		expect(isWikiServerConnected(bad)).to.equal(false)
 	})
 })

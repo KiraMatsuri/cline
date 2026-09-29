@@ -73,6 +73,7 @@ import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
+import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
@@ -962,9 +963,7 @@ export class Task {
 		if (!interventionManager) {
 			return null
 		}
-		return interventionManager.isBlockingActive()
-			? { active: true, endsAt: interventionManager.getBlockingEndsAt() }
-			: null
+		return interventionManager.isBlockingActive() ? { active: true, endsAt: interventionManager.getBlockingEndsAt() } : null
 	}
 
 	/**
@@ -2232,7 +2231,10 @@ export class Task {
 			const ragContext = buildWikiSystemPrompt({
 				week: llmWiki.getCurrentWeek(),
 				index: llmWiki.buildIndexGroups(),
-				mcpAvailable: llmWiki.isWikiMcpAvailable(),
+				// 以**当前**连接状态为准，再退回注册期/轮询探测出的缓存值：
+				// MCP server 是异步拉起、且改 week 会重启进程，只靠缓存会把
+				// “连接尚未就绪”永久记成“不可用”，反之也会留下过期的 true。
+				mcpAvailable: llmWiki.isWikiMcpAvailable() || isWikiServerConnected(this.mcpHub),
 			})
 			systemPromptFinal = systemPrompt + "\n\n" + ragContext
 			Logger.log(

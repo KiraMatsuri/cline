@@ -29,6 +29,11 @@ import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { clampWeek } from "./mcp/args"
 
+/** McpHub 的最小结构依赖（便于单测，避免 teaching 层绑定 McpHub 实现） */
+export interface McpHubLike {
+	getServers: () => Array<{ name?: string; status?: string; disabled?: boolean }>
+}
+
 export interface McpServerEntry {
 	type: "stdio"
 	command: string
@@ -91,6 +96,16 @@ export function mergeWikiServerEntry(existing: McpServersMap, entry: McpServerEn
 	return { changed: true, next }
 }
 
+/** 移除 wiki 条目（纯函数，便于单测） */
+export function removeWikiServerEntry(existing: McpServersMap): { changed: boolean; next: McpServersMap } {
+	if (!(WIKI_SERVER_NAME in existing)) {
+		return { changed: false, next: existing }
+	}
+	const next: McpServersMap = { ...existing }
+	delete next[WIKI_SERVER_NAME]
+	return { changed: true, next }
+}
+
 /** 读取配置文件的结果类型 */
 export type McpSettingsOutcome = "missing" | "ok" | "broken"
 
@@ -143,8 +158,34 @@ async function readMcpSettings(settingsDir: string): Promise<ReadResult> {
 export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Promise<void> {
 	try {
 		const cfg = vscode.workspace.getConfiguration("clineTeaching")
+		const enabled = cfg.get<boolean>("llmEnableTools") ?? true
 		const week = cfg.get<number>("currentWeek") ?? 1
 		const serverUrl = (cfg.get<string>("serverUrl") ?? "").trim()
+
+		// 必须与 McpHub 用同一个函数取目录（它是 `<globalStorage>/settings`）。
+		// 切勿改回 `context.globalStorageUri.fsPath` —— 那会写到 McpHub 看不到的位置。
+		const settingsDir = await ensureSettingsDirectoryExists()
+
+		// 【v2.13】`clineTeaching.llmEnableTools` = “是否启用课程资料检索（MCP）”。
+		// 关闭时**移除条目**而不是写 `disabled: true`：后者会被 watchWikiServerDisabled
+		// 判定为“学生禁用了检索”并弹“是否重新启用”——但这条路径本就是学生自己在设置页
+		// 关掉的，再弹一次属于噪音，且与设置项语义直接打架。
+		if (!enabled) {
+			const cur = await readMcpSettings(settingsDir)
+			if (cur.outcome === "broken") {
+				Logger.error(`[WikiMcpRegistrar] MCP 配置文件存在但无法解析，跳过移除: ${cur.filePath}`)
+				return
+			}
+			const removed = removeWikiServerEntry(cur.map)
+			if (!removed.changed) {
+				Logger.log("[WikiMcpRegistrar] 检索开关已关闭且条目本就不存在，跳过写入")
+				return
+			}
+			cur.raw.mcpServers = removed.next
+			await fs.writeFile(cur.filePath, JSON.stringify(cur.raw, null, 2), "utf-8")
+			Logger.log(`[WikiMcpRegistrar] 检索开关已关闭 → 已移除 wiki MCP 条目: ${cur.filePath}`)
+			return
+		}
 
 		const scriptPath = path.join(context.extensionPath, "dist", "mcp-wiki-server.js")
 		const entry = buildWikiServerEntry({
@@ -154,9 +195,6 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 			serverUrl,
 		})
 
-		// 必须与 McpHub 用同一个函数取目录（它是 `<globalStorage>/settings`）。
-		// 切勿改回 `context.globalStorageUri.fsPath` —— 那会写到 McpHub 看不到的位置。
-		const settingsDir = await ensureSettingsDirectoryExists()
 		const { filePath, map, raw, outcome } = await readMcpSettings(settingsDir)
 		const { changed, next } = mergeWikiServerEntry(map, entry)
 
@@ -180,13 +218,17 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 	}
 }
 
-/** 监听周数变化 → 重写 args（使 MCP server 用新的 week 重启） */
+/** 监听周数/服务地址/检索开关变化 → 重写或移除条目 */
 export function registerWikiMcpConfigWatcher(context: vscode.ExtensionContext): vscode.Disposable {
 	const disposable = vscode.workspace.onDidChangeConfiguration((e) => {
-		if (!e.affectsConfiguration("clineTeaching.currentWeek") && !e.affectsConfiguration("clineTeaching.serverUrl")) {
+		if (
+			!e.affectsConfiguration("clineTeaching.currentWeek") &&
+			!e.affectsConfiguration("clineTeaching.serverUrl") &&
+			!e.affectsConfiguration("clineTeaching.llmEnableTools")
+		) {
 			return
 		}
-		void ensureWikiMcpServer(context)
+		void ensureWikiMcpServer(context).then(() => probeWikiMcpAvailability())
 	})
 	context.subscriptions.push(disposable)
 	return disposable
@@ -239,6 +281,10 @@ export function watchWikiServerDisabled(context: vscode.ExtensionContext): vscod
 				}
 			}
 			lastMap = map
+			// 【v2.13】顺带刷新连接状态。
+			// 为什么不能只在激活时探测：MCP server 是**异步**拉起并重载的（改 week 会重启进程），
+			// 激活瞬间往往还是 connecting —— 只探一次会把“尚未连接”误当成“不可用”并一直错下去。
+			await probeWikiMcpAvailability()
 		} catch {
 			// 读配置失败不影响主流程
 		}
@@ -271,5 +317,43 @@ export async function reEnableWikiServer(): Promise<void> {
 		Logger.log("[WikiMcpRegistrar] 已重新启用 wiki MCP server")
 	} catch (e) {
 		Logger.error("[WikiMcpRegistrar] 重新启用失败:", e as Error)
+	}
+}
+
+/**
+ * wiki MCP server 是否“已连接且未被禁用”（纯函数，便于单测）。
+ *
+ * ⚠️ 注意力陷阱：`McpHub` **没有** `getInstance()` / `getMcpServers()`。
+ * 它只能从 `WebviewProvider.getInstance().controller.mcpHub` 拿到，取服务列表的方法是 `getServers()`。
+ * 若照拄设计稿里的 `McpHub.getInstance?.()`，会永远拿到 undefined → 永远判定“不可用”，
+ * 而且**不报任何错**（与本项目历史上“写入了但没人读”同类的静默失效）。
+ */
+export function isWikiServerConnected(hub: McpHubLike | undefined | null): boolean {
+	if (!hub || typeof hub.getServers !== "function") {
+		return false
+	}
+	try {
+		const servers = hub.getServers() ?? []
+		const wiki = servers.find((s) => s.name === WIKI_SERVER_NAME)
+		return wiki !== undefined && wiki.status === "connected" && wiki.disabled !== true
+	} catch {
+		return false
+	}
+}
+
+/**
+ * 探测 wiki MCP 连接状态并回写 `LLMWikiService`，供注入内容决定是否带“检索不可用”声明。
+ * 探测失败一律按**不可用**处理（失败可见优于静默假装可用）。
+ */
+export async function probeWikiMcpAvailability(): Promise<void> {
+	const { LLMWikiService } = await import("./LLMWikiService")
+	try {
+		// Controller 是唯一持有 McpHub 的地方，它通过 WebviewProvider 单例暴露。
+		const { WebviewProvider } = await import("@/core/webview")
+		const controller = (WebviewProvider.getInstance() as unknown as { controller?: { mcpHub?: unknown } })?.controller
+		LLMWikiService.getInstance().setWikiMcpAvailable(isWikiServerConnected(controller?.mcpHub as McpHubLike | undefined))
+	} catch (e) {
+		Logger.warn("[WikiMcpRegistrar] 探测 MCP 状态失败，按不可用处理:", e as Error)
+		LLMWikiService.getInstance().setWikiMcpAvailable(false)
 	}
 }
