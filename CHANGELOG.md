@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased] — 2026-09-29
+
+### Added
+
+- **课程资料检索 MCP 化**：新增本地 stdio MCP server（`dist/mcp-wiki-server.js`），暴露
+  `search_wiki` / `read_wiki_chunk` / `list_wiki_weeks` 三个**只读**工具，由主对话 LLM 自主按需检索，
+  取代原先"把 ≤16k 字符全文塞进 system prompt"的做法 —— 解决资料多时被 `week+id` 字典序盲截断的问题。
+- **配置文件自注册**（`WikiMcpRegistrar`）：插件激活时确保 `cline_mcp_settings.json` 中存在 wiki 条目；
+  周数变化时重写 `--week` 参数并触发重载。
+- **检索可用性探测**：激活时探测并随后每 2s 轮询 `wiki` server 的连接状态、回写 `LLMWikiService`，
+  注入内容据此决定是否声明"检索当前不可用"。
+
+### Changed
+
+- **注入内容变更**：system prompt 从"认知边界约束 + 资料全文"改为"**认知边界约束 + 资料索引 + 检索状态**"，
+  上下文从 16k 降至 1k 量级（真实数据 week=18 / 77 chunk：13,889 → 2,329 字符，−83.2%）。
+  **认知边界约束段为必需项** —— 检索边界拦不住模型凭通用知识超纲作答。
+- **资料索引含教材章节标题**：除已发布资料外，未 `publish-as-wiki` 的教材章节标题也并入索引，
+  避免教材内容对模型完全隐形（只取"周 + 标题"，不注入正文）。
+- `clineTeaching.llmEnableTools` 语义变更：从"启用工具调用答疑（此前为空开关、无任何调用点）"改为
+  "启用课程资料检索（MCP）"，**默认值 `false` → `true`**；关闭时**移除** wiki MCP 条目
+  （而非写 `disabled:true`，避免触发"是否重新启用"的误导性提示）。
+
+### Fixed
+
+- **移除未接线且边界可绕过的工具调用代码**：`answerWithTools()` 从未被调用；其 `grep_wiki` 接受 LLM 传入的
+  `max_week` 且无上限校验（传 18 即可读取未来周资料），`read_chunk` 的查找条件写错（恒真时忽略 chunkId）。
+- **索引标题未规范化**：标题实际可能是整句摘要 / 含换行 / 仅差 `(i/n)` 后缀，会撑爆索引预算并冲垮排版；
+  现统一折叠空白、剥离 `(i/n)`、超长截断，并据此正确去重。
+
+### Removed
+
+- 全量注入路径（`buildSystemPrompt` 全文拼接 + `TOTAL_CONTEXT_CHARS` 截断）。
+  **不再作为 MCP 不可用时的降级方案** —— 它会重新引入本次要解决的 token 与截断问题。
+  改为「失败可见」：检索不可用时在对话中明确告知，禁用时提示后果并提供重新启用。
+
 ## [1.0.5] — 2026-09-28
 
 ### Changed
