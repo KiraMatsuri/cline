@@ -2124,9 +2124,14 @@ import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 
 - [x] **Step 6: 验证（VS Code 内）**
 
-> ⏳ **待手工完成**：需重载扩展开发宿主窗口后发起提问，观察 `ragChars` 是否降至百位量级。
-> 离线实测（真实数据 week=18）已给出结论：全文注入 13,889 字符（仅覆盖 6/77 chunk，遭截断） →
+> ✅ **宿主实测通过**（2026-09-29，taskId=1790691098981）：
+> `[Task] Wiki RAG 已注入 (week=1, chunks=5, ragChars=310)` —— **310 字符**，百位量级，符合预期。
+> 离线定量对比（真实数据 week=18）：全文注入 13,889 字符（仅覆盖 6/77 chunk，遭截断） →
 > 新索引 2,329 字符（6.0x 缩小，−83.2%）。
+>
+> ⚠️ **本次宿主验证额外暴露了两个渲染层泄漏点**（与 ragChars 无关）：
+> ① 模型把工具调用标记当正文吐出；② 原始 MCP 检索 JSON 直接展示给 UI。
+> 均已修复，详见 `wiki-mcp-retrieval-acceptance.md` §7。
 
 Run: 重载窗口后发起一次提问，查看输出面板日志。
 

@@ -19,7 +19,7 @@
 | 类型检查（扩展 + webview） | ✅ | `tsc --noEmit` 两侧均零输出 |
 | 构建 | ✅ | `node esbuild.mjs` → `EXIT=0`，`dist/mcp-wiki-server.js` 1.53 MB |
 | 配置文件自注册 / 禁用 / 重启用 | ✅ | Task 5、Task 6 宿主实测 |
-| token 不回升（`ragChars`） | ⏳ | 离线已实测，**宿主侧待确认** |
+| token 不回升（`ragChars`） | ✅ | 宿主实测 **`ragChars=310`**（改造前同场景数千~13,889） |
 | 边界类行为（超纲提问、失败可见、改库取新内容） | ⏳ | 待手工执行 |
 | 检索开关（`llmEnableTools`） | ⏳ | 本次新增，待手工执行 |
 
@@ -104,7 +104,9 @@ node scripts\verify-mcp-wiki-server.mjs
 | ★ "保持禁用"不重复 | 选保持禁用 | 不再弹 | 不再弹 | ✅ |
 | 重新启用 | 选「重新启用」 | `disabled` 回 `false`、进程重生 | `disabled=False`，mtime `21:37:25`，`PID 23620` | ✅ |
 | ★ MCP 面板工具 schema | 展开三个工具 | 无 week 参数 | `Tools (3)`、`timeout: 30`、auto-approve 已勾选、**schema 无 week** | ✅ |
-| ★ token 不回升 | 提问后看 `ragChars` | 百位量级 | ⏳ 待执行（T4） | ⏳ |
+| ★ token 不回升 | 提问后看 `ragChars` | 百位量级 | **`ragChars=310`**（`week=1, chunks=5`） | ✅ |
+| ★ 正文无裸工具标记 | 提问后看学生端回复 | 无标记乱码 | 见 §7（已修） | ✅ |
+| ★ MCP 过程不显示 | 观察一次带检索的提问 | 无原始检索 JSON | 见 §7（已修） | ✅ |
 | 失败可见 | 停后端后提问 | 提示检索不可用 | ⏳ 待执行（T5） | ⏳ |
 | 正常检索 | 问当前周内问题 | 调用 `search_wiki` 作答 | ⏳ 待执行（T6） | ⏳ |
 | ★ 超纲提问 | `week=3` 问「装饰器」 | 告知周次 + 不展开语法 + **不拒答** | ⏳ 待执行（T7） | ⏳ |
@@ -154,3 +156,67 @@ node scripts\verify-mcp-wiki-server.mjs
 2. **打包产物**：F5 走的是仓库路径（`d:\cline\dist\mcp-wiki-server.js`），**不覆盖打包场景**。
    发布前需确认 `.vsix` 内包含 `dist/mcp-wiki-server.js`，否则安装版会因为找不到脚本而 spawn 失败。
 3. **后端不可达时的表现**依赖模型把结构化错误转述给学生，而非我们直接拦截 —— 属于"提示式"而非"强制式"。
+---
+
+## 7. 改造后发现的两个泄漏点（已修）
+
+**发现时机**：Task 7 Step 6 宿主验证时，`ragChars=310` ✅ 符合预期，
+但学生端回复里出现了两屏不该出现的内容。
+
+**取证方式**（比“看截图猜”可靠得多）：直接读磁盘上的任务持久化文件：
+
+```
+<globalStorage>\<扩展ID>\tasks\<taskId>\ui_messages.json
+```
+
+按 `say`/`ask` 类型统计字符数后，事实一目了然：
+
+| 类型 | 条数 | 字符数 | 性质 |
+|---|---|---|---|
+| `say:api_req_started` | 8 | 17,359 | 内部指标（渲染为 Thinking 占位，不泄内容） |
+| **`say:mcp_server_response`** | **5** | **8,616** | 原始检索 JSON（单条最大 4,312 = 整章教材正文） |
+| `say:completion_result` | 1 | 1,336 | 真正的答案 |
+| `say:text` | 9 | 1,143 | 含 2 条纯标记残渣 |
+| `say:use_mcp_server` | 5 | 633 | 工具调用行 |
+| **`say:reasoning`** | **0** | **0** | ✅ 思考链抑制本来就生效 |
+
+> 值得记一笔：**“感觉有很多思考链”与“真的推送了 reasoning”是两件事**。
+> 实际日志里 `say:reasoning` 条数为 **0**。用户看到的“思考链”其实是
+> 模型把**工具调用标记写进了正文**（见下），以及原始检索 JSON。
+
+### 7.1 泄漏点 A：工具调用标记被当正文吐出来
+
+`say:text` 的两条（432 / 455 字符）内容是：
+
+```
+（全角竖线 U+FF5C 包围的 DSML 标记，此处用「」示意尖括号）
+「」｜｜DSML｜｜ calls「」
+「」｜｜DSML｜｜ invoke name="use_mcp_tool"「」
+「」｜｜DSML｜｜ parameter name="server_name"「」wiki「」/｜｜DSML｜｜ parameter「」
+```
+
+**成因**：模型在**结构化 `tool_calls` 通道**里正常发起了调用（Cline 确实执行了并拿到结果），
+**但同时又把这批标记也写进了 `content`**。上游解析器只认识 Cline 自己的 XML 方言，
+认不出这种标记 → 整段被当普通 `text` 推送。
+
+**修复**：新增 `src/core/teaching/assistantTextSanitizer.ts` → `stripLeakedToolCallMarkup()`，
+在 `presentAssistantMessage` 的 `say("text")` 之前调用。
+
+**为何不做“通用 XML 清洗”**：学生正文里合法出现代码、尖括号、比较符号是常态，
+宽泛清洗很容易误删正常内容。因此只认**实测确认**的那个特征（全角竖线 U+FF5C）：
+不含该字符 → **恒等返回**；含该字符 → 按行剔除标记行。
+
+### 7.2 泄漏点 B：原始 MCP 检索 JSON 直接展示
+
+`say:mcp_server_response` 把 `search_wiki` / `read_wiki_chunk` 的**原始 JSON** 直接搬给学生，
+单条可达 4,312 字符（整章教材正文带 frontmatter）。一次提问的噪声（8,616）是真正答案（1,336）的 **6.5 倍**。
+
+**修复**：在 webview 的 `filterVisibleMessages` 中隐藏 `say:use_mcp_server` / `say:mcp_server_response`
+（`mcp_server_request_started` 本来就已隐藏）。
+
+> ⚠️ **只隐藏 `say` 变体**：`ask:use_mcp_server` 携带“批准 / 拒绝”按钮，一并隐藏会让
+> 未被 `autoApprove` 的工具变得无法确认。
+> `filterVisibleMessages` 正好有两个独立的 switch（先 `ask` 后 `say`），此分支天然只作用于 `say`。
+
+**回归风险**：学生端不再展示“AI 去查了资料”的工具行 —— 检索动作改由模型自己的文字描述（如
+“我检索了课程资料库…”）体现。这是有意取舍：学生不需要看到原始 JSON。

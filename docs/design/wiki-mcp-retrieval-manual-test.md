@@ -134,6 +134,8 @@ McpHub 读的是 `<globalStorage>\settings\cline_mcp_settings.json`。
 | T10 | 思考链仍隐藏 | 任意提问 | 回复中无推理过程 |
 | T11 | 干预仍生效 | 连续索取代码 | 触发提示式干预 |
 | T12 | ★ 检索开关 | 关掉 `llmEnableTools` → 重载 | 条目**被移除**；打开后重建 |
+| T13 | ★ 正文无裸工具标记 | 提问后看学生端回复 | 不出现含全角竖线的标记乱码 |
+| T14 | ★ 隐藏原始检索 JSON | 观察一次带检索的提问 | 不出现 `{"ok":true,...}` 与工具行 |
 
 ---
 
@@ -337,6 +339,62 @@ UPDATE wiki_chunks SET content = '【改库验证 ' || datetime('now') || '】' 
 但这本来就是学生在设置页自己关的，再问一次属于噪音，且和设置项语义打架。
 
 3. 再把开关打开 → 条目被重新写入、MCP 面板恢复。
+
+---
+
+### T13 ★ 回复中不含裸工具调用标记
+
+**背景**：实测发现模型（DeepSeek 系 + 原生工具调用）会在正常发起 `tool_calls` 的同时，
+**把调用标记也写进了正文**。上游解析器认不出这种标记，于是把它当普通文字推给了学生。
+标记的分隔符是**全角竖线 U+FF5C**（不是 ASCII 竖线），形如（用「」示意尖括号）：
+`「」｜｜DSML｜｜ calls「」`。
+
+**操作**：提问一个需要检索资料的问题。
+
+**预期**：学生端回复里**不出现**含全角竖线的标记乱码。
+
+**判定依据**：`stripLeakedToolCallMarkup()` 在 `say("text")` 之前按行剔除。
+
+**失败长什么样**：回复里出现 `｜｜DSML｜｜` 这类字样 → 要么清洗没生效（webview/扩展没重载），
+要么模型换了新方言（需按码点重新取证，**不要靠肉眼分辨全角/半角**）。
+
+**取证方式（推荐，比截图可靠）**：直接读磁盘上的任务持久化文件：
+
+```powershell
+$t = "$env:APPDATA\Code\User\globalStorage\shiinamatsuri.student-teaching-assistant-edu\tasks\<taskId>\ui_messages.json"
+node C:\Users\Kirara\AppData\Local\Temp\analyze-ui.cjs $t
+```
+
+健康状态的标志（按 `say` 类型统计字符数）：
+- `say:reasoning` 条数 = **0**
+- 没有超长的 `say:text`
+- `say:completion_result` 是占比最大的可见内容
+
+> ⚠️ 重要认知：「感觉有很多思考链」与「真的推送了 reasoning」是两件事。
+> 实测日志里 `say:reasoning` 条数为 **0** —— 思考链抑制一直是生效的，
+> 学生看到的“思考”其实是模型把工具标记写进了正文。
+
+---
+
+### T14 ★ 隐藏原始检索 JSON
+
+**背景**：实测一次提问推了 5 条 `mcp_server_response`，合计 **8,616 字符**原始 JSON
+（单条最大 4,312 = 整章教材正文），而真正的答案只有 1,336 字符 —— 噪声是答案的 **6.5 倍**。
+
+**操作**：提问一个会触发检索的问题，观察学生端。
+
+**预期**：
+- 不出现原始 JSON（形如 `{"ok":true,"data":{...}}`）
+- 不出现工具调用行
+- 模型自己的文字描述（“我检索了课程资料库…”）**仍然保留**
+- 教学干预提示（🤔 / 💡 开头那两句）**仍然保留**
+
+**判定依据**：`filterVisibleMessages` 隐藏了 `say:use_mcp_server` / `say:mcp_server_response`
+（`mcp_server_request_started` 本来就已隐藏）。
+
+**⚠️ 必须做的回归检查**：`ask:use_mcp_server`（需人工批准的工具）**必须仍然显示“批准 / 拒绝”按钮**。
+若某个未被 autoApprove 的工具变得无法确认，说明过滤误伤了 `ask` 分支 ——
+本修复只应作用于 `say`。
 
 ---
 
