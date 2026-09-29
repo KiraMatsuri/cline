@@ -367,7 +367,12 @@ export class Task {
 		this.environmentContextTracker = new EnvironmentContextTracker(this.taskId)
 
 		// Initialize focus chain manager only if enabled
-		const focusChainSettings = this.stateManager.getGlobalSettingsKey("focusChainSettings")
+		// 【教学 v2.13】学生端强制关闭（含 task_progress 清单、838 字符/轮的提醒）——
+		// 只改默认值兜不住历史状态里存过的 enabled:true，故就地强制覆盖。
+		const focusChainSettings = {
+			...this.stateManager.getGlobalSettingsKey("focusChainSettings"),
+			enabled: false,
+		}
 		if (focusChainSettings.enabled) {
 			this.FocusChainManager = new FocusChainManager({
 				taskId: this.taskId,
@@ -2174,7 +2179,8 @@ export class Task {
 			supportsBrowserUse,
 			mcpHub: this.mcpHub,
 			skills: availableSkills,
-			focusChainSettings: this.stateManager.getGlobalSettingsKey("focusChainSettings"),
+			// 【教学 v2.13】学生端强制关闭 focus chain（见 FocusChainSettings 默认值处的注释）
+			focusChainSettings: { ...this.stateManager.getGlobalSettingsKey("focusChainSettings"), enabled: false },
 			globalClineRulesFileInstructions,
 			localClineRulesFileInstructions,
 			localCursorRulesFileInstructions,
@@ -2639,11 +2645,22 @@ export class Task {
 					message: "Cline is having trouble. Would you like to continue the task?",
 				})
 			}
+			// 【教学 v2.13】学生端改写"连续错误"提示。
+			// 原文案（非 claude 分支）会告诉学生"可能是模型能力不足，建议改用 Claude 4 Sonnet"，
+			// 对教学产品有两个问题：
+			//   1) 实测本处的根因是模型**吐出了非标准的工具调用方言**（Cline 解析不出 tool_use），
+			//      而不是"模型弱" —— 同一会话里模型下一轮自己换成正确格式后就一次成功了；
+			//   2) 它把学生引向"换模型 / 换工具"，而不是引导他们改进提问方式。
+			// 现改为教学化表述：只讲"怎么把问题问好"，不提模型能力，也不提任何替代产品。
+			// 次数用实际计数动态插值，避免把可配置的 maxConsecutiveMistakes 写死。
 			const { response, text, images, files } = await this.ask(
 				"mistake_limit_reached",
-				this.api.getModel().id.includes("claude")
-					? `This may indicate a failure in Cline's thought process or inability to use a tool properly, which can be mitigated with some user guidance (e.g. "Try breaking down the task into smaller steps").`
-					: "Cline uses complex prompts and iterative task execution that may be challenging for less capable models. For best results, it's recommended to use Claude 4 Sonnet for its advanced agentic coding capabilities.",
+				`AI 连续 ${this.taskState.consecutiveMistakeCount} 次没能正确调用工具，这次回答中断了。\n\n` +
+					"常见原因是问题太大、或要求不够明确。可以试试：\n" +
+					"1. **拆小**：一次只问一个知识点，例如「我想弄懂列表的索引」；\n" +
+					"2. **说清目标**：你要的是概念解释、示例代码，还是帮你检查已经写好的代码？\n" +
+					"3. **贴上下文**：把相关代码片段或报错信息贴上来，我能给出更准确的帮助。\n\n" +
+					"直接在下面回复即可，我会接着帮你。",
 			)
 			if (response === "messageResponse") {
 				// Display the user's message in the chat UI

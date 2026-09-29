@@ -56,4 +56,34 @@ describe("stripLeakedToolCallMarkup", () => {
 		const ascii = "| 周 | 内容 |\n|---|---|\n| 1 | 起步 |\n\n`a | b`"
 		expect(stripLeakedToolCallMarkup(ascii)).to.equal(ascii)
 	})
+
+	// 这条是真实事故的回归测试（taskId=1790692089951）：
+	// 整轮回复里只漏出一行 `- [ ] 检索第 1 周资料内容`，被当成助手正文推给了学生。
+	// 根因：task_progress 是**多行参数值**，中间行不带标记。
+	it("★ 多行参数值：中间那行不带标记也必须一并吞掉（真实事故回归）", () => {
+		const leaked = T(
+			[
+				"<%P%DSML%P% calls>",
+				'<%P%DSML%P% invoke name="use_mcp_tool">',
+				'<%P%DSML%P% parameter name="arguments">{}</%P%/DSML%P% parameter>',
+				'<%P%DSML%P% parameter name="task_progress">- [x] 查询可用教学周',
+				"- [ ] 检索第 1 周资料内容",
+				"- [ ] 汇总第 1 周学习要点<%P%/DSML%P% parameter>",
+				"<%P%/DSML%P% invoke>",
+				"<%P%/DSML%P% calls>",
+			].join("\n"),
+		)
+		const out = stripLeakedToolCallMarkup(leaked)
+		expect(out).to.equal("")
+		expect(out).to.not.include("检索第 1 周资料内容")
+	})
+
+	it("★ 泄漏块前后的正常文字保留", () => {
+		const mixed = T(
+			["我先看一下资料。", "<%P%DSML%P% calls>", "- [ ] 中间项", "<%P%/DSML%P% calls>", "第 1 周讲环境搭建。"].join(
+				"\n",
+			),
+		)
+		expect(stripLeakedToolCallMarkup(mixed)).to.equal("我先看一下资料。\n第 1 周讲环境搭建。")
+	})
 })

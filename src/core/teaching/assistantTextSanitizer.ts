@@ -29,7 +29,8 @@ const FULLWIDTH_PIPE = "\uFF5C"
  *
  * 策略（保守）：
  *   1. 不含全角竖线 → **原样返回**（恒等变换，覆盖正常回复的绝大多数情况）；
- *   2. 含标记 → 按行丢弃「含全角竖线的行」，其余行保留并 trim。
+ *   2. 含标记 → 从**第一行带标记的行**到**最后一行带标记的行**，整段吞掉；
+ *      两端的正常文字保留。
  *
  * 剩余为空时返回空串：webview 侧本来就会丢弃空的 text 消息
  * （`filterVisibleMessages` 的 `case "text"` 分支），因此调用方无需额外判空。
@@ -38,9 +39,31 @@ export function stripLeakedToolCallMarkup(text: string): string {
 	if (!text || !text.includes(FULLWIDTH_PIPE)) {
 		return text
 	}
-	return text
-		.split("\n")
-		.filter((line) => !line.includes(FULLWIDTH_PIPE))
-		.join("\n")
-		.trim()
+	const lines = text.split("\n")
+
+	// 找出第一行与最后一行「带标记」的行，把**中间整段**一并吞掉。
+	//
+	// 【为何不是「逐行剔除带标记的行」】
+	// v2.13 初版就是这么写的，随后被实测证伪：泄漏块里的 `task_progress` 是**多行参数值**，
+	// 只有首尾两行碰得到标记，中间行完全干净。逐行过滤会**恰好留下中间那一行**
+	// （实测：`- [ ] 检索第 1 周资料内容`，17 字符），而它又最像正常文字，
+	// 于是被当正文推给学生 —— 431 字符只降到 17 字符，没根治。
+	//
+	// 【代价与边界】
+	// 这会把两段泄漏块之间的正常文字也吞掉。可接受：触发条件（正文里出现 U+FF5C）
+	// 本身就意味着这段内容已被标记污染；真正的回答会经 completion_result 单独下发。
+	let first = -1
+	let last = -1
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].includes(FULLWIDTH_PIPE)) {
+			if (first === -1) {
+				first = i
+			}
+			last = i
+		}
+	}
+	if (first === -1) {
+		return text
+	}
+	return [...lines.slice(0, first), ...lines.slice(last + 1)].join("\n").trim()
 }

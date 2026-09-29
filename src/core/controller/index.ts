@@ -44,11 +44,11 @@ import { getLatestAnnouncementId } from "@/utils/announcements"
 import { getCwd, getDesktopDir } from "@/utils/path"
 import { PromptRegistry } from "../prompts/system-prompt"
 import {
-	ensureCacheDirectoryExists,
-	ensureMcpServersDirectoryExists,
-	ensureSettingsDirectoryExists,
-	GlobalFileNames,
-	writeMcpMarketplaceCatalogToCache,
+    ensureCacheDirectoryExists,
+    ensureMcpServersDirectoryExists,
+    ensureSettingsDirectoryExists,
+    GlobalFileNames,
+    writeMcpMarketplaceCatalogToCache,
 } from "../storage/disk"
 import { fetchRemoteConfig } from "../storage/remote-config/fetch"
 import { clearRemoteConfig } from "../storage/remote-config/utils"
@@ -813,7 +813,9 @@ export class Controller {
 		const taskHistory = this.stateManager.getGlobalStateKey("taskHistory")
 		const autoApprovalSettings = this.stateManager.getGlobalSettingsKey("autoApprovalSettings")
 		const browserSettings = this.stateManager.getGlobalSettingsKey("browserSettings")
-		const focusChainSettings = this.stateManager.getGlobalSettingsKey("focusChainSettings")
+		// 【教学 v2.13】学生端强制关闭 focus chain：设置页那个开关会恒显为关、
+		// 点了也不会生效（详细理由见 FocusChainSettings 默认值处的注释）。
+		const focusChainSettings = { ...this.stateManager.getGlobalSettingsKey("focusChainSettings"), enabled: false }
 		const dictationSettings = this.stateManager.getGlobalSettingsKey("dictationSettings")
 		const preferredLanguage = this.stateManager.getGlobalSettingsKey("preferredLanguage")
 		const openaiReasoningEffort = this.stateManager.getGlobalSettingsKey("openaiReasoningEffort")
