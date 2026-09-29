@@ -202,7 +202,10 @@ Expected（两种情况都要记录）：
 - **MCP 配置文件实际路径**：
   `C:\Users\Kirara\AppData\Roaming\Code\User\globalStorage\shiinamatsuri.student-teaching-assistant-edu\settings\cline_mcp_settings.json`
   - **关键修正**：目录名是**发布后的扩展 ID**（`shiinamatsuri.student-teaching-assistant-edu`），不是上游的 `saoudrizwan.claude-dev`。
-  - `getMcpSettingsFilePath(settingsDirectoryPath)` 的入参必须传 `context.globalStorageUri.fsPath`（即上面的扩展 globalStorage 根），函数内部会拼 `settings/` 子目录。**不可硬编码 `saoudrizwan.claude-dev`。**
+  - 写入了但无人读取：`getMcpSettingsFilePath(dir)` 只做 `path.join(dir, "cline_mcp_settings.json")`，
+    **不会**拼 `settings/`；而 McpHub 依赖的是 `await ensureSettingsDirectoryExists()`（= `<globalStorage>/settings`）。
+    正确做法是与 McpHub **调用同一个无参函数**。详见 Task 5 验证记录的「★ 路径修正」。
+    （不可硬编码目录名 `saoudrizwan.claude-dev` 这一点仍成立。）
 - **结论：继续本计划（不退回远程 streamableHttp）** ✅
 
 **遗留说明**：本次验证时该扩展未安装在当前 VS Code profile（`~/.vscode/extensions` 下无 `shiinamatsuri.*`），因此无法在真实 Cline 面板里观察 spawn；改用「同一条 spawn 代码路径 + 自验证探针（子进程写标记文件与请求日志）」完成等价验证。
@@ -1327,7 +1330,9 @@ spec §6 规定了三种错误返回，其中第三条 Task 3 的骨架并未满
 **Interfaces:**
 - Consumes: `getMcpSettingsFilePath(settingsDirectoryPath)`（`@core/storage/disk`）；Task 0 记录的实际路径
 - **Task 0 校准（实测）**：
-  - 入参必须是 `context.globalStorageUri.fsPath`。实测目录名为 `shiinamatsuri.student-teaching-assistant-edu`，**不是**上游的 `saoudrizwan.claude-dev` → **禁止硬编码**。
+  - ❌ ~~入参必须是 `context.globalStorageUri.fsPath`~~ —— **该结论是错的**（Task 5 实测推翻，见下方「★ 路径修正」）。
+    正确做法：传 `await ensureSettingsDirectoryExists()`，即与 McpHub 用**同一个无参函数**。
+    目录名为 `shiinamatsuri.student-teaching-assistant-edu`（上游是 `saoudrizwan.claude-dev`）→ 仍然禁止硬编码。
   - 写入后**无需调用任何 McpHub API**：`chokidar` watcher 会自动触发 `updateServerConnections()`（`awaitWriteFinish` 100ms 防抖、`atomic: true`）。只要不置位 `isUpdatingClineSettings`，重载必定发生。
   - 改 `args`（周数）**等于完整重启**：`configsRequireRestart()` 只豁免 `autoApprove` / `timeout`，`args`/`command`/`env`/`disabled` 变化都会「删连接 + 重新 spawn」→ 重启窗口内该 server 不可用（Task 6/9 必须按「失败可见」处理，不得回退全文注入）。
 - Produces:
@@ -1336,7 +1341,7 @@ spec §6 规定了三种错误返回，其中第三条 Task 3 的骨架并未满
   - `ensureWikiMcpServer(context): Promise<void>`
   - `registerWikiMcpConfigWatcher(context): vscode.Disposable`
 
-- [ ] **Step 1: 写纯函数单测（先失败）**
+- [x] **Step 1: 写纯函数单测（先失败）**
 
 创建 `d:\cline\src\core\teaching\__tests__\WikiMcpRegistrar.test.ts`：
 
@@ -1421,12 +1426,13 @@ describe("mergeWikiServerEntry", () => {
 })
 ```
 
-- [ ] **Step 2: 跑单测确认失败**
+- [x] **Step 2: 跑单测确认失败**
 
 Run: `cd d:\cline; npm run test:unit -- --grep "buildWikiServerEntry|mergeWikiServerEntry" 2>&1 | Select-Object -Last 20`
 Expected: `Cannot find module '../WikiMcpRegistrar'`。
+实测：`error TS2307: Cannot find module '../WikiMcpRegistrar'`，exit 1 ✅
 
-- [ ] **Step 3: 实现 WikiMcpRegistrar**
+- [x] **Step 3: 实现 WikiMcpRegistrar**
 
 创建 `d:\cline\src\core\teaching\WikiMcpRegistrar.ts`：
 
@@ -1574,12 +1580,13 @@ export function registerWikiMcpConfigWatcher(context: vscode.ExtensionContext): 
 }
 ```
 
-- [ ] **Step 4: 跑单测确认通过**
+- [x] **Step 4: 跑单测确认通过**
 
 Run: `npm run test:unit -- --grep "buildWikiServerEntry|mergeWikiServerEntry" 2>&1 | Select-Object -Last 25`
 Expected: `10 passing`（含 ★ 尊重 disabled 的那条）。
+实测：**`13 passing`**（比预期多 3 条，因为新增了 `decideWriteAction` 的 4 条断言，见文末）。
 
-- [ ] **Step 5: 在 extension.ts 接线**
+- [x] **Step 5: 在 extension.ts 接线**
 
 在 `d:\cline\src\extension.ts` 的 `activate()` 中，紧接现有 `LLMWikiService` 初始化之后插入：
 
@@ -1590,22 +1597,104 @@ Expected: `10 passing`（含 ★ 尊重 disabled 的那条）。
 	registerWikiMcpConfigWatcher(context)
 ```
 
-- [ ] **Step 6: 手工验证（VS Code 内）**
+- [x] **Step 6: 手工验证（VS Code 内）** —— 不可执行，用自动化替代
 
 Run: `npm run watch`（若已在跑则跳过），然后**重载 VS Code 窗口**（命令面板 → `Developer: Reload Window`）。
+
+> ⚠️ **无法执行**：该扩展并未安装在当前 VS Code profile（`~/.vscode/extensions` 下无 `shiinamatsuri.*`），
+> 因此无法重载窗口去观察 MCP 面板。改为**自动化端到端验证**（见文末），覆盖了本步骤想验证的
+> “删除→重建”以及另外两条边界。面板上是否 Connected 留给安装后的人工回归。
 
 Expected:
 1. `cline_mcp_settings.json` 中出现 `wiki` 条目（含 `args: [... "--week", "5", "--server", ...]`）
 2. VS Code MCP 面板中 `wiki` 显示 **Connected**
 3. 手工删除该条目 → 重载窗口 → 条目**被重建**（验证"删除无效"）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 cd d:\cline
 git add src/core/teaching/WikiMcpRegistrar.ts src/core/teaching/__tests__/WikiMcpRegistrar.test.ts src/extension.ts
 git commit -m "feat(mcp): self-register wiki MCP server with disable-respect and delete-rebuild"
 ```
+
+### Task 5 验证记录（2026-09-29 实测）
+
+**提交**：`fa2c345d`（3 files, 291+）。
+
+#### ★ 路径修正（本任务最有价值的发现）
+
+计划（以及我在 Task 0 写下的笔记）声称：`getMcpSettingsFilePath(settingsDirectoryPath)`
+「内部会拼 `settings/` 子目录」，因此入参传 `context.globalStorageUri.fsPath`。**这个结论是错的**，
+实测读源码得到：
+
+```ts
+// src/core/storage/disk.ts
+export async function ensureSettingsDirectoryExists(): Promise<string> {
+	return getGlobalStorageDir("settings")           // → <globalStorage>/settings
+}
+export async function getMcpSettingsFilePath(settingsDirectoryPath: string): Promise<string> {
+	return path.join(settingsDirectoryPath, GlobalFileNames.mcpSettings)  // ← 只拼文件名
+}
+// getGlobalStorageDir = path.resolve(HostProvider.get().globalStorageFsPath, ...subdirs)
+// HostProvider 在 extension.ts:670 用 context.globalStorageUri.fsPath 初始化
+```
+
+而 `McpHub` 构造时传的是 `() => ensureSettingsDirectoryExists()`。
+
+**若按计划写**：条目会被写到 `<globalStorage>/cline_mcp_settings.json`，而 McpHub 读的是
+`<globalStorage>/settings/cline_mcp_settings.json` —— **写入成功但无人读取**。
+这类“写对了 JSON、写错了地方”的故障不会报错，只会表现为“功能没生效”，极难排查。
+
+**修正后**：与 McpHub 调用**同一个无参函数** `await ensureSettingsDirectoryExists()`，
+路径一致性由构造保证，而不是靠约定。
+
+#### ★ 新增防数据丢失保护（计划外，必要）
+
+计划的 `readMcpSettings` 在解析失败时把 `raw` 置为 `{}` 继续写入 → 会把学生配置的
+**其它 MCP server 全部清空**（因为最终写的是整个文件的 `raw`）。
+新增纯函数 `decideWriteAction(outcome, changed)`，把读取结果分为
+`missing | ok | broken`，其中 **`broken` 一律 `abort`**（放弃本次写入）。
+这与本项目此前“LLM 清洗失败却回写截断原文”导致 27 章被毁是同一类教训。
+
+#### 验证一：纯函数单测（`npm run test:unit`）
+
+**13 passing / 0 failing**（计划预期 10，多出的是新增 `decideWriteAction` 的 4 条，
+减去一条归并后净多 3）。覆盖：
+
+- `buildWikiServerEntry` ×3：args 组装、autoApprove 白名单、week clamp
+- `mergeWikiServerEntry` ×6：缺失即写入 / 幂等 / week 变化重写 /
+  **★ 尊重 disabled** / 不破坏其它 server / 篡改被覆盖
+- `decideWriteAction` ×4：含 **★ `broken` 无论如何都 abort**
+
+#### 验证二：写入路径端到端（自动化替代 Step 6）
+
+**15 passed / 0 failed**（exit 0）。做法：单独打包 `WikiMcpRegistrar.ts`，
+运行期拦截 `vscode` / `@core/storage/disk` / `Logger` 三个模块，对**临时目录**里的
+`cline_mcp_settings.json` 跑完整场景。**全程不碰真实的 MCP 配置文件**。
+
+| 场景 | 结果 |
+|---|---|
+| 首次注册：结构正确（args/command/env/autoApprove） | ✅ |
+| **★ 不破坏其它 server**（预置了一个 `other`） | ✅ |
+| 幂等：内容一致时文件字节不变 | ✅ |
+| week 变化 → args 重写为 9 | ✅ |
+| **★ 禁用后文件完全未被改写**（故意把 week 改回 5 试探） | ✅ |
+| **★ 删除条目 → 自动重建** | ✅ |
+| **★ 篡改 command/args → 覆盖回正确值** | ✅ |
+| **★ 文件损坏 → 放弃写入，不清空** | ✅ |
+
+日志确认分支确实走到（非空跑）：`已写入/更新` → `已是最新，跳过写入` →
+`MCP 配置文件存在但无法解析，为避免清空其它 MCP server，本次放弃写入`。
+
+> 该探针**不覆盖**路径推导本身（disk 层被打桩）—— 那条由上面的
+> 「★ 路径修正」的源码等价性保证。两处证据互补，不要只看一处。
+
+#### 遗留：仍待人工回归
+
+「MCP 面板显示 Connected」需要扩展安装后重载窗口才能确认。
+考虑到 Task 3/4 已用真实宿主链路（`Code.exe` + `ELECTRON_RUN_AS_NODE=1`）跑通了
+同一个产物与同一份 args 形式，风险已很低，但**不能声称已验证**。
 
 ---
 
