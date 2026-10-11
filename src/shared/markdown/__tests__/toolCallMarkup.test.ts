@@ -1,5 +1,5 @@
 import { expect } from "chai"
-import { stripLeakedToolCallMarkup } from "../assistantTextSanitizer"
+import { stripLeakedToolCallMarkup } from "../toolCallMarkup"
 
 // 用码点构造，避免在源码里内联裸标记（裸标记在某些解析器里会被当成控制语法）
 const P = String.fromCharCode(0xff5c) // 全角竖线 U+FF5C

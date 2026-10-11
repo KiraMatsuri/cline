@@ -72,7 +72,6 @@ import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
-import { stripLeakedToolCallMarkup } from "@/core/teaching/assistantTextSanitizer"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
@@ -86,6 +85,7 @@ import {
 } from "@/integrations/terminal"
 import { ClineError, ClineErrorType, ErrorService } from "@/services/error"
 import { telemetryService } from "@/services/telemetry"
+import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
 import {
     ClineAssistantContent,
     ClineContent,

@@ -199,7 +199,7 @@ node scripts\verify-mcp-wiki-server.mjs
 **但同时又把这批标记也写进了 `content`**。上游解析器只认识 Cline 自己的 XML 方言，
 认不出这种标记 → 整段被当普通 `text` 推送。
 
-**修复**：新增 `src/core/teaching/assistantTextSanitizer.ts` → `stripLeakedToolCallMarkup()`，
+**修复**：新增 `src/shared/markdown/toolCallMarkup.ts` → `stripLeakedToolCallMarkup()`，
 在 `presentAssistantMessage` 的 `say("text")` 之前调用。
 
 **为何不做“通用 XML 清洗”**：学生正文里合法出现代码、尖括号、比较符号是常态，

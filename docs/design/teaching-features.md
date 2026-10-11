@@ -57,7 +57,7 @@
 **但同时把这批标记也写进了 `content`**。上游解析器只认识 Cline 自己的 XML 方言，
 认不出这种标记 → 整段被当普通 `text` 推送。
 
-**修复**：`src/core/teaching/assistantTextSanitizer.ts` 的 `stripLeakedToolCallMarkup()`，
+**修复**：`src/shared/markdown/toolCallMarkup.ts` 的 `stripLeakedToolCallMarkup()`，
 在 `presentAssistantMessage` 的 `say("text")` 之前调用（`src/core/task/index.ts`）。
 
 **❗ 初版做法被实测证伪（重要教训）**：v2.13 初版写的是「逐行剔除带标记的行」。
@@ -65,7 +65,7 @@
 `task_progress` 是**多行参数值**，只有首尾两行碰得到标记，**中间行完全干净** ——
 逐行过滤恰好把它留下（431 字符 → 17 字符，没根治）。
 现改为「从第一行带标记的行到**最后**一行带标记的行，整段吞掉」。
-回归测试：`assistantTextSanitizer.test.ts` 里的「多行参数值：中间那行不带标记也必须一并吞掉」。
+回归测试：`toolCallMarkup.test.ts` 里的「多行参数值：中间那行不带标记也必须一并吞掉」。
 
 **为何不做“通用 XML / 标签清洗”**：学生正文里合法出现代码、尖括号、比较符号是常态
 （例如 `a < b`、markdown 表格的 `|`），宽泛清洗极易误删正常内容。
