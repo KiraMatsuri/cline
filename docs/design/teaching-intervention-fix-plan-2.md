@@ -374,15 +374,25 @@ private bumpEscalation(ruleId: BehaviorRuleId): number {
 private checkConsecutiveCodeGenerationRule(isTurn: boolean): void {
 	if (this.assistantCodeStreak < this.options.consecutiveAssistantCodeThreshold) return
 	if (isTurn) this.bumpEscalation("consecutive_code_generation")   // ★ 不受冷却影响
-	this.notify("consecutive_code_generation", /* 原 message 不变 */ "", this.assistantCodeStreak,
-		this.options.consecutiveAssistantCodeThreshold)
+	// 下面这次调用与改动前**逐字相同**（message 保持现有文案），只在其前插入一行计数
+	this.notify(
+		"consecutive_code_generation",
+		`检测到你连续 ${this.assistantCodeStreak} 次请求代码生成，建议先尝试自行修改一小段，再让 AI 帮你 review。`,
+		this.assistantCodeStreak,
+		this.options.consecutiveAssistantCodeThreshold,
+	)
 }
 
 private checkNoEditStreakRule(isTurn: boolean): void {
 	if (this.turnsSinceLastEdit < this.options.noEditTurnStreakThreshold) return
 	if (isTurn) this.bumpEscalation("no_edit_streak")
-	this.notify("no_edit_streak", /* 原 message 不变 */ "", this.turnsSinceLastEdit,
-		this.options.noEditTurnStreakThreshold)
+	// 同上：message 逐字保留
+	this.notify(
+		"no_edit_streak",
+		`你已经连续 ${this.turnsSinceLastEdit} 轮没有代码编辑，建议动手验证或微调一处关键实现。`,
+		this.turnsSinceLastEdit,
+		this.options.noEditTurnStreakThreshold,
+	)
 }
 
 // ③ notify()：删除自增，改为读取当前计数（冷却**只挡提示**，不再挡计数）
@@ -624,12 +634,48 @@ import { getRulePolicy } from "../rulePolicy"
 import { ev } from "./__fixtures__/events"   // 抽出的公共事件构造器（见 Step 1）
 
 describe("GN · 优先级综合（可跑通 + 边界）", () => {
-	it("★ 核心流程端到端：违规 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => { /* … */ })
-	it("★ 边界：阈值前一轮不阻断、恰好阈值阻断", () => { /* … */ })
-	it("★ 边界：概念问答下规则被门控停用（rulePolicy）", () => { /* … */ })
-	it("★ 边界：冷却不影响计数、只影响提示条数", () => { /* … */ })
-	it("★ 降级/兜底路径可用（该优先级若涉及）", () => { /* … */ })
-	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => { /* … */ })
+	it("★ 核心流程端到端：违规 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m.ingest(ev({})); m.ingest(ev({})); m.ingest(ev({}))
+		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+		const text = mgr.checkAndGenerateIntervention(m, 3)
+		expect(text).to.be.a("string").and.to.include("阻断模式")
+		expect(mgr.isBlockingActive()).to.equal(true)
+	})
+
+	it("★ 边界：阈值前一轮不阻断、恰好阈值阻断", () => {
+		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m2.ingest(ev({})); m2.ingest(ev({}))
+		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		m2.ingest(ev({}))
+		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+	})
+
+	it("★ 边界：概念问答下规则被门控停用（rulePolicy）", () => {
+		expect(getRulePolicy("consecutive_code_generation", "algorithm").enabled).to.equal(false)
+		expect(getRulePolicy("consecutive_code_generation", "code_generation").enabled).to.equal(true)
+	})
+
+	it("★ 边界：冷却不影响计数、只影响提示条数", () => {
+		const m3 = new BehaviorMonitor("t1", { cooldownMs: 120_000, escalationBlockingThreshold: 3 })
+		m3.ingest(ev({})); m3.ingest(ev({})); m3.ingest(ev({}))
+		expect(m3.getEscalationCount("consecutive_code_generation")).to.equal(3)
+		expect(m3.getPendingAlerts().length).to.equal(1)
+	})
+
+	it("★ 兜底路径：即使无新警报，干预文本仍非空（P3/T13 后改为断言降级为模板文案）", () => {
+		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m4.ingest(ev({})); m4.ingest(ev({})); m4.ingest(ev({}))
+		const mgr4 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.be.a("string").and.to.not.be.empty
+	})
+
+	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => {
+		const m5 = new BehaviorMonitor("t1", { enabled: false, cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m5.ingest(ev({})); m5.ingest(ev({})); m5.ingest(ev({}))
+		expect(m5.getPendingAlerts()).to.have.length(0)
+		expect(m5.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+	})
 })
 ```
 
