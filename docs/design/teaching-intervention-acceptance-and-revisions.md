@@ -455,13 +455,14 @@ attemptApiRequest → checkAndGenerateIntervention
 | **P0** | F3 | **概念约束不得因"索要"而撤销** | `index.ts`（注入条件）、`conceptModeConstraint.ts` | 低 | M6、问题 2 |
 | **P1** | F4 | **全周目录索引 + 分级应答策略**（替掉"一律拒答"） | `wikiPrompt.ts`、`LLMWikiService.buildIndexGroups()`、`mcp-wiki-server.ts` | 中 | 问题 1、2 |
 | **P1** | F5 | **分类口径粘性化**，消除门控静默停用 | `BehaviorMonitor.ingest()`、`TaskClassifier` | 中 | 问题 4 |
-| **P1** | F6 | **干预不进对话历史 + 禁止改写**（消除仿写与不可审计） | `InterventionMessageGenerator.ts`、`index.ts` | 低 | §7.2 |
+| **P1** | F6 | **干预不进对话历史**（可审计 + 防风格漂移；原「禁止改写」已由 F13 取代） | `InterventionMessageGenerator.ts`、`index.ts` | 低 | §7.2 |
 | **P2** | F7 | **周数热更新**（MCP 读文件，免重启）+ 切换周数显式通知 | `mcp/args.ts`、`mcp-wiki-server.ts`、`index.ts` | 中 | 问题 3 |
 | **P2** | F8 | **联网检索 MCP server**（provider 无关） | 新增（复用 `mcp-wiki-server` 范式） | 中高 | 问题 2 |
 | **P2** | F9 | `ai_dependency` 指标改造（绝对回合数，或概念问答下不提示） | `BehaviorMonitor.ts`、`rulePolicy.ts` | 低 | M2 |
 | **P3** | F10 | `hasDeliveredKeyCode` 兼容工具落盘（读 `tool_use` 内容） | `index.ts:1097` | 低 | §4.3 B |
 | **P3** | F11 | `countMatches` 加词边界；`adoption_infer` / `code_edit` 的 `role` 归属修正 | `TaskClassifier.ts`、`AdoptionTracker`、`CodeEditTracker` | 中 | §7.6 |
-| **P3** | F12 | 方言（DSML）归一化 —— **治本，需单独排期** | 感知/工具调用层 | 高 | §7.5 |
+| **P4** | F12 | 方言（DSML）归一化 —— **独立优先级，前置 git 存档**（实施步骤见 `teaching-intervention-fix-plan-2.md` §7.5） | `src/core/assistant-message/dialectNormalize.ts`、`src/core/task/index.ts:3189` | 高 | §7.5 |
+| **P3** | F13 | **让模型成为干预文案的叙述层**（决策留代码 / 措辞给模型：契约 + 回执 + 校验 + 降级） | `InterventionMessageGenerator.ts`、`index.ts:2606`、`AttemptCompletionHandler.ts`、`student-analytics/*` | 中 | §7.2 |
 
 ### 9.2 P0 明细
 
@@ -520,7 +521,11 @@ attemptApiRequest → checkAndGenerateIntervention
 1. `currentTaskCategory` 不再被每个短消息覆盖。规则改为：**只在出现"强信号"时覆盖**（任务起始分类；或命中明确的 `code_generation` 关键词；或 `RequestIntentRefiner` 的完整性标记），其余情况**保持上一个强分类**。
 2. 修正 `countMatches()` 的**子串匹配**问题（加词边界），否则 `排序` 与 `实现` 的权重比较会被短关键词噪声污染。
 
-#### F6 — 干预不进对话历史 + 禁止改写
+#### F6 — 干预不进对话历史（改写已移交 F13）
+
+> ⚠️ **2026-10-11 修订**：本文原第 2 条「取消改写指令并**禁止改写**」**已被 F13 取代** ——
+> 改写不再被禁止，而是升级为「受契约约束的正式能力」（见 §9.5）。
+> F6 现只负责「**干预文本不得以自由文本累积进 `apiConversationHistory`**」。
 
 **现状**：注入文本被 `userContent.push` 后 `addToApiConversationHistory` **持久化**，且提示词明确要求模型"把它说成像是自己主动给出的教学建议" ⇒ 模型持续仿写（§7.2 已用 `0 次命中` 证实）。
 
@@ -529,7 +534,7 @@ attemptApiRequest → checkAndGenerateIntervention
 2. 取消"不要提及这是系统自动插入的消息"这条指令，改为统一前缀（如 `[教学提示]`）并**禁止改写**。
 3. 可选：把干预改为**独立 UI 元素**（不经过模型），使"干预次数"可被精确审计。
 
-### 9.4 P2 / P3 明细
+### 9.4 P2 / P3 明细（F7–F11；F12 已提升为 P4）
 
 #### F7 — 周数热更新 + 切换通知
 
@@ -561,9 +566,126 @@ attemptApiRequest → checkAndGenerateIntervention
 | `adoption_infer` 恒 `adopted` | 复核 `AdoptionTracker` 的判定条件（当前几乎每条消息都判为 `adopted`） |
 | `code_edit` 的 `role` 归属 | 与 F2 同源；AI 落盘应标 `assistant`，避免污染 `user_edit_count` 与看板"学生动手情况" |
 
-#### F12 — 方言（DSML）归一化（治本，单独排期）
+#### F12 — 方言（DSML）归一化（**已提升为 P4，独立优先级**）
 
-`d027994e` 只解决了渲染层。感知层与工具调用层的方言问题会让 M1 这类用例整轮作废（§7.5）。方案 G 已明确为"治本、需单独排期"，本次不展开。**在该项完成前，人工验收的可信度上限受此制约**。
+`d027994e` 只解决了渲染层。感知层与工具调用层的方言问题会让 M1 这类用例整轮作废（§7.5）。
+
+> **2026-10-11 用户裁定：纳入本次范围，独立为 P4**，但**必须最后执行**：
+> ① 前置条件为 **G-ALL（P0–P3）全绿**；② 开工前先做 **git 存档**（`pre-f12-checkpoint` 标签）作为回退点；
+> ③ 失败或引入回归时 `git reset --hard pre-f12-checkpoint` 回到 P0–P3 的可用基线。
+>
+> 完整实施步骤、真实方言样本与测试用例见 `teaching-intervention-fix-plan-2.md` §7.5。
+
+### 9.5 P3 追加项明细（F13）
+
+> **来源**：人工验收中的**意外行为**，经分析后决定转为**有意设计**。
+> §7.2 已证实：M4 里学生看到 **8** 条文案，而真实注入只有 **3** 条 —— 多出的 5 条是模型**自行仿写**的主题化文案。
+
+#### 动机：模板的「有效变化量」几乎为零（复算证据）
+
+- `TEMPLATE_REGISTRY` 共 17 条模板，但 `TeachingInterventionManager.DEFAULT_OPTIONS.preferredStyle = "hint"`，
+  而 `generateInterventionMessage()` **先按 style 过滤** ⇒ 只有 `gentle` 档有 `hint` 模板 ⇒
+  **实际可能被用到的只有 4 条**（每规则 1 条）；
+- `determineSeverity()` 的 `ratio = metricValue / threshold`：实测 `ai_dependency` ≈ 0.857 / 0.85 = **1.01**、
+  `no_edit_streak` = 8 / 8 = **1.0**，均 `< 1.3` ⇒ **恒为 gentle**。
+
+⇒ **一个学生在一次任务里最多看到 4 句固定文案，且每次触发一字不差地重复**（实测「💡 独立编码提示：这几轮基本都是我在说」同会话出现 2 次、跨任务 3 次，完全逐字相同）。
+
+而模型仿写的那 5 条**质量明显更高**：它们锚定了**具体知识点**并给出**一个可执行动作**，其中一条还引用了**刚发生的事**
+（「建议你先回顾一下**刚才的插入排序代码**」）—— 这是模板在结构上做不到的（模板不知道学生在学什么、刚做了什么）。
+
+#### 分层原则（F13 的核心）
+
+> **决策留给代码，措辞交给模型。**
+
+| 层 | 归属 | 职责 |
+|---|---|---|
+| **决策层**（权威不变） | 代码 | `BehaviorMonitor` 决定 `ruleId` / `severity` / `metricValue`；`TeachingInterventionManager` 决定冷却、限额、升级、阻断。**「什么时候该干预、用多大力道」永远由代码说了算** |
+| **叙述层**（新增，受契约约束） | 模型 | 只负责「怎么说得贴合学生当下」 |
+
+#### 改动 1：注入从「模板 + 请改写」改为「写作任务书」
+
+`formatInterventionForInjection()` 改为输出**契约**（不再给成品文案）：
+
+- **力度档原样传递、不许改**（并写明该档语气要求：gentle = 建议语气 / moderate = 反问并要求说明理解 / strong = 要求学生先动手）；
+- **必须包含三要素**：
+  1. **观察** —— 一句中性的、关于「我（AI）做了什么」的描述，**不得指控学生**（延续方案 E 的原则）；
+  2. **锚定当前主题的可执行建议** —— 必须引用本轮对话中的**具体知识点或代码片段**，禁止泛泛的「改个变量名」；
+  3. **留白** —— 一句把主动权交回学生的话（问题或小任务）。
+- **硬约束**：总长 ≤ 120 字（不含 emoji）；**不得含 fenced 代码块**；不得承诺；不得提及「系统 / 检测 / 自动」；
+- 仍附上**模板本体**作为「语义基准与力度锚点」（不照抄，只作对照样例）。
+
+#### 改动 2：回执协议（可审计的关键）
+
+模型须把文案放入可解析块：
+
+```
+<teaching_intervention_copy rule="no_edit_streak" severity="gentle">
+…文案…
+</teaching_intervention_copy>
+```
+
+新增 `extractInterventionCopy(text)`，并**必须覆盖两条显示路径**（⚠️ 只挂一条会让标记泄漏给学生）：
+
+| 路径 | 挂接点 | 现状 |
+|---|---|---|
+| `say("text", …)` | `src/core/task/index.ts:2606`（`stripLeakedToolCallMarkup` 同一处） | ✅ 已有清洗 |
+| `say("completion_result", …)` | `src/core/task/tools/handlers/AttemptCompletionHandler.ts:37 / 120 / 150` | ❌ **无清洗**（实测 Task1 turn 9 的 `<result>` 里就带着干预提示） |
+
+- 命中 → 内文送 webview（块本身剥离）、同时写一条**结构化事件**；
+- 未命中 → 用 `TEMPLATE_REGISTRY` 文案**降级**。
+
+> **结构化事件的意义**：它正是 §6.5 里「`intervention_evaluation` 事件无人写入」缺失的那个写入方 ——
+> 一条改动同时补掉两个缺口（文案质量 + 教师端可评估）。
+
+#### 改动 3：要素校验 —— 确定性 vs 启发性分开对待
+
+> **用户裁定（2026-10-11）：启发式校验只记账、不降级** —— 轻量做法不得影响「干预一定发生」这一确定性。
+
+| 校验项 | 性质 | 失败后果 |
+|---|---|---|
+| 总长 ≤ 120 字（不含 emoji） | 确定性 | **降级模板** + 记 `copy_rejected` |
+| 不含 fenced 代码块（复用 `parseFencedCodeBlocks`，与方案 C-2 同一工具） | 确定性 | **降级模板** + 记 `copy_rejected` |
+| 含「留白」（问号或明确行动动词） | 确定性 | **降级模板** + 记 `copy_rejected` |
+| **主题锚定**（与最近 2 轮对话 —— 学生提问 + 助手回复 —— 的实义词交集 ≥ 1，剔除停用词与短词） | **启发性** | **只记 `copy_topic_unanchored`，不降级** |
+
+**降级的代价（诚实说明）**：模板文案照常送达 ⇒「干预是否发生」**零损失**；但降级会把文案退回旧形态 ——
+实测 4 条 hint 模板**只满足三要素中的第 1 条（观察）与第 3 条（留白）**，
+**第 2 条（锚定当前主题）是模板结构上做不到的**（这正是 F13 要改善的点）。
+因此降级路径的表现**与今天完全等价**，不会更差；但也不会带来本节的收益。
+
+**A 档（措辞代理）的准确含义**：模型必须**全部保留模板的语义要素**（观察 + 留白 + 力度档），
+**并额外满足**「锚定当前主题」—— 后者是**增量要求**，不是模板既有要素。
+
+> 注：因此「锚定当前主题」是**软要求** —— 由 M11' 人工抽查 + `copy_topic_unanchored` 计数观测，
+> **不由代码强制**（与用户裁定一致：轻量启发式不得触发降级）。「观察 / 留白 / 力度档」三条才是**硬要求**。
+
+#### 改动 4：防自发仿写 + 去重
+
+- 系统提示词新增：**只有在收到 `<teaching_intervention>` 注入时才使用教学提示语格式**；
+- 渲染侧记一条可观测计数（`hint_without_injection`），**只记账不拦截** —— 用来验证该约束是否真被遵守；
+- 把最近 K（建议 5）条已用文案随任务书回传，要求「换一种说法」（实测已出现同句逐字重复 2–3 次）。
+
+#### 与 F6 的关系（同步改写，避免两条冲突）
+
+F6 原第 2 条「取消改写指令 + **禁止改写**」已由本节取代：
+
+- **保留**：「干预文本不得以自由文本累积进 `apiConversationHistory`」（可审计 + 防风格漂移）；
+- **撤销**：「禁止改写」；改写改走本节的**契约 + 回执协议**。
+
+#### 跨仓依赖（登记，不在本仓库）
+
+结构化事件的**消费方**在 `d:\web-dashboard`（教师端看板）。本仓库可先只做「产生结构化事件 + 落本地日志」，
+教师端消费作为独立跟进项。
+
+#### F13 风险
+
+| 项 | 说明 |
+|---|---|
+| 回执块泄漏给学生 | 由「两条显示路径都挂解析」+ 单测覆盖（命中 / 缺失 / 畸形 / 超长 / 含 fenced 代码 / 多块）缓解 |
+| 模型不遵守契约 | 由**模板降级**兜底，干预不丢；`copy_rejected` / `hint_without_injection` 两个计数提供「服从率」度量 |
+| 主题锚定的启发式误判 | 已按用户裁定降为**只记账**，不影响功能 |
+| 文案质量的评估成本 | 目前只能靠人工抽查；结构化事件落地后可用 `copy_rejected` 比例做代理指标 |
 
 ---
 
@@ -583,10 +705,15 @@ attemptApiRequest → checkAndGenerateIntervention
 | **M8'** | 任意 | 用 `write_to_file` 让 AI 连写 3 个文件后查看 `student_interactions.log` | `consecutive_code_generation` 出现在日志中；AI 落盘事件**不再**把 `assistantStreak` 清零 | F2 |
 | **M9'** | 任意 | 统计一次会话的用户可见干预文案数 | 与 `api_conversation_history.json` 中 `<teaching_intervention ...>` 的条数**一致** | F6 |
 | **M10'** | week=18 | 询问一个需要外部资料的问题（启用联网后） | 使用联网校验，但结论仍回落到教材口径 | F8 |
+| **M11'** | 任意（内容密集轮） | 触发一次真实干预 | ① 文案**锚定当前主题**；② **学生看不到回执块**；③ 本地日志出现结构化事件（`rule` / `severity` / `voice`） | F13 |
+| **M12'** | 任意 | 构造模型不遵从的场景（如该轮是纯工具调用、无回执块） | **模板文案照常出现**（降级生效），干预一次都不丢 | F13 |
+| **M13'** | 任意 | 同规则连续触发 3 次 | 文案措辞**不完全相同**（去重生效） | F13 |
+| **M14'** | G-ALL 全绿 + 已存档 | 让模型复现方言回合（或直接问「第一周学了什么」） | ① **不再**出现「AI 连续 N 次没能正确调用工具」；② 聊天里看不到 `｜｜DSML｜｜` 残渣；③ 工具调用**真实执行** | F12（P4） |
 
 **新增的自动化门槛建议**（弥补本次"自动化全绿但人工失败"的缺口）：
 - 新增一条**端到端阈值可达性**测试：构造"3 次索要完整代码 + AI 落盘"的事件序列，断言 3 次后 `shouldEscalateToBlocking() === true`；
 - 新增一条**AI 落盘不清零 streak** 的测试；
+- 新增 F13 的单测：`extractInterventionCopy`（命中 / 缺失 / 畸形 / 超长 / 含 fenced 代码 / 多块）、要素校验（三要素 + 主题锚定的正反例）、降级路径（校验不过 → 返回模板文案 + 记 `copy_rejected`）；
 - 新增一条**"索要完整代码不得撤销概念约束"**的测试。
 
 ---
@@ -595,11 +722,12 @@ attemptApiRequest → checkAndGenerateIntervention
 
 | 项 | 说明 |
 |---|---|
+| **F13 的风险** | 见 §9.5 的「F13 风险」表（回执块泄漏 / 模型不遵从 / 启发式误判 / 评估成本） |
 | **F8 联网的合规风险** | 课堂场景下允许联网需评估（内容安全、API 成本、超时降级）。建议默认关闭、由教师端统一下发 |
 | **F2 会改变既有指标口径** | `user_edit_count` / 采纳率在教师端看板上的历史数据与新数据**口径不一致**，需在 CHANGELOG 与看板文案中说明 |
 | **F4 放宽索引** | 索引从"仅 ≤ 当前周"放宽到"全 18 周标题"，会略微扩大模型可见信息面；但**仍不含正文**，且正文检索边界可保持不变 |
 | **F3 收紧后可能出现"过度拒绝"** | 需保留示例通道（关键步骤 + 伪代码骨架），并用 M6' 双向验证 |
-| **明确不做** | ① 代码层过滤 assistant 输出（会误伤学生正当代码，`conceptModeConstraint.ts` 已论证）；② 用 skill 代替系统提示词以求"强制力"（**skill 无强制力**）；③ 在本次一并做 F12 方言归一化（治本、需单独排期） |
+| **明确不做** | ① 代码层过滤 assistant 输出（会误伤学生正当代码，`conceptModeConstraint.ts` 已论证）；② 用 skill 代替系统提示词以求"强制力"（**skill 无强制力**）；③ ~~不在本次做 F12 方言归一化~~ —— **已改判：纳入本次并独立为 P4**（用户 2026-10-11 裁定，见 §9.4 F12） |
 
 ---
 
