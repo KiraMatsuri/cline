@@ -9,15 +9,15 @@ import { EnvironmentContextTracker } from "@core/context/context-tracking/Enviro
 import { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
 import { ModelContextTracker } from "@core/context/context-tracking/ModelContextTracker"
 import {
-    getGlobalClineRules,
-    getLocalClineRules,
-    refreshClineRulesToggles,
+	getGlobalClineRules,
+	getLocalClineRules,
+	refreshClineRulesToggles,
 } from "@core/context/instructions/user-instructions/cline-rules"
 import {
-    getLocalAgentsRules,
-    getLocalCursorRules,
-    getLocalWindsurfRules,
-    refreshExternalRulesToggles,
+	getLocalAgentsRules,
+	getLocalCursorRules,
+	getLocalWindsurfRules,
+	refreshExternalRulesToggles,
 } from "@core/context/instructions/user-instructions/external-rules"
 import { sendPartialMessageEvent } from "@core/controller/ui/subscribeToPartialMessage"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
@@ -29,11 +29,11 @@ import { summarizeTask } from "@core/prompts/contextManagement"
 import { formatResponse } from "@core/prompts/responses"
 import { parseSlashCommands } from "@core/slash-commands"
 import {
-    ensureRulesDirectoryExists,
-    ensureTaskDirectoryExists,
-    GlobalFileNames,
-    getSavedApiConversationHistory,
-    getSavedClineMessages,
+	ensureRulesDirectoryExists,
+	ensureTaskDirectoryExists,
+	GlobalFileNames,
+	getSavedApiConversationHistory,
+	getSavedClineMessages,
 } from "@core/storage/disk"
 import { releaseTaskLock } from "@core/task/TaskLockUtils"
 import { isMultiRootEnabled } from "@core/workspace/multi-root-utils"
@@ -78,23 +78,23 @@ import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
 import {
-    CommandExecutor,
-    CommandExecutorCallbacks,
-    FullCommandExecutorConfig,
-    StandaloneTerminalManager,
+	CommandExecutor,
+	CommandExecutorCallbacks,
+	FullCommandExecutorConfig,
+	StandaloneTerminalManager,
 } from "@/integrations/terminal"
 import { ClineError, ClineErrorType, ErrorService } from "@/services/error"
 import { telemetryService } from "@/services/telemetry"
 import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
 import {
-    ClineAssistantContent,
-    ClineContent,
-    ClineImageContentBlock,
-    ClineMessageModelInfo,
-    ClineStorageMessage,
-    ClineTextContentBlock,
-    ClineToolResponseContent,
-    ClineUserContent,
+	ClineAssistantContent,
+	ClineContent,
+	ClineImageContentBlock,
+	ClineMessageModelInfo,
+	ClineStorageMessage,
+	ClineTextContentBlock,
+	ClineToolResponseContent,
+	ClineUserContent,
 } from "@/shared/messages"
 import { ApiFormat } from "@/shared/proto/cline/models"
 import { ShowMessageType } from "@/shared/proto/index.host"
@@ -111,15 +111,15 @@ import { FocusChainManager } from "./focus-chain"
 import { MessageStateHandler } from "./message-state"
 import { StreamResponseHandler } from "./StreamResponseHandler"
 import {
-    AdoptionTracker,
-    BehaviorMonitor,
-    CodeEditTracker,
-    contentAnalyzer,
-    type StudentInteractionLog,
-    StudentLogPersister,
-    type SuggestionType,
-    TeachingInterventionManager,
-    taskClassifier,
+	AdoptionTracker,
+	BehaviorMonitor,
+	CodeEditTracker,
+	contentAnalyzer,
+	type StudentInteractionLog,
+	StudentLogPersister,
+	type SuggestionType,
+	TeachingInterventionManager,
+	taskClassifier,
 } from "./student-analytics"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
