@@ -203,3 +203,25 @@ TeachingInterventionManager（阻断触发，记录 endsAt，并同步到全局�
 
 - 源码以 `.ts` 为准（esbuild entry `src/extension.ts`，`.ts` 解析优先）；同目录 `*.js`/`*.js.map` 被 gitignore，不入库。
 - 新增 `ExtensionState` 字段需同步修改：`ExtensionMessage.ts`（interface）+ `controller/index.ts`（组装）+ `ExtensionStateContext.tsx`（默认值）。
+
+---
+
+## 4. 教学干预误触发修复（v2.14）— 口径变更与已知遗留
+
+### 4.1 `hasCode` 口径修正（会影响教师端看板）
+
+- 学生行为日志的 `hasCode` 不再把**模型泄漏的工具调用标记**（全角竖线 U+FF5C 包围的 DSML 等）计为代码 ——
+  判定改在剔除标记后的文本上做；纯工具标记回合的 `hasCode` 由 `true` → `false`。干预 streak
+  （`assistantCodeStreak`）改用新增可选字段 `hasCodeBlock`，只认 fenced 代码块（行内代码不计入）。
+- **教师端影响**：`web-dashboard/backend`（直接读 `student_interactions.log`）由 `hasCode` 派生的三个指标随之变化 ——
+  `codeGenerationRatio` ↓、`codeEditRatio` ↑、`selfModificationRate` ↑；学生**学习风格标签可能翻转**。
+  旧值虚高，本次为**有意的口径修正**，不是回归。
+
+### 4.2 已知的、有意延后的局限（勿当成缺陷）
+
+1. **概念模式约束可能晚一轮生效**：学生从代码任务中途**首次改问概念**时，本轮 system prompt 组装与
+   fire-and-forget 的日志落库存在竞态，那一次回答可能拿不到约束；人工验收 **M5** 验证行为。
+2. **`hasDeliveredKeyCode` 只从正文 fenced 代码块置位**：关键实现若由工具（`write_to_file`）交付，
+   不会触发意图翻转；人工验收 **M6** 验证。
+3. **`COMPLETENESS_MARKERS` 的 `{0,8}` 宽度启发式**：「完整」与名词之间若被放宽，概念模式下的误翻转面会变大
+   （翻转还须 `hasDeliveredKeyCode === true`）。

@@ -21,8 +21,6 @@ interface BlockingTemplate {
 	content: string
 	/** 禁用的功能列表 */
 	disabledFeatures: string[]
-	/** 倒计时秒数（已弃用：由实际冷却时长推导，仅保留可选以兼容旧模板） */
-	countdownSeconds?: number
 	/** 反思引导问题列表 */
 	reflectionQuestions: string[]
 }

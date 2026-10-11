@@ -1,5 +1,5 @@
 import { expect } from "chai"
-import { buildConceptModeConstraint, detectConceptModeViolation } from "../conceptModeConstraint"
+import { buildConceptModeConstraint, detectConceptModeViolation, isConceptModeCategory } from "../conceptModeConstraint"
 
 describe("buildConceptModeConstraint", () => {
 	it("★ 必须明确禁止完整可运行实现，且明确允许关键步骤片段", () => {
@@ -51,5 +51,18 @@ describe("detectConceptModeViolation（仅可见化，不拦截）", () => {
 	it("★ 保守：长代码块但无循环（如数据定义）不判违规", () => {
 		const dataOnly = ["```python", "GRADES = {", '    "甲": 90,', '    "乙": 80,', "}", "```"].join("\n")
 		expect(detectConceptModeViolation(dataOnly).violated).to.equal(false)
+	})
+})
+
+describe("isConceptModeCategory（概念模式判定，供注入门控复用）", () => {
+	it("explanation / algorithm → true", () => {
+		expect(isConceptModeCategory("explanation")).to.equal(true)
+		expect(isConceptModeCategory("algorithm")).to.equal(true)
+	})
+
+	it("code_generation / other / undefined → false", () => {
+		expect(isConceptModeCategory("code_generation")).to.equal(false)
+		expect(isConceptModeCategory("other")).to.equal(false)
+		expect(isConceptModeCategory(undefined)).to.equal(false)
 	})
 })

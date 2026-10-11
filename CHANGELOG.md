@@ -22,6 +22,13 @@
 - `clineTeaching.llmEnableTools` 语义变更：从"启用工具调用答疑（此前为空开关、无任何调用点）"改为
   "启用课程资料检索（MCP）"，**默认值 `false` → `true`**；关闭时**移除** wiki MCP 条目
   （而非写 `disabled:true`，避免触发"是否重新启用"的误导性提示）。
+- **学生行为日志 `hasCode` 口径修正（教学干预误触发修复 · 方案 A）**：`hasCode` 不再把**模型泄漏的工具调用标记**
+  （全角竖线 U+FF5C 包围的 DSML 等）计为代码 —— 这类回落的判定改在**剔除标记后**的文本上进行，
+  纯工具标记回落的 `hasCode` 由 `true` 变为 `false`。干预 streak（`assistantCodeStreak`）改用**新增的可选字段
+  `hasCodeBlock`**，只统计真正的 fenced 代码块（行内代码不再计入 streak）。
+  **教师端看板（`web-dashboard/backend`，直接读 `student_interactions.log`）由 `hasCode` 派生的三个指标随之变化**：
+  `codeGenerationRatio` **↓**、`codeEditRatio` **↑**、`selfModificationRate` **↑**（分母不再包含纯工具标记回合），
+  学生的**学习风格标签可能因此翻转**。旧值因混入工具标记而虚高，本次为**有意的口径修正（accuracy correction），不是回归**。
 
 ### Fixed
 

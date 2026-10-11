@@ -73,7 +73,11 @@ import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
 import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
-import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
+import {
+	buildConceptModeConstraint,
+	detectConceptModeViolation,
+	isConceptModeCategory,
+} from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
@@ -1121,7 +1125,7 @@ export class Task {
 			try {
 				const monitor = this.getBehaviorMonitor()
 				const category = monitor?.getTaskCategory()
-				if (category === "explanation" || category === "algorithm") {
+				if (isConceptModeCategory(category)) {
 					const violation = detectConceptModeViolation(assistantText)
 					if (violation.violated) {
 						Logger.warn(
@@ -2301,7 +2305,7 @@ export class Task {
 		try {
 			const monitor = this.getBehaviorMonitor()
 			const category = monitor?.getTaskCategory()
-			if (category === "explanation" || category === "algorithm") {
+			if (isConceptModeCategory(category)) {
 				systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()
 				Logger.log(`[Task] 概念问答模式约束已注入 (category=${category})`)
 			}

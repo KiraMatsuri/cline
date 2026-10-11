@@ -35,6 +35,11 @@ export function buildConceptModeConstraint(): string {
 	].join("\n")
 }
 
+/** 该分类是否属于「概念问答模式」（决定是否注入约束 / 检查违规） */
+export function isConceptModeCategory(category: string | undefined): boolean {
+	return category === "explanation" || category === "algorithm"
+}
+
 export interface ConceptModeViolation {
 	violated: boolean
 	reason?: string

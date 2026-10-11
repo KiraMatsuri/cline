@@ -22,7 +22,7 @@ export interface BehaviorMonitorOptions {
 	adoptionRateThreshold?: number
 	selfModificationThreshold?: number
 	minAdoptionSamples?: number
-	/** 触发阻断式干预的同规则累计次数阈值（默认 4 次） */
+	/** 触发阻断式干预的同规则累计次数阈值（默认 6 次） */
 	escalationBlockingThreshold?: number
 }
 
@@ -148,7 +148,11 @@ export class BehaviorMonitor {
 	}
 
 	private evaluateRules(): void {
-		// 【方案 C-1】按学生意图分流：概念问答下停用代码类规则
+		// 【方案 C-1】按学生意图分流：概念问答下停用代码类规则。
+		// ⚠️ 本门控只停用「评估」，**不停用「计数」**：updateRealtimeStreaks() 仍在每次 ingest 时推进
+		// assistantCodeStreak / turnsSinceLastEdit。因此一旦 C-3 翻转把学生重分类为 code_generation，
+		// 下一个助手回合就可能直接触发 consecutive_code_generation 并开始升级 —— 这是**有意行为**
+		// （回归场景 5 断言此点），不是 bug。
 		const policy = (ruleId: BehaviorRuleId): boolean => getRulePolicy(ruleId, this.currentTaskCategory).enabled
 
 		if (policy("consecutive_code_generation")) {
