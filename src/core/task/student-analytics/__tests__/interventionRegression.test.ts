@@ -1,5 +1,6 @@
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
+import { generateBlockingInterventionMessage } from "../InterventionMessageGenerator"
 import { refineStudentCategory } from "../RequestIntentRefiner"
 import { getRulePolicy } from "../rulePolicy"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
@@ -109,5 +110,54 @@ describe("场景 5 — 概念问答的反馈回路（方案 C-2 + C-3）", () =>
 		const c = refineStudentCategory("直接把完整的冒泡排序代码给我", "explanation", false)
 		expect(c).to.equal("explanation")
 		expect(getRulePolicy("consecutive_code_generation", c).enabled).to.equal(false)
+	})
+})
+
+describe("场景 1 — 概念问答不得误触发（原始 bug 的回归）", () => {
+	it("★ 概念问答：即使助手连续给出真代码块，也不触发代码类规则", () => {
+		const m = new BehaviorMonitor("s1", { cooldownMs: 0 })
+		m.ingest({ ...ev("s1", "user", 0, "explanation"), eventType: "task_start" })
+
+		// ★ 前提断言：确认分流真的生效了，而不是 monitor 什么都没做。
+		// 否则下面两条 not.include 会“真空通过” —— 这正是 wiki 检索验证脚本踩过的坑。
+		expect(m.getTaskCategory()).to.equal("explanation")
+
+		// 刻意用 hasCodeBlock: true（真正的代码块），把 Task 3 的作用排除掉，
+		// 让这个用例只验证 Task 4 的“分类分流”是否生效。
+		for (let i = 1; i <= 5; i++) {
+			m.ingest(ev("s1", "assistant", i, "explanation", { hasCode: true, hasCodeBlock: true }))
+		}
+		const rules = m.getPendingAlerts().map((a) => a.ruleId)
+		expect(rules).to.not.include("consecutive_code_generation")
+		expect(rules).to.not.include("no_edit_streak")
+
+		// ★ 反向对照：同一事件形状，仅分类不同 → 必须触发。
+		// 无此对照，上面的 not.include 无法区分“分流生效”与“monitor 坏了”。
+		const ctrl = new BehaviorMonitor("s1c", { cooldownMs: 0 })
+		ctrl.ingest({ ...ev("s1c", "user", 0, "code_generation"), eventType: "task_start" })
+		for (let i = 1; i <= 5; i++) {
+			ctrl.ingest(ev("s1c", "assistant", i, "code_generation", { hasCode: true, hasCodeBlock: true }))
+		}
+		expect(ctrl.getPendingAlerts().map((a) => a.ruleId)).to.include("consecutive_code_generation")
+	})
+})
+
+describe("场景 4 — 阻断消息的结构与反射问题不得丢失", () => {
+	it("★ generateBlockingInterventionMessage 仍带反思问题与禁用功能声明", () => {
+		const msg = generateBlockingInterventionMessage(
+			{
+				ruleId: "no_edit_streak",
+				message: "x",
+				triggeredAt: new Date().toISOString(),
+				metricValue: 8,
+				threshold: 8,
+				escalationCount: 6,
+			},
+			60_000,
+		)
+		expect(msg.interventionType).to.equal("blocking")
+		expect(msg.severity).to.equal("strong")
+		expect(msg.reflectionQuestions?.length ?? 0).to.be.greaterThan(0)
+		expect(msg.disabledFeatures ?? []).to.include("code_generation")
 	})
 })
