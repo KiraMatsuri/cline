@@ -31,42 +31,40 @@ interface BlockingTemplate {
  * 每条规则对应的模板库
  * 按严重等级分组，每个等级包含多种风格的模板
  */
-const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeverity, MessageTemplate[]>> = {
+export const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeverity, MessageTemplate[]>> = {
 	consecutive_code_generation: {
 		gentle: [
 			{
 				style: "hint",
 				template:
-					"💡 学习提示：你已经连续 {streak} 次请求代码生成了。试试先自己写一小段，再让我帮你检查和优化，这样学习效果会更好哦！",
+					"💡 学习提示：刚才我连续 {streak} 轮给出的内容里都带了代码。要不要换一下顺序 —— 你先说说打算怎么实现，我再帮你补细节？",
 			},
 			{
 				style: "question",
-				template:
-					"🤔 思考一下：在这 {streak} 次代码生成请求中，你觉得哪一段是你最能理解的？能否尝试在那个基础上自己扩展一下？",
+				template: "🤔 思考一下：这 {streak} 轮我都给了代码。这里面哪一段是你已经能自己写出来的？试着从那段开始动手。",
 			},
 		],
 		moderate: [
 			{
 				style: "question",
 				template:
-					"🤔 学习引导：你已经连续请求了 {streak} 次代码生成。在继续之前，能否告诉我你对当前代码的理解？比如：这段代码的核心逻辑是什么？",
+					"🤔 学习引导：我已经连续 {streak} 轮直接给代码了。在继续之前，能否先讲讲你对当前实现的理解？比如：核心逻辑分几步？",
 			},
 			{
 				style: "challenge",
-				template:
-					"🎯 小挑战：你已经连续 {streak} 次让我生成代码了。这次试试自己先写出函数签名和核心逻辑框架，我来帮你补充细节，好吗？",
+				template: "🎯 小挑战：这 {streak} 轮都是我写代码。这一轮你先写出函数签名和核心步骤，我来帮你补充和检查，好吗？",
 			},
 		],
 		strong: [
 			{
 				style: "challenge",
 				template:
-					"🎯 动手实践：你已经连续 {streak} 次请求代码生成了。为了巩固学习，请先尝试自己实现当前功能的核心部分，遇到困难时再向我提问具体问题。",
+					"🎯 动手实践：我已经连续 {streak} 轮提供完整代码了。为了真正掌握，请先自己实现核心部分，遇到具体卡点再来问我。",
 			},
 			{
 				style: "reflection",
 				template:
-					"📝 学习反思：你已经连续 {streak} 次请求完整代码生成。请回顾一下：你从这些生成的代码中学到了什么？你能独立写出其中的哪些部分？",
+					"📝 学习反思：这 {streak} 轮你拿到的都是现成代码。请回顾一下：其中的核心逻辑你能独立复述吗？哪一部分你最没把握？",
 			},
 		],
 	},
@@ -76,26 +74,25 @@ const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeverity, Mes
 			{
 				style: "hint",
 				template:
-					"💡 实践建议：你已经 {streak} 轮没有编辑代码了。动手修改一处试试，哪怕只是改一个变量名或加一行注释也是好的开始！",
+					"💡 实践建议：最近 {streak} 轮我们都在聊，还没动手改过代码。想不想挑一处小地方试试 —— 改个变量名、加一行注释都算开始。",
 			},
 		],
 		moderate: [
 			{
 				style: "question",
 				template:
-					"🤔 想一想：最近 {streak} 轮你都没有动手编辑代码。是遇到了什么困难吗？可以告诉我你卡在哪里，我们一起分析。",
+					"🤔 想一想：最近 {streak} 轮我们都没有碰代码。是哪里不确定、不知道从哪下手吗？说说你卡住的位置，我们一起拆开看。",
 			},
 			{
 				style: "challenge",
-				template:
-					"🎯 小任务：你已经 {streak} 轮没有编辑代码了。在看我的下一个回复之前，请先尝试修改当前代码中的一个小地方，然后告诉我你改了什么。",
+				template: "🎯 小任务：在看我的下一条回复之前，先试着改一个小地方，然后告诉我你改了什么、为什么这么改。",
 			},
 		],
 		strong: [
 			{
 				style: "reflection",
 				template:
-					"📝 学习反思：你已经连续 {streak} 轮没有亲自编辑代码了。编程是一项实践技能，仅仅阅读代码是不够的。请现在就打开编辑器，尝试修改或重写当前讨论的函数中的一部分。",
+					"📝 学习反思：我们已经连续 {streak} 轮没有动手写代码了。编程是实践技能，读懂和写出之间还有一段距离。现在就打开编辑器，试着修改或重写我们正在讨论的那部分函数中的一小段。",
 			},
 		],
 	},
@@ -128,27 +125,26 @@ const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeverity, Mes
 		gentle: [
 			{
 				style: "hint",
-				template:
-					"💡 独立编码提示：最近的交互中 AI 参与占比较高（{percent}%）。试试先自己构思解题思路，再向我提出具体问题，而不是直接要求完整答案。",
+				template: "💡 独立编码提示：这几轮基本都是我在说。要不要先自己构思一下解题思路，再把具体问题提给我？",
 			},
 		],
 		moderate: [
 			{
 				style: "question",
 				template:
-					"🤔 换个方式：最近 AI 参与度达到 {percent}%。你能否先用伪代码或自然语言描述一下你想实现的逻辑？这样我可以针对性地帮你，你也能更好地理解实现过程。",
+					"🤔 换个方式：这几轮大多是你在提问、我在整理答案。你能否先用伪代码或自然语言描述一下你想实现的逻辑？这样我能针对性帮你，你也能更清楚自己的思路。",
 			},
 		],
 		strong: [
 			{
 				style: "reflection",
 				template:
-					"📝 学习反思：最近的 AI 参与占比达到 {percent}%，这意味着你可能过于依赖 AI 辅助。请思考：如果没有 AI 帮助，你能独立完成当前任务的哪些部分？哪些知识点是你需要加强的？",
+					"📝 学习反思：这段时间基本是我在输出。请想一想：如果没有我帮忙，当前任务的哪些部分你能独立完成？哪些知识点还需要补？",
 			},
 			{
 				style: "challenge",
 				template:
-					"🎯 自主练习：AI 参与占比已达 {percent}%。请先关闭本对话，尝试独立编写当前功能的核心逻辑（哪怕不完整），然后带着你的代码和具体问题回来，我来帮你诊断和改进。",
+					"🎯 自主练习：请先关掉这个对话，尝试独立编写当前功能的核心逻辑（不完整也没关系），然后带着你的代码和具体问题回来，我帮你诊断和改进。",
 			},
 		],
 	},
@@ -181,7 +177,7 @@ const BLOCKING_TEMPLATE_REGISTRY: Partial<Record<BehaviorRuleId, BlockingTemplat
 	},
 	high_recent_ai_dependency: {
 		content:
-			"🚫 【教学干预 — 阻断模式】\n\n系统检测到最近的交互中 AI 参与占比过高。过度依赖 AI 会削弱独立编程能力。代码生成与工具执行功能已被暂时禁用。\n\n请完成以下自主练习后，系统将自动恢复功能。",
+			"🚫 【教学干预 — 阻断模式】\n\n系统检测到最近几轮基本由 AI 输出、缺少你自己的动手环节。过度依赖 AI 会削弱独立编程能力。代码生成与工具执行功能已被暂时禁用。\n\n请完成以下自主练习后，系统将自动恢复功能。",
 		disabledFeatures: ["code_generation", "tool_execution"],
 		reflectionQuestions: [
 			"请先关闭 AI 助手，尝试独立写出当前功能的核心逻辑（伪代码或真实代码均可）。",
@@ -305,9 +301,7 @@ function formatBlockingInterventionForInjection(intervention: InterventionMessag
 	if (intervention.countdownSeconds) {
 		const minutes = Math.floor(intervention.countdownSeconds / 60)
 		const seconds = intervention.countdownSeconds % 60
-		const countdownText = seconds > 0
-			? `${minutes} 分 ${seconds} 秒`
-			: `${minutes} 分钟`
+		const countdownText = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
 		lines.push(`⏳ 冷却倒计时: ${countdownText}`)
 	}
 
