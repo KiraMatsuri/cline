@@ -72,6 +72,7 @@ import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
+import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
@@ -1102,6 +1103,23 @@ export class Task {
 
 			// 获取轮次索引
 			const turnIndex = persister.getNextTurnIndex(this.taskId)
+
+			// 【方案 C-2】概念问答模式下若给出疑似完整实现，只记录告警（不拦截、不改内容）。
+			// 目的是让"提示词没拦住"这件事在日志里可见 —— 与项目其它地方"失败可见"的原则一致。
+			try {
+				const monitor = this.getBehaviorMonitor()
+				const category = monitor?.getTaskCategory()
+				if (category === "explanation" || category === "algorithm") {
+					const violation = detectConceptModeViolation(assistantText)
+					if (violation.violated) {
+						Logger.warn(
+							`[Task][概念问答违规] 助手给出了疑似完整实现: ${violation.reason} (taskId=${this.taskId}, turn=${turnIndex})`,
+						)
+					}
+				}
+			} catch {
+				// 可见化失败不影响主流程
+			}
 
 			// 组装日志对象
 			const log: StudentInteractionLog = {
@@ -2264,6 +2282,20 @@ export class Task {
 			"- 你的回复中不得出现任何思考过程、思维链、推理步骤或内部想法的文字。\n" +
 			"- 不要以我在思考、首先、其次等表述来复述推理过程。\n" +
 			"- 直接、简洁地给出最终答案与必要的解释即可。"
+
+		// 【方案 C-2】概念问答模式：禁止给出完整可运行代码，只给关键步骤片段。
+		// 判定依据取"学生意图分类"（BehaviorMonitor 从用户侧事件捕获），
+		// 而不是助手回复的分类 —— 后者是"AI 输出被分成什么"，不能代表学生意图。
+		try {
+			const monitor = this.getBehaviorMonitor()
+			const category = monitor?.getTaskCategory()
+			if (category === "explanation" || category === "algorithm") {
+				systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()
+				Logger.log(`[Task] 概念问答模式约束已注入 (category=${category})`)
+			}
+		} catch (e) {
+			Logger.warn("[Task] 概念问答模式约束注入失败，跳过:", e)
+		}
 
 		const contextManagementMetadata = await this.contextManager.getNewContextMessagesAndMetadata(
 			this.messageStateHandler.getApiConversationHistory(),
