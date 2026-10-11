@@ -4,6 +4,9 @@
 
 ### Added
 
+- **课程资料检索禁用提示**：检测到学生把 wiki MCP server 由「启用」变为「禁用」时弹出警告，
+  告知后果并提供「重新启用 / 保持禁用」；选重新启用则把条目写回。
+  首次读取**仅作基线**、不判定跃迁 —— 否则「激活前就已禁用」每次启动都会唠叨一次，与「禁用可控」相矛盾。
 - **教学干预改造的验收与修订方案文档**：新增 `docs/design/teaching-intervention-acceptance-and-revisions.md`
   （变更综述 / 与原计划的偏移 / 测试结果 / 手工验收 M1–M7 / 行为日志复核 / 12 项修订方案）；
   `docs/design/teaching-intervention-fix-options.md` 补 §6 教师端日志链路缺口（8 项，仅登记）。
@@ -32,9 +35,35 @@
   **教师端看板（`web-dashboard/backend`，直接读 `student_interactions.log`）由 `hasCode` 派生的三个指标随之变化**：
   `codeGenerationRatio` **↓**、`codeEditRatio` **↑**、`selfModificationRate` **↑**（分母不再包含纯工具标记回合），
   学生的**学习风格标签可能因此翻转**。旧值因混入工具标记而虚高，本次为**有意的口径修正（accuracy correction），不是回归**。
+- **教学干预误触发修复 · 方案 D（参数止血）**：冷却与升级阈值从「几十秒内攒满」改为「需持续违规」——
+  `cooldownMs` 15s → **120s**、`noEditTurnStreakThreshold` 5 → **8**、`aiDependencyThreshold` 0.7 → **0.85**、
+  `escalationBlockingThreshold` 4 → **6**（`BehaviorMonitor` 与 `TeachingInterventionManager` 两处副本同步）、
+  `blockingCooldownMs` 180s → **60s**。阻断横幅倒计时改为由**实际冷却时长**推导，不再沿用模板里写死的 180s
+  （此前注入文本写「3 分钟」而横幅从 1 分钟倒数，同屏两个数字互相矛盾）。
+- **教学干预误触发修复 · 方案 E（文案与指标对齐）**：`consecutive_code_generation` 全部模板的主语
+  从「你连续请求代码生成」改为「**我（AI）给出的内容里带了代码**」—— 该规则的指标其实是「助手连续 N 个回合含
+  fenced 代码块」，原文案在指控学生，与指标不符。`TEMPLATE_REGISTRY` 导出以便测试断言。
+- **教学干预误触发修复 · 方案 C-1（按学生意图分流规则）**：新增 `rulePolicy.ts`，把「什么时候该干预」
+  编码为纯函数。概念问答（`explanation` / `algorithm`）下**停用** `consecutive_code_generation` 与
+  `no_edit_streak`（这两条规则在「学生只提问、不写码」的用法下分母恒真），其余规则保留提示但
+  **不允许升级为阻断**；分类缺失/未知时**全部启用且可升级**（保守兜底，宁可保留能力也不静默失效）。
+- **教学干预误触发修复 · 方案 C-2（概念问答不给完整代码）**：新增 `conceptModeConstraint.ts`，
+  概念问答场景向 system prompt 追加「只给关键步骤片段、不给完整可运行实现」的约束，并对违规写可见化日志。
+  **它是提示词约束、不拦截模型输出** —— 代码层过滤会误伤学生正当代码，明确不做。
+- **教学干预误触发修复 · 方案 C-3（持续索要完整代码 → 意图翻转）**：新增 `RequestIntentRefiner.ts`：
+  学生在**已拿到关键实现**后仍索要完整代码时，该轮分类由概念类翻转为 `code_generation`（日志输出
+  `意图翻转`），使代码类干预重新生效。配套新增 `Task.hasDeliveredKeyCode`。
+- **内部重构（无行为变更，可能影响二次开发的 import 路径）**：新增 `src/shared/markdown/codeBlocks.ts`
+  统一定义 fenced 代码块边界（`ContentAnalyzer` 与 `conceptModeConstraint` 共用，不再各持一份正则）；
+  `src/core/teaching/assistantTextSanitizer.ts` 迁移为 `src/shared/markdown/toolCallMarkup.ts`。
 
 ### Fixed
 
+- **`npm run test:unit` 在本仓库根本无法运行**：`mocha` / `ts-node` / `source-map-support` 未声明为依赖
+  （`Error: spawn mocha ENOENT`）；且 `src/` 下 846 个被 gitignore 的旧构建 `.js` 产物与真实源文件并排，
+  遮蔽 `.ts` 后命中其中的别名导入（`Cannot find package '@core/workspace'`）。现补为 `devDependencies`，
+  并在 `tsconfig.unit-test.json` 的 ts-node 段加 `preferTsExts: true` 优先解析 `.ts`
+  （刻意不删除那些 `.js`：非破坏性，且它们不在版本控制内）。
 - **开发宿主（F5）启动大面积报 `TS2307` 的竞态（生成代码与 `tsc --watch` 并行）**：`scripts/build-proto.mjs`
   原本**先删除** `src/shared/proto` 与 `src/generated` 再生成，而 `.vscode/tasks.json` 的 `watch` 任务把
   `protos` 与 `tsc --watch` 列为**并行**依赖 —— 一旦 `tsc --watch` 在目录被清空的窗口内构建初始程序，
