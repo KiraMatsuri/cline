@@ -8,6 +8,27 @@ import { Logger } from "@/shared/services/Logger"
 import { getCwd } from "@/utils/path"
 import type { FileMetadataEntry } from "./ContextTrackerTypes"
 
+/**
+ * 【F2】把路径归一化为 Map 键：统一分隔符、去 `./` 前缀、折叠重复斜杠、去尾部斜杠。
+ *
+ * 为什么必须归一化：工具侧（write_to_file / apply_patch）调用 markFileAsEditedByCline 时传入的是
+ * 模型给出的**正斜杠相对路径**（如 `src/foo.ts`，未归一化）；而查询侧 CodeEditTracker 使用
+ * `asRelativePath`（内部是 Node `path.relative`）得到的是**平台原生分隔符**，在 Windows 上是
+ * `src\foo.ts`。Map 查找是精确字符串比较，不归一化在 Windows 上必然 miss，归属判定会全部退化成
+ * `"user"`，本 Task 的修复等于没生效。
+ *
+ * 残留限制：指向同一文件的**绝对路径**与**相对路径**仍不会匹配。当前两个调用点与 asRelativePath
+ * 都产出相对路径，因此可接受。
+ */
+export function canonicalPathKey(p: string): string {
+	return p
+		.trim()
+		.replace(/\\/g, "/")
+		.replace(/^\.\//, "")
+		.replace(/\/{2,}/g, "/")
+		.replace(/\/+$/, "")
+}
+
 // This class is responsible for tracking file operations that may result in stale context.
 // If a user modifies a file outside of Cline, the context may become stale and need to be updated.
 // We do not want Cline to reload the context every time a file is modified, so we use this class merely
@@ -186,9 +207,10 @@ export class FileContextTracker {
 	 * Marks a file as edited by Cline to prevent false positives in file watchers
 	 */
 	markFileAsEditedByCline(filePath: string): void {
+		// 【F2】一次性标志必须保持**原始（未归一化）键** —— 它由 setupFileWatcher 的 change 分支用同一个原始 filePath 消费
 		this.recentlyEditedByCline.add(filePath)
-		// 【F2】记录写盘归属窗口，供 wasRecentlyWrittenByCline 查询（不得复用上面的一次性标志）
-		this.recentlyWrittenByClineAt.set(filePath, Date.now())
+		// 【F2】写盘归属窗口按**归一化键**存储，供 wasRecentlyWrittenByCline 跨分隔符查询（不得复用上面的一次性标志）
+		this.recentlyWrittenByClineAt.set(canonicalPathKey(filePath), Date.now())
 		// 防止长任务里该 Map 无界增长
 		const cutoff = Date.now() - this.writeAttributionWindowMs
 		for (const [p, t] of this.recentlyWrittenByClineAt) {
@@ -201,9 +223,10 @@ export class FileContextTracker {
 	/**
 	 * 【F2】该文件是否在 windowMs 内由 Cline 写盘（write_to_file / apply_patch）。
 	 * **只读、不清除** —— 见 writeAttributionWindowMs 的注释。
+	 * 查询键同样经 canonicalPathKey 归一化，以抹平 Windows 反斜杠 / 正斜杠的差异。
 	 */
 	public wasRecentlyWrittenByCline(filePath: string, windowMs: number = this.writeAttributionWindowMs): boolean {
-		const at = this.recentlyWrittenByClineAt.get(filePath)
+		const at = this.recentlyWrittenByClineAt.get(canonicalPathKey(filePath))
 		return at !== undefined && Date.now() - at <= windowMs
 	}
 
