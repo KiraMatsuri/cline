@@ -72,6 +72,7 @@ import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
+import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
 import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
@@ -896,6 +897,8 @@ export class Task {
 	private static codeEditTracker: CodeEditTracker | undefined
 	// 实时行为监测器（任务级）
 	private behaviorMonitor: BehaviorMonitor | undefined
+	/** 【方案 C-3】本任务内助手是否已经给过关键实现（fenced 代码块） */
+	private hasDeliveredKeyCode = false
 	// 教学干预管理器（任务级）
 	private interventionManager: TeachingInterventionManager | undefined
 	// 上一条 assistant turn 的分类信息（用于同主题判断）
@@ -1042,7 +1045,12 @@ export class Task {
 			const persister = this.getStudentLogPersister()
 
 			// 使用 TaskClassifier 进行任务分类
-			const category = taskClassifier.classify(text)
+			// 【方案 C-3】概念问答里"拿到关键实现后仍索要完整代码"的提问，按 code_generation 对待。
+			const rawCategory = taskClassifier.classify(text)
+			const category = refineStudentCategory(text ?? "", rawCategory, this.hasDeliveredKeyCode)
+			if (category !== rawCategory) {
+				Logger.info(`[StudentTurnLog] 意图翻转: ${rawCategory} → ${category} (已给出关键实现)`)
+			}
 
 			// 使用 ContentAnalyzer 进行内容分析
 			const analysis = contentAnalyzer.analyze(text)
@@ -1091,6 +1099,10 @@ export class Task {
 
 			// 分析 AI 回复内容
 			const analysis = contentAnalyzer.analyze(assistantText)
+			// 【方案 C-3】记录"关键实现已给出"，供后续学生提问的意图翻转判定使用
+			if (analysis.hasCodeBlock) {
+				this.hasDeliveredKeyCode = true
+			}
 			const category = taskClassifier.classify(assistantText)
 
 			// 提取使用的工具列表

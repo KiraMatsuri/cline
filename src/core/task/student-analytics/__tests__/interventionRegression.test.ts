@@ -1,5 +1,7 @@
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
+import { refineStudentCategory } from "../RequestIntentRefiner"
+import { getRulePolicy } from "../rulePolicy"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
 import type { StudentInteractionLog, TaskCategory } from "../types"
 
@@ -74,5 +76,38 @@ describe("场景 3 — 阻断仍可升级，且时长与文案一致", () => {
 		// 剩余时间应在 60s 以内（允许执行耗时）
 		expect(mgr.getBlockingEndsAt() - Date.now()).to.be.at.most(60_000)
 		expect(mgr.getBlockingEndsAt() - Date.now()).to.be.greaterThan(55_000)
+	})
+})
+
+describe("场景 5 — 概念问答的反馈回路（方案 C-2 + C-3）", () => {
+	it("★ 拿到关键实现后持续索要完整代码 → 分类翻转 → 代码类规则重新生效", () => {
+		// ① 起始：概念提问
+		const base: TaskCategory = "explanation"
+		let hasDeliveredKeyCode = false
+
+		// ② 助手给出关键实现（fenced 代码块）
+		hasDeliveredKeyCode = true
+
+		// ③ 学生索要完整代码 → 翻转
+		const flipped = refineStudentCategory("直接把完整的冒泡排序代码给我", base, hasDeliveredKeyCode)
+		expect(flipped).to.equal("code_generation")
+
+		// ④ 翻转后，代码类规则重新可用
+		expect(getRulePolicy("consecutive_code_generation", flipped).enabled).to.equal(true)
+		expect(getRulePolicy("consecutive_code_generation", base).enabled).to.equal(false)
+
+		// ⑤ 并且真的会被 monitor 触发
+		const m = new BehaviorMonitor("loop1", { cooldownMs: 0 })
+		m.ingest({ ...ev("loop1", "user", 0, flipped), eventType: "task_start" })
+		for (let i = 1; i <= 3; i++) {
+			m.ingest(ev("loop1", "assistant", i, flipped, { hasCode: true, hasCodeBlock: true }))
+		}
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("consecutive_code_generation")
+	})
+
+	it("★ 未给出关键实现时不翻转（不得过早放弃讲解）", () => {
+		const c = refineStudentCategory("直接把完整的冒泡排序代码给我", "explanation", false)
+		expect(c).to.equal("explanation")
+		expect(getRulePolicy("consecutive_code_generation", c).enabled).to.equal(false)
 	})
 })
