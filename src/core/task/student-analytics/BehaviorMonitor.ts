@@ -6,7 +6,8 @@
  */
 
 import { Logger } from "@/shared/services/Logger"
-import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog } from "./types"
+import { getRulePolicy } from "./rulePolicy"
+import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog, TaskCategory } from "./types"
 
 export interface BehaviorMonitorOptions {
 	enabled?: boolean
@@ -60,6 +61,9 @@ export class BehaviorMonitor {
 	private assistantCodeStreak = 0
 	private turnsSinceLastEdit = 0
 
+	/** 【方案 C-1】最近一次**学生**事件的意图分类（用于规则分流） */
+	private currentTaskCategory: TaskCategory | undefined
+
 	/** 同规则累计触发次数（用于阻断式干预升级判定） */
 	private escalationCounter: Partial<Record<BehaviorRuleId, number>> = {}
 
@@ -96,6 +100,12 @@ export class BehaviorMonitor {
 			Logger.info(
 				`[BehaviorMonitor][debug] ingest event: type=${event.eventType}, role=${event.role}, hasCode=${event.hasCode}, window=${this.recentEvents.length}/${this.options.windowSize}`,
 			)
+		}
+
+		// 【方案 C-1】只采纳"学生侧"事件的分类：首句提问是 task_start，后续追问是 turn_message。
+		// 助手事件里也带 category，但那是"AI 输出被分成什么"，不能当学生意图用。
+		if (event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")) {
+			this.currentTaskCategory = event.category
 		}
 
 		this.updateRealtimeStreaks(event)
@@ -138,10 +148,21 @@ export class BehaviorMonitor {
 	}
 
 	private evaluateRules(): void {
-		this.checkConsecutiveCodeGenerationRule()
-		this.checkNoEditStreakRule()
-		this.checkHighAdoptionLowSelfModificationRule()
-		this.checkHighRecentAiDependencyRule()
+		// 【方案 C-1】按学生意图分流：概念问答下停用代码类规则
+		const policy = (ruleId: BehaviorRuleId): boolean => getRulePolicy(ruleId, this.currentTaskCategory).enabled
+
+		if (policy("consecutive_code_generation")) {
+			this.checkConsecutiveCodeGenerationRule()
+		}
+		if (policy("no_edit_streak")) {
+			this.checkNoEditStreakRule()
+		}
+		if (policy("high_adoption_low_self_modification")) {
+			this.checkHighAdoptionLowSelfModificationRule()
+		}
+		if (policy("high_recent_ai_dependency")) {
+			this.checkHighRecentAiDependencyRule()
+		}
 	}
 
 	private checkConsecutiveCodeGenerationRule(): void {
@@ -304,6 +325,11 @@ export class BehaviorMonitor {
 		return alerts
 	}
 
+	/** 【方案 C-1】当前任务的学生意图分类（未捕获到时为 undefined） */
+	public getTaskCategory(): TaskCategory | undefined {
+		return this.currentTaskCategory
+	}
+
 	/**
 	 * 获取同规则累计触发次数
 	 */
@@ -319,6 +345,10 @@ export class BehaviorMonitor {
 	public shouldEscalateToBlocking(ruleId: BehaviorRuleId): boolean {
 		if (this.blockingTriggered) {
 			return false // 同一任务内阻断仅触发一次
+		}
+		// 【方案 C-1】概念问答场景下不允许升级为阻断
+		if (!getRulePolicy(ruleId, this.currentTaskCategory).canEscalateToBlocking) {
+			return false
 		}
 		const count = this.getEscalationCount(ruleId)
 		return count >= this.options.escalationBlockingThreshold
@@ -350,5 +380,6 @@ export class BehaviorMonitor {
 		this.turnsSinceLastEdit = 0
 		this.escalationCounter = {}
 		this.blockingTriggered = false
+		this.currentTaskCategory = undefined
 	}
 }
