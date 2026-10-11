@@ -117,7 +117,12 @@ export class BehaviorMonitor {
 			this.turnsSinceLastEdit++
 
 			if (event.role === "assistant") {
-				if (event.hasCode) {
+				// 【v2.13 方案 A】streak 只认 **fenced 代码块**，不再认"文本里出现过代码/反引号/工具标记"。
+				// 实测：DSML 工具标记与行内代码（如 `wiki_backend_unreachable`）都会被旧判定算成代码，
+				// 把一个纯概念问答任务在几个回合内推到触发阈值。
+				// 兼容：缺少该字段的旧事件回退到 hasCode。
+				const hasRealCode = event.hasCodeBlock ?? event.hasCode
+				if (hasRealCode) {
 					this.assistantCodeStreak++
 				}
 				// hasCode=false 时不再清零 assistantCodeStreak

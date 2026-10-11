@@ -1112,6 +1112,8 @@ export class Task {
 				category,
 				contentLength: analysis.contentLength,
 				hasCode: analysis.hasCode,
+				// 【v2.13 方案 A】新增字段（不改旧字段语义）：streak 与离线统计都改用它
+				hasCodeBlock: analysis.hasCodeBlock,
 				languageHint: analysis.languageHint,
 				imageCount: 0,
 				fileCount: 0,
@@ -1145,7 +1147,9 @@ export class Task {
 	private inferSuggestionType(toolsUsed: string[], assistantText: string): SuggestionType {
 		if (toolsUsed.length === 0) {
 			// 没有使用工具：判断文本内容
-			if (contentAnalyzer.detectCode(assistantText)) {
+			// 【方案 A】先剔除工具标记再判定，否则纯工具调用回合会被标成 code_generation
+			// —— 这正是最初报告的现象（"调用 wiki 工具进行检索时被记录为请求代码生成"）。
+			if (contentAnalyzer.detectCode(stripLeakedToolCallMarkup(assistantText))) {
 				return "code_generation"
 			}
 			return "explanation"

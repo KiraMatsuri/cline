@@ -3,6 +3,8 @@
  * Content Analyzer - Student input feature extraction
  */
 
+import { parseFencedCodeBlocks } from "@/shared/markdown/codeBlocks"
+import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
 import type { ContentAnalysisResult, LanguageHint } from "./types"
 
 /**
@@ -156,19 +158,32 @@ export class ContentAnalyzer {
 			return {
 				contentLength: 0,
 				hasCode: false,
+				hasCodeBlock: false,
+				hasInlineCode: false,
 				languageHint: "unknown",
 				codeBlockCount: 0,
 			}
 		}
 
+		// ★ 先剔除模型泄漏的工具调用标记再判定。
+		// 实测（taskId=1790691098981 等 4 个任务）：DSML 标记里的 `{}` 与 `name="…"`
+		// 恰好凑满 codeIndicators 的 2 条阈值，导致"纯工具调用回合"被判成含代码，
+		// 直接把 assistantCodeStreak 推到触发阈值。
+		const scrubbed = stripLeakedToolCallMarkup(text)
+
 		const contentLength = this.getContentLength(text)
-		const codeBlockCount = this.countCodeBlocks(text)
-		const hasCode = this.detectCode(text)
-		const languageHint = this.inferLanguage(text)
+		const codeBlockCount = this.countCodeBlocks(scrubbed)
+		const hasCodeBlock = this.detectCodeBlock(scrubbed)
+		const hasInlineCode = this.detectInlineCode(scrubbed)
+		// 【② 已决 = B1】所有判定统一基于剔除工具标记后的文本
+		const hasCode = this.detectCode(scrubbed)
+		const languageHint = this.inferLanguage(scrubbed)
 
 		return {
 			contentLength,
 			hasCode,
+			hasCodeBlock,
+			hasInlineCode,
 			languageHint,
 			codeBlockCount,
 		}
@@ -185,13 +200,21 @@ export class ContentAnalyzer {
 	 * 统计代码块数量
 	 */
 	public countCodeBlocks(text: string): number {
-		let count = 0
-		// 计算 Markdown 代码块
-		const fencedBlocks = text.match(/```[\s\S]*?```/g)
-		if (fencedBlocks) {
-			count += fencedBlocks.length
-		}
-		return count
+		return parseFencedCodeBlocks(text).length
+	}
+
+	/**
+	 * 是否含 fenced 代码块（```…```）
+	 */
+	public detectCodeBlock(text: string): boolean {
+		return this.countCodeBlocks(text) > 0
+	}
+
+	/**
+	 * 是否含行内代码（单反引号包裹）
+	 */
+	public detectInlineCode(text: string): boolean {
+		return /`[^`\n]+`/.test(text)
 	}
 
 	/**

@@ -77,6 +77,8 @@ export interface StudentInteractionLog {
 	contentLength: number
 	/** 是否包含代码 */
 	hasCode: boolean
+	/** 【v2.13】是否含 fenced 代码块（仅 role=assistant 时有值；streak 只认它） */
+	hasCodeBlock?: boolean
 	/** 推断的编程语言 */
 	languageHint: LanguageHint
 	/** 附带图片数量 */
@@ -106,11 +108,15 @@ export interface StudentInteractionLog {
 export interface ContentAnalysisResult {
 	/** 内容长度 */
 	contentLength: number
-	/** 是否包含代码 */
+	/** 是否包含代码（= hasCodeBlock || hasInlineCode || 代码特征足够多） */
 	hasCode: boolean
+	/** 【v2.13】是否含 fenced 代码块 —— 这才是"AI 真的给出了代码"的信号 */
+	hasCodeBlock: boolean
+	/** 【v2.13】是否仅含行内代码（单反引号）—— 与"提及"等价，不构成代码生成 */
+	hasInlineCode: boolean
 	/** 推断的语言类型 */
 	languageHint: LanguageHint
-	/** 检测到的代码片段数量 */
+	/** 检测到的代码片段数量（仅 fenced） */
 	codeBlockCount: number
 }
 
