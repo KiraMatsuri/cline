@@ -98,6 +98,11 @@ export interface StudentInteractionLog {
 	filePath?: string
 	/** 代码编辑变更量（字符差异，仅 eventType=code_edit 时有值） */
 	changeDelta?: number
+	/**
+	 * 【F2】编辑者归属（仅 eventType=code_edit/file_save 时有值）。
+	 * 可选：旧日志无此字段，按「人工」处理（向后兼容）。
+	 */
+	editor?: "user" | "ai"
 	/** AI 建议采纳推断（仅 role=assistant 时，会在后续事件中回填） */
 	adoptionStatus?: AdoptionStatus
 }

@@ -1350,6 +1350,7 @@ export class Task {
 				this.getStudentLogPersister(),
 				this.adoptionTracker,
 				this.getBehaviorMonitor(),
+				this.fileContextTracker,
 			)
 		}
 		try {

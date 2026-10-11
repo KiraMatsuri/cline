@@ -231,6 +231,14 @@ describe("FileContextTracker", () => {
 		expect(modifiedFiles).to.not.include(filePath)
 	})
 
+	it("F2: markFileAsEditedByCline 仍写入一次性标志 recentlyEditedByCline", () => {
+		tracker.markFileAsEditedByCline(filePath)
+
+		// 一次性标志必须保留 —— 它由 setupFileWatcher 的 change 分支消费，本 Task 不得改动该语义
+		const oneShotFlag = (tracker as unknown as { recentlyEditedByCline: Set<string> }).recentlyEditedByCline
+		expect(oneShotFlag.has(filePath)).to.be.true
+	})
+
 	it("should dispose file watchers when dispose is called", async () => {
 		// Track a file to set up the watcher
 		await tracker.trackFileContext(filePath, "read_tool")

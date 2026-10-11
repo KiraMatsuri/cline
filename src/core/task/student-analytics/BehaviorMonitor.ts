@@ -114,11 +114,21 @@ export class BehaviorMonitor {
 
 	private updateRealtimeStreaks(event: StudentInteractionLog): void {
 		if (event.eventType === "code_edit") {
-			this.turnsSinceLastEdit = 0
-			// 学生主动编辑代码 → 重置 streak（阻断判定仅关注连续无编辑的代码生成）
-			this.assistantCodeStreak = 0
-			if (this.options.debug) {
-				Logger.info(`[BehaviorMonitor][debug] code_edit detected → turnsSinceLastEdit & assistantCodeStreak reset to 0`)
+			// 【F2】只有「人」的编辑才算学生动手：AI 的 write_to_file / apply_patch 也会产生 code_edit，
+			// 旧逻辑在此清零 streak，使 consecutive_code_generation 永远到不了 3（见 spec §7.4）。
+			// 缺省 editor（旧日志）按人工处理，保持向后兼容。
+			if (event.editor !== "ai") {
+				this.turnsSinceLastEdit = 0
+				// 学生主动编辑代码 → 重置 streak（阻断判定仅关注连续无编辑的代码生成）
+				this.assistantCodeStreak = 0
+				if (this.options.debug) {
+					Logger.info(
+						`[BehaviorMonitor][debug] code_edit by student → turnsSinceLastEdit & assistantCodeStreak reset to 0`,
+					)
+				}
+			} else if (this.options.debug) {
+				// AI 落盘：既不清零也不额外计数（该回合已由 assistant turn_message 的 hasCodeBlock 计入）
+				Logger.info(`[BehaviorMonitor][debug] code_edit by AI → streaks untouched (ai=${this.assistantCodeStreak})`)
 			}
 			return
 		}

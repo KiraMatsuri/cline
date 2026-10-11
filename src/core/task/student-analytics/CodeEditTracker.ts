@@ -24,6 +24,29 @@ import type { StudentInteractionLog } from "./types"
 /** 防抖间隔（毫秒） */
 const DEBOUNCE_MS = 2_000
 
+/**
+ * 【F2】编辑者归属判定所需的最小接口。
+ * 用结构类型而非直接依赖 FileContextTracker：既解耦，又便于在单测里注入 stub（不依赖 vscode 实例）。
+ */
+export interface FileContextTrackerLike {
+	wasRecentlyWrittenByCline(filePath: string, windowMs?: number): boolean
+}
+
+/**
+ * 【F2】判定某次 code_edit / file_save 的编辑者归属。
+ * 无 tracker 或判定抛错时一律回退 "user"（旧语义），保证日志主流程不受影响。
+ */
+export function resolveEditEditor(relPath: string, tracker: FileContextTrackerLike | undefined): "user" | "ai" {
+	if (!tracker) {
+		return "user"
+	}
+	try {
+		return tracker.wasRecentlyWrittenByCline(relPath) ? "ai" : "user"
+	} catch {
+		return "user" // 归属判定失败不得影响日志主流程
+	}
+}
+
 /** 应忽略的目录/文件名模式 */
 const IGNORE_PATTERNS = [
 	/[/\\]\.git[/\\]/,
@@ -62,6 +85,9 @@ export class CodeEditTracker implements vscode.Disposable {
 	/** 实时行为监测器（由外部注入） */
 	private behaviorMonitor: BehaviorMonitor | undefined
 
+	/** 【F2】写盘归属来源（由外部注入），用于区分 AI 落盘与人工编辑 */
+	private fileContextTracker: FileContextTrackerLike | undefined
+
 	constructor() {
 		// 监听文本文档变更
 		this.disposables.push(vscode.workspace.onDidChangeTextDocument((e) => this.onDocumentChange(e)))
@@ -78,11 +104,13 @@ export class CodeEditTracker implements vscode.Disposable {
 		persister: StudentLogPersister,
 		adoptionTracker: AdoptionTracker,
 		behaviorMonitor?: BehaviorMonitor,
+		fileContextTracker?: FileContextTrackerLike,
 	): void {
 		this.activeTaskId = taskId
 		this.persister = persister
 		this.adoptionTracker = adoptionTracker
 		this.behaviorMonitor = behaviorMonitor
+		this.fileContextTracker = fileContextTracker
 	}
 
 	/**
@@ -93,6 +121,7 @@ export class CodeEditTracker implements vscode.Disposable {
 		this.persister = undefined
 		this.adoptionTracker = undefined
 		this.behaviorMonitor = undefined
+		this.fileContextTracker = undefined
 	}
 
 	/**
@@ -177,6 +206,8 @@ export class CodeEditTracker implements vscode.Disposable {
 			fileCount: 0,
 			turnIndex: -1, // file_save 不占轮次
 			filePath: relativePath,
+			// 【F2】归属信息供后续任务（F11）与教师端口径使用；file_save 不参与 streak 状态
+			editor: resolveEditEditor(relativePath, this.fileContextTracker),
 		}
 
 		void this.persister.persist(log)
@@ -211,6 +242,7 @@ export class CodeEditTracker implements vscode.Disposable {
 			turnIndex: -1, // code_edit 不占轮次
 			filePath: relativePath,
 			changeDelta: pending.totalDelta,
+			editor: resolveEditEditor(relativePath, this.fileContextTracker),
 		}
 
 		void this.persister.persist(log)

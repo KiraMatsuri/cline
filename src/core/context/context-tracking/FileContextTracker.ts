@@ -31,6 +31,17 @@ export class FileContextTracker {
 	private recentlyModifiedFiles = new Set<string>()
 	private recentlyEditedByCline = new Set<string>()
 
+	/**
+	 * 【F2】Cline 写盘归属窗口（毫秒）。
+	 */
+	private readonly writeAttributionWindowMs = 10_000
+	/**
+	 * 【F2】filePath → 最近一次被 Cline 写盘的时间戳。
+	 * 与 recentlyEditedByCline 并存但语义不同：那个是**一次性标志**（被 setupFileWatcher 的 change 分支消费后删除），
+	 * 本 Map 用于「这次 code_edit 到底是人还是 AI 写的」，**只读、不清除**。
+	 */
+	private recentlyWrittenByClineAt = new Map<string, number>()
+
 	constructor(controller: Controller, taskId: string) {
 		this.controller = controller
 		this.taskId = taskId
@@ -176,6 +187,24 @@ export class FileContextTracker {
 	 */
 	markFileAsEditedByCline(filePath: string): void {
 		this.recentlyEditedByCline.add(filePath)
+		// 【F2】记录写盘归属窗口，供 wasRecentlyWrittenByCline 查询（不得复用上面的一次性标志）
+		this.recentlyWrittenByClineAt.set(filePath, Date.now())
+		// 防止长任务里该 Map 无界增长
+		const cutoff = Date.now() - this.writeAttributionWindowMs
+		for (const [p, t] of this.recentlyWrittenByClineAt) {
+			if (t < cutoff) {
+				this.recentlyWrittenByClineAt.delete(p)
+			}
+		}
+	}
+
+	/**
+	 * 【F2】该文件是否在 windowMs 内由 Cline 写盘（write_to_file / apply_patch）。
+	 * **只读、不清除** —— 见 writeAttributionWindowMs 的注释。
+	 */
+	public wasRecentlyWrittenByCline(filePath: string, windowMs: number = this.writeAttributionWindowMs): boolean {
+		const at = this.recentlyWrittenByClineAt.get(filePath)
+		return at !== undefined && Date.now() - at <= windowMs
 	}
 
 	/**
