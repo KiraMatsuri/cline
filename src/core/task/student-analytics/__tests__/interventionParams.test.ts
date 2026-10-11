@@ -1,7 +1,7 @@
 import { expect } from "chai"
 import { DEFAULT_OPTIONS as MONITOR_DEFAULTS } from "../BehaviorMonitor"
-import { DEFAULT_OPTIONS as MANAGER_DEFAULTS } from "../TeachingInterventionManager"
 import { formatInterventionForInjection, generateBlockingInterventionMessage } from "../InterventionMessageGenerator"
+import { DEFAULT_OPTIONS as MANAGER_DEFAULTS } from "../TeachingInterventionManager"
 import type { BehaviorAlert } from "../types"
 
 describe("干预参数基线（方案 D 止血）", () => {
