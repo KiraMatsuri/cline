@@ -4,6 +4,9 @@
 
 ### Added
 
+- **教学干预改造的验收与修订方案文档**：新增 `docs/design/teaching-intervention-acceptance-and-revisions.md`
+  （变更综述 / 与原计划的偏移 / 测试结果 / 手工验收 M1–M7 / 行为日志复核 / 12 项修订方案）；
+  `docs/design/teaching-intervention-fix-options.md` 补 §6 教师端日志链路缺口（8 项，仅登记）。
 - **课程资料检索 MCP 化**：新增本地 stdio MCP server（`dist/mcp-wiki-server.js`），暴露
   `search_wiki` / `read_wiki_chunk` / `list_wiki_weeks` 三个**只读**工具，由主对话 LLM 自主按需检索，
   取代原先"把 ≤16k 字符全文塞进 system prompt"的做法 —— 解决资料多时被 `week+id` 字典序盲截断的问题。
@@ -32,6 +35,17 @@
 
 ### Fixed
 
+- **开发宿主（F5）启动大面积报 `TS2307` 的竞态（生成代码与 `tsc --watch` 并行）**：`scripts/build-proto.mjs`
+  原本**先删除** `src/shared/proto` 与 `src/generated` 再生成，而 `.vscode/tasks.json` 的 `watch` 任务把
+  `protos` 与 `tsc --watch` 列为**并行**依赖 —— 一旦 `tsc --watch` 在目录被清空的窗口内构建初始程序，
+  它会把这些模块**永久**记为缺失（实测并行启动 `Found 636 errors` 且重启不自愈；串行启动 `Found 0 errors`）。
+  现改为「原地覆盖 + 按 mtime 事后清理」：不再预先删除，生成完成后仅删掉本次未重写的残留文件，
+  两个目录全程存在且内容完整。修复后并行启动实测 `Found 0 errors`。
+- **`npm run protos` 在 `protoc` 缺失时会静默清空生成目录**：`grpc-tools` 的 `install` 脚本
+  （`node-pre-gyp` 下载 `protoc`）在 pnpm 11+ 下需显式批准；未批准时 `bin/protoc.exe` 不存在，
+  而旧逻辑**先删后建**且 `execSync` 实测无输出、退出码 0 → 两个被 `.gitignore` 覆盖的生成目录
+  被清空且无任何报错。现于 `pnpm-workspace.yaml` 显式 `allowBuilds.grpc-tools: true`
+  （pnpm 11+/12 机制），原有 `onlyBuiltDependencies`（pnpm 10 机制）保持不变。
 - **移除未接线且边界可绕过的工具调用代码**：`answerWithTools()` 从未被调用；其 `grep_wiki` 接受 LLM 传入的
   `max_week` 且无上限校验（传 18 即可读取未来周资料），`read_chunk` 的查找条件写错（恒真时忽略 chunkId）。
 - **工具调用标记被当正文展示给学生**（实测 taskId=1790691098981）：模型在走结构化 `tool_calls` 通道的同时，

@@ -16,6 +16,7 @@ const PROTOC = path.join(require.resolve("grpc-tools"), "../bin/protoc")
 
 const PROTO_DIR = path.resolve("proto")
 const TS_OUT_DIR = path.resolve("src/shared/proto")
+const SRC_GENERATED_DIR = path.resolve("src/generated")
 const GRPC_JS_OUT_DIR = path.resolve("src/generated/grpc-js")
 const NICE_JS_OUT_DIR = path.resolve("src/generated/nice-grpc")
 const DESCRIPTOR_OUT_DIR = path.resolve("dist-standalone/proto")
@@ -35,10 +36,25 @@ const TS_PROTO_OPTIONS = [
 ]
 
 async function main() {
-	await cleanup()
+	// 【并发安全 · 切勿改回“先删后建”】
+	// 原顺序是 cleanup() 先 rmrf 掉 src/shared/proto 与 src/generated，再重新生成。
+	// 但本脚本在开发流程里会与 tsc --watch **并行启动**（见 .vscode/tasks.json 的 watch 任务）。
+	// 一旦 tsc 在“目录不存在 / 为空”的那个窗口里构建初始程序，它会把成百上千个模块
+	// 永久判定为“找不到”，而且**不会**重新解析已失败的模块 —— 表现为满屏 TS2307，重启也不自愈。
+	// （实测：并行启动 = 636 errors；顺序启动 = 0 errors。）
+	//
+	// 因此改为：不再预先删除；就地重新生成（protoc 与两个生成器都是覆盖写），
+	// 生成成功后再清理“本次运行没有被重写”的残留文件（按 mtime 判定）。
+	// 这样两个目录在全程都保持存在且内容完整。
+	const runStartedAt = Date.now()
+
+	await removeLegacyGeneratedFiles()
+
 	await compileProtos()
 	await generateProtoBusSetup()
 	await generateHostBridgeClient()
+
+	await pruneStaleGeneratedFiles(runStartedAt)
 }
 async function compileProtos() {
 	console.log(chalk.bold.blue("Compiling Protocol Buffers..."))
@@ -101,12 +117,13 @@ async function tsProtoc(outDir, protoFiles, protoOptions) {
 	}
 }
 
-async function cleanup() {
-	// Clean up existing generated files
-	log_verbose(chalk.cyan("Cleaning up existing generated TypeScript files..."))
-	await rmrf(TS_OUT_DIR)
-	await rmrf("src/generated")
-
+/**
+ * 只清理“曾经生成过、现在已迁走”的历史文件。
+ *
+ * ⚠️ 这里**刻意不再** rmrf TS_OUT_DIR / SRC_GENERATED_DIR —— 见 main() 里的说明：
+ * 预先删除生成目录会让并行的 tsc --watch 永久失去这些模块。
+ */
+async function removeLegacyGeneratedFiles() {
 	// Clean up generated files that were moved.
 	await rmrf("src/standalone/services/host-grpc-client.ts")
 	await rmrf("src/standalone/server-setup.ts")
@@ -152,6 +169,55 @@ async function cleanup() {
 	]
 	for (const file of [...oldhostbridgefiles, ...oldprotobusfiles]) {
 		await rmrf(file)
+	}
+}
+
+/** 递回列出目录下所有文件的绝对路径（目录不存在时返回空数组） */
+async function listFilesRecursive(dir) {
+	const found = []
+	async function walk(current) {
+		let entries
+		try {
+			entries = await fs.readdir(current, { withFileTypes: true })
+		} catch {
+			return
+		}
+		for (const entry of entries) {
+			const full = path.join(current, entry.name)
+			if (entry.isDirectory()) {
+				await walk(full)
+			} else {
+				found.push(full)
+			}
+		}
+	}
+	await walk(dir)
+	return found
+}
+
+/**
+ * 删除本次运行**没有被重写**的生成文件（判定依据：mtime 早于本次运行开始时间）。
+ *
+ * 它取代了原先“先删后建”里的删除动作：既清掉不再产出的残留文件，
+ * 又不会制造“目录不存在 / 为空”的窗口（那会让并行的 tsc --watch 永久报 TS2307）。
+ */
+async function pruneStaleGeneratedFiles(runStartedAt) {
+	let removed = 0
+	for (const dir of [TS_OUT_DIR, SRC_GENERATED_DIR]) {
+		for (const file of await listFilesRecursive(dir)) {
+			try {
+				const stat = await fs.stat(file)
+				if (stat.mtimeMs < runStartedAt) {
+					await fs.rm(file, { force: true })
+					removed++
+				}
+			} catch {
+				// 并发删除 / 权限问题：跳过，不影响本次生成结果
+			}
+		}
+	}
+	if (removed > 0) {
+		log_verbose(chalk.cyan(`Pruned ${removed} stale generated file(s).`))
 	}
 }
 

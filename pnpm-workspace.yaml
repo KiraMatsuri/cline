@@ -1,3 +1,13 @@
+allowBuilds:
+  '@bufbuild/buf': false
+  '@google/genai': false
+  '@vscode/vsce-sign': false
+  better-sqlite3: false
+  esbuild: false
+  grpc-tools: true
+  keytar: false
+  protobufjs: false
+  puppeteer-chromium-resolver: false
 onlyBuiltDependencies:
   - '@bufbuild/buf'
   - '@vscode/vsce-sign'
