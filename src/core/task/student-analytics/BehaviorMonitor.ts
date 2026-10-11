@@ -25,20 +25,29 @@ export interface BehaviorMonitorOptions {
 	escalationBlockingThreshold?: number
 }
 
-const DEFAULT_OPTIONS: Required<BehaviorMonitorOptions> = {
+export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Object.freeze({
 	enabled: true,
-	debug: false, // 开发阶段默认开启，验证完毕后改为 false
+	debug: false,
 	windowSize: 20, // 覆盖 ~4 轮完整对话（每轮约 5 条事件）
-	cooldownMs: 15_000, // 15 秒冷却（原 60s，降低以避免快速连续请求时错过触发窗口）
-	minTurnsForDependency: 4, // 4 条 turn_message 即开始评估 AI 依赖
-	aiDependencyThreshold: 0.7, // 70% AI 参与占比（Cline 多工具调用场景下可达）
-	noEditTurnStreakThreshold: 5, // 连续 5 轮无编辑（约 2-3 轮对话）
-	consecutiveAssistantCodeThreshold: 3, // 连续 3 次 AI 生成代码即触发（原 2，上调避免误触发）
+	// 【方案 D 止血】15s → 120s。原值让同一条规则在几十秒内被反复计数，
+	// 是"3 次提问就攒满升级阈值"的直接原因之一。
+	cooldownMs: 120_000,
+	// 【方案 D 止血】4 → 6。原值在"一次提问 = 7~11 个助手回合"的形态下太容易达到。
+	minTurnsForDependency: 6,
+	// 【方案 D 止血】0.7 → 0.85。原阈值在 Cline 多工具循环下几乎必然被突破
+	// （实测 3/4 个任务里用户 turn_message 数为 0，比例恒 100%）。
+	aiDependencyThreshold: 0.85,
+	// 【方案 D 止血】5 → 8。该计数器对每个 turn_message 都 +1（助手回合也算），
+	// 一次提问就能贡献 7~11，原值 5 等价于"问一句话就触发"。
+	noEditTurnStreakThreshold: 8,
+	consecutiveAssistantCodeThreshold: 3,
 	adoptionRateThreshold: 0.7,
 	selfModificationThreshold: 0.25,
-	minAdoptionSamples: 2, // 2 条采纳推断即可评估
-	escalationBlockingThreshold: 4, // 同规则累计 4 次触发 → 阻断式干预
-}
+	minAdoptionSamples: 2,
+	// 【方案 D 止血】4 → 6。★ 权威值在本文件：升级判定走 shouldEscalateToBlocking()，
+	// TeachingInterventionManager 里那份同名配置从未被读取。
+	escalationBlockingThreshold: 6,
+})
 
 export class BehaviorMonitor {
 	private readonly taskId: string

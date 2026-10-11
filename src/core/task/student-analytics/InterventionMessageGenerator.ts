@@ -21,8 +21,8 @@ interface BlockingTemplate {
 	content: string
 	/** 禁用的功能列表 */
 	disabledFeatures: string[]
-	/** 倒计时秒数 */
-	countdownSeconds: number
+	/** 倒计时秒数（已弃用：由实际冷却时长推导，仅保留可选以兼容旧模板） */
+	countdownSeconds?: number
 	/** 反思引导问题列表 */
 	reflectionQuestions: string[]
 }
@@ -163,7 +163,6 @@ const BLOCKING_TEMPLATE_REGISTRY: Partial<Record<BehaviorRuleId, BlockingTemplat
 		content:
 			"🚫 【教学干预 — 阻断模式】\n\n系统检测到你已经连续多次直接请求 AI 生成代码而未进行自主编辑。为保障学习效果，代码生成与工具执行功能已被暂时禁用。\n\n请完成以下反思练习后，系统将自动恢复功能。",
 		disabledFeatures: ["code_generation", "tool_execution"],
-		countdownSeconds: 180,
 		reflectionQuestions: [
 			"你最近连续请求了代码生成，请回顾：这些代码的核心逻辑是什么？你能独立写出其中的哪些部分？",
 			"请用自然语言描述你当前要解决的问题，以及你尝试过的方案。",
@@ -174,7 +173,6 @@ const BLOCKING_TEMPLATE_REGISTRY: Partial<Record<BehaviorRuleId, BlockingTemplat
 		content:
 			"🚫 【教学干预 — 阻断模式】\n\n系统检测到你已连续多轮未进行代码编辑。编程是实践技能，仅阅读代码无法达到学习效果。代码生成与工具执行功能已被暂时禁用。\n\n请动手完成以下实践任务后，系统将自动恢复功能。",
 		disabledFeatures: ["code_generation", "tool_execution"],
-		countdownSeconds: 180,
 		reflectionQuestions: [
 			"请在编辑器中打开当前讨论的文件，尝试修改至少 3 处代码（如变量命名、逻辑简化、添加注释）。",
 			"你刚才阅读的代码中，哪一部分让你觉得最难理解？请尝试用自己的话解释它。",
@@ -185,7 +183,6 @@ const BLOCKING_TEMPLATE_REGISTRY: Partial<Record<BehaviorRuleId, BlockingTemplat
 		content:
 			"🚫 【教学干预 — 阻断模式】\n\n系统检测到最近的交互中 AI 参与占比过高。过度依赖 AI 会削弱独立编程能力。代码生成与工具执行功能已被暂时禁用。\n\n请完成以下自主练习后，系统将自动恢复功能。",
 		disabledFeatures: ["code_generation", "tool_execution"],
-		countdownSeconds: 180,
 		reflectionQuestions: [
 			"请先关闭 AI 助手，尝试独立写出当前功能的核心逻辑（伪代码或真实代码均可）。",
 			"你最近依赖 AI 完成了哪些任务？哪些是你其实可以独立完成的？",
@@ -342,7 +339,7 @@ function formatBlockingInterventionForInjection(intervention: InterventionMessag
  */
 export function generateBlockingInterventionMessage(
 	alert: BehaviorAlert,
-	blockingCooldownMs: number = 180_000,
+	blockingCooldownMs: number = 60_000,
 ): InterventionMessage {
 	const template = BLOCKING_TEMPLATE_REGISTRY[alert.ruleId] ?? BLOCKING_TEMPLATE_REGISTRY.consecutive_code_generation!
 
@@ -358,7 +355,9 @@ export function generateBlockingInterventionMessage(
 		generatedAt: now.toISOString(),
 		cooldownUntil: cooldownDate.toISOString(),
 		disabledFeatures: template.disabledFeatures,
-		countdownSeconds: template.countdownSeconds,
+		// ★ 由实际冷却时长推导，不再沿用模板里写死的 180 —— 否则注入文本会说"3 分钟"，
+		// 而横幅按 blockingEndAt 从 1 分钟倒数，同屏两个数字互相矛盾。
+		countdownSeconds: Math.round(blockingCooldownMs / 1000),
 		blockingEndAt: cooldownDate.toISOString(),
 		reflectionQuestions: template.reflectionQuestions,
 	}

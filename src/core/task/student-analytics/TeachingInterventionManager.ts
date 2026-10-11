@@ -28,16 +28,19 @@ import type {
 	InterventionStyle,
 } from "./types"
 
-const DEFAULT_OPTIONS: Required<InterventionManagerOptions> = {
+export const DEFAULT_OPTIONS: Readonly<Required<InterventionManagerOptions>> = Object.freeze({
 	enabled: true,
 	globalCooldownMs: 5_000, // 5 秒全局冷却（用于提示式干预）
 	maxInterventionsPerTask: 10, // 单任务最多 10 次干预（含阻断）
 	minTurnsBetweenInterventions: 0, // 不限制轮次间隔
 	preferredStyle: "hint" as InterventionStyle, // 默认使用提示风格
 	logToOutputChannel: true,
-	escalationBlockingThreshold: 4, // 同规则累计 4 次 → 阻断
-	blockingCooldownMs: 180_000, // 阻断冷却 3 分钟
-}
+	// ⚠️ 本项在管理器内**从未被读取**（升级判定走 monitor.shouldEscalateToBlocking）。
+	// 保留是为了与 BehaviorMonitor 的值保持一致；改升级阈值请改 BehaviorMonitor。
+	escalationBlockingThreshold: 6,
+	// 【方案 D 止血】180_000 → 60_000。阻隔 3 分钟对"概念问答误触发"场景过重。
+	blockingCooldownMs: 60_000,
+})
 
 export class TeachingInterventionManager {
 	private readonly taskId: string
