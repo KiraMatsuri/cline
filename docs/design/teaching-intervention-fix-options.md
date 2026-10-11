@@ -556,7 +556,240 @@ if (interventionManager.isBlockingActive()) {
 
 ---
 
-## 6. 附录：证据与复算工具
+## 6. 教师端链路缺口（本计划范围外，仅登记）
+
+> 这些是排查「教学干预误触发」时**顺带发现**的缺陷，与干预本身无关，**不在修复范围内**。登记在此以免被遗忘。
+
+### 6.1 先厘清：教师端看板的数据来源
+
+教师端前端配了**两个**后端（`web-dashboard/frontend/.env.development`）：
+
+```
+VITE_API_BASE=http://localhost:4000            ← backend：学情看板
+VITE_TEACHING_API_BASE=http://localhost:4001   ← teaching-server：作业 / 资料 / 提交
+```
+
+| 路径 | 服务 | 数据来源 | 状态 |
+|---|---|---|---|
+| **看板路径（读）** | `backend:4000` | 读**服务端本地**的 `student_interactions.log`（JSONL） | ❌ 部署态**永远读不到数据**（见 6.2） |
+| **提交路径（写）** | `teaching-server:4001` | ① `analyzeLogs(raw_behavior_logs)` → `submissions` 表；② `appendToDashboardLog(events, studentMeta)` → 看板 JSONL | ⚠️ 写的是**demo 假数据**，且写到容器内失效路径（见 6.3 / 6.6） |
+
+> **两处“分析”要分清**：`backend` 只做看板指标（读文件）；`teaching-server` 在提交时算 `ai_dependency` 等三项指标（写 `submissions` 表 + 追加看板日志）。二者互不相通。
+
+`backend/src/index.js` 的选择逻辑：
+
+```js
+const LOG_PATH = process.env.CLINE_LOG_PATH || resolveDefaultLogPath()
+function resolveReadableLogPath() {
+  if (fs.existsSync(LOG_PATH)) return { effectiveLogPath: LOG_PATH, usedFallback: false }
+  if (fs.existsSync(SAMPLE_LOG_PATH)) return { effectiveLogPath: SAMPLE_LOG_PATH, usedFallback: true }
+  ...
+}
+// resolveDefaultLogPath() => <cwd>/../../cline/.cline-logs/student_interactions.log
+```
+
+**一句话判断看板数据真假**：
+
+```powershell
+(Invoke-RestMethod http://localhost:4000/api/dashboard/summary).meta
+```
+
+看 `usedFallback`（`true` = 读的是仓库自带的 `backend/sample/student_interactions.log`）与 `logPath`。
+
+> ℹ️ **后端并不是“静默失败”**：`meta.sourceReason` 会给出 `日志文件不存在: <路径>`。
+> 但**前端从不渲染这些字段**（`web-dashboard/frontend/src` 搜 `sourceReason` / `usedFallback` / `logPath` → **0 命中**），
+> 所以从使用者视角看是静默的 —— 这是**前端展示缺陷**，不是后端不报错。
+
+> ⚠️ **看板读了 `hasCode`**（`codeGenerationRatio` / `codeEditRatio` / `selfModificationRate` 都由它派生），
+> 所以 `hasCode` 的口径变更**会改看板数值**（详见 `teaching-intervention-fix-plan.md` §2.5）。
+
+### 6.2 【缺口】部署态下看板日志“无人写入”（架构性）
+
+⚠️ **先纠正一个常见误判**：服务器上 `backend` **不是**在读一个死路径。
+`deploy/docker-compose.yml` 是显式配置 + 挂载的：
+
+```yaml
+backend:
+  environment:
+    CLINE_LOG_PATH: ${CLINE_LOG_PATH:-/logs/student_interactions.log}   # 可配置，非硬编码
+  volumes:
+    - ${LOG_DIR:-./logs}:/logs                                          # 有挂载
+```
+
+（`Dockerfile.backend` 也有 `VOLUME ["/logs"]`。）
+
+**真正的问题：这条链路上没有任何写入方。** 学生端的 `student_interactions.log` 内容**从不离开学生机器**，
+因此宿主机 `./logs/` 永远是空的 → `existsSync` 为 false → `readJsonlLogs` 返回 `[]`。
+
+唯一可行的补救是**人工把日志文件拷进宿主机 `./logs/`**（`deploy/.env.example` 里确实写了这句），
+这只能用于演示，不构成产品能力。
+
+**“本地能通”靠的是三处写死值碰巧重合**（均指向同一个文件）：
+
+| 环节 | 路径 |
+|---|---|
+| 扩展写入（`new StudentLogPersister(this.cwd)`，cwd = 工作区根） | `<工作区>/.cline-logs/student_interactions.log` |
+| `backend/.env` 的 `CLINE_LOG_PATH` | `D:/cline-test/.cline-logs/student_interactions.log` |
+| `teaching-server` 的 appender 默认值 | `D:/cline-test/.cline-logs/student_interactions.log` |
+
+⇒ 仅当学生工作区恰为 `d:\cline-test` 时三条重合；**换任意新文件夹即全断**。
+
+**本质**：**「学生端 → 服务端」在「读文件」这条路上根本没有传输通道**。
+要支持异地部署，必须补一条**行为日志上传/汇聚**通道。
+
+### 6.3 【缺口】上传路径与真实行为日志脱节
+
+`AssignmentManager.readClineLogs()` 上传的是 `task_metadata.json`：
+
+- 搜索根目录（`getPossibleClineLogRoots()`）只有 `CLINE_LOG_DIR` / `D:\.cline-logs` / `~/.cline-logs` /
+  `%APPDATA%\Cline\.cline-logs` / `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\logs` ——
+  **最后一项硬编码了上游发布 ID**，与 fork 的 `shiinamatsuri.student-teaching-assistant-edu` 不匹配
+- 且真实文件的**目录结构也不同**（`<globalStorage>/tasks/<id>/` vs `<root>/tasks/<id>/`）
+- 实测这些目录不存在 → 走兜底 → 上传**硬编码 demo 事件**（`source: "fallback"`）
+- 即便找到了，真实 `task_metadata.json` 只有 `{files_in_context, model_usage, environment_history}` —— **没有 `events` 数组** →
+`normalizeRawBehaviorLogs()` 只认“数组”或“含 `events` 的对象”，其他一律返回 `[]`。
+
+**后果（提交返回的指标全是假的）**：兜底 demo 是 6 条固定事件，代入 `teaching-server` 的 `analyzeLogs()`：
+
+```
+assistantTurns = 2（category=code_generation 的两条）
+totalTurns    = 6
+ai_dependency = 2/6 → 0.33
+```
+
+⇒ 提交弹窗恒显示「**AI依赖度: 33.0%**」（`metric_gaming_score: 0.8`、`user_edit_count: 1` 同样为定值）。
+
+> `log_file_path` **确实被服务端使用**：`server.ts` 会 `readJsonlLogFile(log_file_path)` 从**服务器磁盘**读取。
+> 但传过去的是**学生机器的绝对路径字符串**（如 `D:\xxx\.cline-logs\student_interactions.log`），
+> 在服务器上不存在 → `existsSync` 保护下**静默返回 `[]`**（不报错）。因此这项“补救”只在同机时生效。
+
+> ⚠️ 补充：`AssignmentManager.handleSubmitTask()` 的 `code_snapshot` 与 `submissions` 落库是**真实的** ——
+> 失真的只是**行为指标**。但该接口**不会**把 `student_interactions.log` 内容上传（只传路径）。
+
+### 6.4 【缺口】`student_meta` 只有提交路径会写，且写的是假数据
+
+**扩展端确实从不写** `student_meta`：`StudentLogPersister.persist()` 只是 `JSON.stringify(log)`，
+而 `StudentInteractionLog` **没有** `student_meta` 字段（`src/**` 搜索零命中）。
+
+⚠️ **但 `teaching-server` 会写** —— `appendToDashboardLog()` 给**每条经提交进来的事件**补上：
+
+```json
+{"ts":"2026-08-15T15:46:00.287Z","eventType":"task_start","role":"user","category":"other",
+ "student_meta":{"student_id":"20231011","student_name":"小王","class_id":"人工智能2023","submitted_at":"..."}}
+```
+
+**实测痕迹**：`d:\cline-test\.cline-logs\student_interactions.log` 共 **550 行**，其中**仅第 545–550 行**含 `student_meta`
+—— 正是那 6 条 demo 兜底事件。
+
+⇒ 修正原先“`computeStudents()` 恒空”的结论：实际会返回 **1 个学生「小王」（假的）**，
+按该姓名筛选也只会看到那 6 行 demo。真正缺的是**真实日志从未带上 `student_meta`**。
+
+### 6.5 【缺口】`intervention_evaluation` 事件无人写入
+
+`extractInterventionEvaluations()` 找的是 `eventType === "intervention_evaluation"`，
+而扩展端的 `LogEventType` 只有 `task_start | turn_message | code_edit | file_save | adoption_infer`
+⇒ `computeInterventionInsights()` 恒走空分支 → **「干预效果 / 洞察」面板恒为空**。
+
+> 这直接关系到「干预机制是否有效」的可度量性 —— 若后续要用数据评估干预效果，必须先补上该事件的生产端。
+
+### 6.6 【缺口】部署态：`teaching-server` 写入路径失效（**已定位到的直接根因**）
+
+`teaching-server/src/dashboardAppender.ts` 的路径解析优先级：
+
+```ts
+export function resolveDashboardLogPath(overridePath?: string): string {
+  if (overridePath && overridePath.trim()) return overridePath.trim();
+  const envPath = process.env["DASHBOARD_LOG_PATH"];      // ← 注意变量名
+  if (envPath && envPath.trim()) return envPath.trim();
+  return "D:/cline-test/.cline-logs/student_interactions.log";   // ← 硬编码默认
+}
+```
+
+但 `deploy/docker-compose.yml` 给 `teaching-server` 配的是：
+
+```yaml
+teaching-server:
+  environment:
+    PORT: "4001"
+    NODE_ENV: production
+    DATA_DIR: /app/data        # ← 就三个，没有 DASHBOARD_LOG_PATH
+  volumes:
+    - teaching-data:/app/data
+    - ./env/teaching-server.env:/app/.env:ro   # ← 没有 /logs 挂载！
+```
+
+**两个问题叠加**：
+
+1. **变量名不匹配**：`deploy/.env.example` 配的是 `CLINE_LOG_PATH`（那是 `backend` 用的），
+   而 appender 认的是 **`DASHBOARD_LOG_PATH`** → 服务器上永远是硬编码默认值。
+2. **没有共享卷**：`backend` 挂 `${LOG_DIR}:/logs`，`teaching-server` **一个都没挂** → 两者看不到彼此。
+
+⇒ 服务器上 `D:/cline-test/...` 在 Linux 容器里是**相对路径** → 实际写到
+`/app/D:/cline-test/.cline-logs/student_interactions.log`（容器内、临时、无人读、重启即失）。
+
+**结论**：即使学生点了提交，`backend` 读的 `/logs/student_interactions.log`（宿主机 `./logs`）**永远不会被更新**。
+
+> 另外 `deploy/.env.example` 里那句注释「学生端 Cline 提交实验时，teaching-server 会把日志追加写入 `<工作区>/.cline-logs/student_interactions.log`」
+> **与代码不符**（变量名对不上 + 无共享卷），建议同步修正以免误导。
+
+### 6.7 【已排除】`student_interactions_analysis.json` 与看板无关
+
+排查时易误判为“看板读的是 `_analysis.json`”。**实测结论：它与看板/服务器完全无关。**
+
+- 全仓（含 `deploy/`、含 git 历史）搜 `student_interactions_analysis` → **0 命中**
+- `backend/src/index.js` 只认两个路径：`CLINE_LOG_PATH`（= `.log`）与 `sample/student_interactions.log`
+- `readJsonlLogs()` 是**逐行 `JSON.parse`**（JSONL）；而 `_analysis.json` 是**缩进美化过的单体 JSON 对象**，
+  按行喂进去只会得到一堆 `badLines`
+- 真正作者：`d:\cline\scripts\analyze-student-log.ts`（需 `--json` 才导出）：
+  ```ts
+  const jsonOutputPath = logPath.replace(/\.log$/, "_analysis.json")
+  ```
+  ⇒ **离线 CLI 报告**，跑一次给人看的；两份现存文件 mtime 为 `2026/5/23`、`2026/5/28`，早已停更。
+
+### 6.8 【缺口·根本】缺少「行为日志上传通道」（待修）
+
+> 本节是 6.2–6.6 的**共同根因**。用户已确认：**先记录，后续再修**。
+
+**提交实际发送什么**（`POST /api/v1/submissions`，`AssignmentManager.handleSubmitTask()`）：
+
+| 字段 | 实际内容 | 真实？ | 服务端用途 |
+|---|---|---|---|
+| `assignment_id` | 教师端发布的 ID | ✅ | 查 `assignments` 表 |
+| `student_id` / `student_name` / `class_id` | 设置面板填写 | ✅ | 落库 + 作 `student_meta` |
+| **`code_snapshot`** | `activeTextEditor.document.getText()` | ✅ **唯一有信息量的真数据** | 落 `submissions.code_snapshot` |
+| **`raw_behavior_logs`** | **6 条硬编码 demo** | ❌ **恒假** | `analyzeLogs()` → 3 指标；`normalizeRawBehaviorLogs()` → 追加看板 |
+| **`log_file_path`** | 学生本机**绝对路径字符串** | ⚠️ 路径真、**内容不传** | 服务端读自己磁盘 → `[]` |
+| `submitted_at` | 提交时刻 | ✅ | 写 `student_meta.submitted_at` |
+
+⇒ **真实日志的全量内容从未离开学生机器。**
+
+**为什么 `raw_behavior_logs` 必然是 demo**（实测五个搜索根目录**全部不存在**）：
+
+| # | `getPossibleClineLogRoots()` 候选 | 实测 |
+|---|---|---|
+| ① | `%CLINE_LOG_DIR%` | 环境变量未设置 |
+| ② | `D:\.cline-logs` | **不存在** |
+| ③ | `~/.cline-logs` | **不存在** |
+| ④ | `%APPDATA%\Cline\.cline-logs` | **不存在** |
+| ⑤ | `%APPDATA%\Code\User\globalStorage\**saoudrizwan.claude-dev**\logs` | **不存在**（硬编码上游发布 ID） |
+
+而真实文件在 `%APPDATA%\Code\User\globalStorage\**shiinamatsuri.student-teaching-assistant-edu**\tasks\<id>\task_metadata.json`
+（实测 445 字节，顶层仅 `files_in_context, model_usage, environment_history`，**无 `events`**）。
+⇒ 每次都走 `return { source: "fallback", events: [6 条] }`。
+
+**修正方向（两步，优先级递进）**：
+
+1. **止血（三行配置）**：给 `teaching-server` 补 `DASHBOARD_LOG_PATH: /logs/student_interactions.log` + 共享 `${LOG_DIR}:/logs` 卷 → 看板至少能收到提交事件。
+   ⚠️ **但这只解决“传 demo”** —— 看板上仍只有那 6 条假事件。
+2. **根本（需改代码）**：新增行为日志上传通道 —— 把 `<工作区>/.cline-logs/student_interactions.log` **内容**随提交一起 POST。
+   服务端已有消费端（`readJsonlLogFile()`），只差把内容传过去（不要传路径）。
+
+> 另：也可顺带修 `getPossibleClineLogRoots()` 把 fork 自己的 globalStorage 加进去 ——
+> 但它只能修本机开发场景，**异地部署仍受“服务器读不到学生磁盘”限制**，不能替代第 2 步。
+
+---
+
+## 7. 附录：证据与复算工具
 
 - 原始日志：`c:\Users\Kirara\Desktop\.cline-logs\student_interactions.log`（4 个任务、42 条事件）
 - 复算脚本：`%TEMP%\analyze-behavior.cjs`（复现 `detectCode` 判定并打印每回合的 streak 与命中正则）
