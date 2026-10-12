@@ -35,33 +35,33 @@ import { Logger } from "@/shared/services/Logger"
 
 /** Wiki 资料块（与后端 wiki_chunks 表字段对齐） */
 export interface WikiChunk {
-  id: string
-  title: string
-  /** Markdown 正文（可能为 LLM 清洗后或原始文本） */
-  content: string
-  applicable_week: number
-  cleaned_by_llm: number // SQLite 0/1
-  llm_clean_error?: string | null
-  chunk_index: number
-  chunk_total: number
-  created_at: string
-  updated_at: string
-  /** 关联附件（含下载链接），前端可展示"📎" */
-  attachments?: Array<{
-    id: number
-    original_name: string
-    file_size: number
-    mime_type: string
-    downloadUrl?: string
-  }>
+	id: string
+	title: string
+	/** Markdown 正文（可能为 LLM 清洗后或原始文本） */
+	content: string
+	applicable_week: number
+	cleaned_by_llm: number // SQLite 0/1
+	llm_clean_error?: string | null
+	chunk_index: number
+	chunk_total: number
+	created_at: string
+	updated_at: string
+	/** 关联附件（含下载链接），前端可展示"📎" */
+	attachments?: Array<{
+		id: number
+		original_name: string
+		file_size: number
+		mime_type: string
+		downloadUrl?: string
+	}>
 }
 
 /** GET /api/v1/wiki?max_week=N 响应 */
 interface WikiListResponse {
-  ok: boolean
-  count: number
-  max_week?: number
-  data: WikiChunk[]
+	ok: boolean
+	count: number
+	max_week?: number
+	data: WikiChunk[]
 }
 
 /**
@@ -69,13 +69,13 @@ interface WikiListResponse {
  * 由后端 GET /api/v1/wiki?max_week=N&textbook_id=... 返回
  */
 export interface TextbookChapter {
-  id: string
-  title: string
-  content: string
-  applicable_week: number
-  chapter_index: number
-  total_chapters: number
-  ocr_used: number
+	id: string
+	title: string
+	content: string
+	applicable_week: number
+	chapter_index: number
+	total_chapters: number
+	ocr_used: number
 }
 
 // ============================================================================
@@ -83,302 +83,289 @@ export interface TextbookChapter {
 // ============================================================================
 
 export class LLMWikiService {
-  private static _instance: LLMWikiService | null = null
+	private static _instance: LLMWikiService | null = null
 
-  public static getInstance(): LLMWikiService {
-    if (!LLMWikiService._instance) {
-      LLMWikiService._instance = new LLMWikiService()
-    }
-    return LLMWikiService._instance
-  }
+	public static getInstance(): LLMWikiService {
+		if (!LLMWikiService._instance) {
+			LLMWikiService._instance = new LLMWikiService()
+		}
+		return LLMWikiService._instance
+	}
 
-  // --------------------------------------------------------------------------
-  //  内部状态
-  // --------------------------------------------------------------------------
+	// --------------------------------------------------------------------------
+	//  内部状态
+	// --------------------------------------------------------------------------
 
-  /** 当前周数（从 VS Code 配置同步） */
-  private _currentWeek: number = 1
+	/** 当前周数（从 VS Code 配置同步） */
+	private _currentWeek: number = 1
 
-  /** Wiki 资料缓存（按 baseId 分组） */
-  private _wikiCache: Map<string, WikiChunk[]> = new Map()
+	/** Wiki 资料缓存（按 baseId 分组） */
+	private _wikiCache: Map<string, WikiChunk[]> = new Map()
 
-  /** 【v2.0 增量】教材章节缓存 */
-  private _textbookChapters: TextbookChapter[] = []
+	/** 【v2.0 增量】教材章节缓存 */
+	private _textbookChapters: TextbookChapter[] = []
 
-  /** 【v2.0 增量】当前生效教材 ID（来自 clineTeaching.currentTextbookId） */
-  private _currentTextbookId: string = ""
+	/** 【v2.0 增量】当前生效教材 ID（来自 clineTeaching.currentTextbookId） */
+	private _currentTextbookId: string = ""
 
-  /** 当前生效的 serverUrl（缓存避免每请求读配置） */
-  private _serverUrl: string = ""
+	/** 当前生效的 serverUrl（缓存避免每请求读配置） */
+	private _serverUrl: string = ""
 
-  /** 【v2.13】wiki MCP server 是否已连接（供注入“检索不可用”状态用） */
-  private _wikiMcpAvailable = false
+	/** 【v2.13】wiki MCP server 是否已连接（供注入“检索不可用”状态用） */
+	private _wikiMcpAvailable = false
 
-  /** 监听 VS Code 配置变更的 disposable */
-  private _configWatcher: vscode.Disposable | null = null
+	/** 监听 VS Code 配置变更的 disposable */
+	private _configWatcher: vscode.Disposable | null = null
 
-  // ============================================================================
-  //  配置同步
-  // ============================================================================
+	// ============================================================================
+	//  配置同步
+	// ============================================================================
 
-  /** 启动配置监听（应在插件 activate 阶段调用） */
-  public listenConfigChanges(): void {
-    if (this._configWatcher) return
-    this._refreshConfig()
-    this._configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (
-        e.affectsConfiguration("clineTeaching.serverUrl") ||
-        e.affectsConfiguration("clineTeaching.currentWeek") ||
-        e.affectsConfiguration("clineTeaching.llmEnableTools") ||
-        e.affectsConfiguration("clineTeaching.currentTextbookId") ||
-        e.affectsConfiguration("teaching.apiBase")
-      ) {
-        this._refreshConfig()
-        Logger.log(`[LLMWikiService] 配置变更已同步: week=${this._currentWeek}, serverUrl=${this._serverUrl}`)
-      }
-    })
-  }
+	/** 启动配置监听（应在插件 activate 阶段调用） */
+	public listenConfigChanges(): void {
+		if (this._configWatcher) return
+		this._refreshConfig()
+		this._configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+			if (
+				e.affectsConfiguration("clineTeaching.serverUrl") ||
+				e.affectsConfiguration("clineTeaching.currentWeek") ||
+				e.affectsConfiguration("clineTeaching.llmEnableTools") ||
+				e.affectsConfiguration("clineTeaching.currentTextbookId") ||
+				e.affectsConfiguration("teaching.apiBase")
+			) {
+				this._refreshConfig()
+				Logger.log(`[LLMWikiService] 配置变更已同步: week=${this._currentWeek}, serverUrl=${this._serverUrl}`)
+			}
+		})
+	}
 
-  /** 从 VS Code 配置同步 serverUrl / currentWeek / llmEnableTools */
-  private _refreshConfig(): void {
-    const ct = vscode.workspace.getConfiguration("clineTeaching")
-    const legacy = vscode.workspace.getConfiguration("teaching")
+	/** 从 VS Code 配置同步 serverUrl / currentWeek / llmEnableTools */
+	private _refreshConfig(): void {
+		const ct = vscode.workspace.getConfiguration("clineTeaching")
+		const legacy = vscode.workspace.getConfiguration("teaching")
 
-    // serverUrl 优先级：clineTeaching.serverUrl → teaching.apiBase → "http://localhost:4001"
-    const newUrl =
-      ct.get<string>("serverUrl")?.trim() ||
-      legacy.get<string>("apiBase")?.trim() ||
-      "http://localhost:4001"
+		// serverUrl 优先级：clineTeaching.serverUrl → teaching.apiBase → "http://localhost:4001"
+		const newUrl = ct.get<string>("serverUrl")?.trim() || legacy.get<string>("apiBase")?.trim() || "http://localhost:4001"
 
-    const newWeek = ct.get<number>("currentWeek") ?? 1
-    this._currentWeek = clampWeek(newWeek)
+		const newWeek = ct.get<number>("currentWeek") ?? 1
+		this._currentWeek = clampWeek(newWeek)
 
-    // 【v2.0】同步 currentTextbookId
-    const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""
-    if (newTextbookId !== this._currentTextbookId) {
-      this._currentTextbookId = newTextbookId
-      this._textbookChapters = [] // 教材切换 → 清章节缓存
-    }
+		// 【v2.0】同步 currentTextbookId
+		const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""
+		if (newTextbookId !== this._currentTextbookId) {
+			this._currentTextbookId = newTextbookId
+			this._textbookChapters = [] // 教材切换 → 清章节缓存
+		}
 
-    if (newUrl !== this._serverUrl) {
-      this._serverUrl = newUrl
-      this.invalidateCache() // serverUrl 变更 → 清缓存
-    }
-  }
+		if (newUrl !== this._serverUrl) {
+			this._serverUrl = newUrl
+			this.invalidateCache() // serverUrl 变更 → 清缓存
+		}
+	}
 
-  /** 释放订阅 */
-  public dispose(): void {
-    this._configWatcher?.dispose()
-    this._configWatcher = null
-    LLMWikiService._instance = null
-  }
+	/** 释放订阅 */
+	public dispose(): void {
+		this._configWatcher?.dispose()
+		this._configWatcher = null
+		LLMWikiService._instance = null
+	}
 
-  // ============================================================================
-  //  公共 API
-  // ============================================================================
+	// ============================================================================
+	//  公共 API
+	// ============================================================================
 
-  /** 获取当前周数（供外部显示） */
-  public getCurrentWeek(): number {
-    return this._currentWeek
-  }
+	/** 获取当前周数（供外部显示） */
+	public getCurrentWeek(): number {
+		return this._currentWeek
+	}
 
-  /** 设置当前周数（同时写 VS Code 配置全局） */
-  public async setCurrentWeek(week: number): Promise<void> {
-    const w = clampWeek(week)
-    await vscode.workspace
-      .getConfiguration("clineTeaching")
-      .update("currentWeek", w, vscode.ConfigurationTarget.Global)
-    this._currentWeek = w
-    this.invalidateCache() // 周数变化 → 重新拉取
-  }
+	/** 设置当前周数（同时写 VS Code 配置全局） */
+	public async setCurrentWeek(week: number): Promise<void> {
+		const w = clampWeek(week)
+		await vscode.workspace.getConfiguration("clineTeaching").update("currentWeek", w, vscode.ConfigurationTarget.Global)
+		this._currentWeek = w
+		this.invalidateCache() // 周数变化 → 重新拉取
+	}
 
-  /** 获取当前生效的 serverUrl */
-  public getServerUrl(): string {
-    return this._serverUrl
-  }
+	/** 获取当前生效的 serverUrl */
+	public getServerUrl(): string {
+		return this._serverUrl
+	}
 
-  /** 失效全部缓存（教师删除资料 / 修改 serverUrl 时调用） */
-  public invalidateCache(): void {
-    this._wikiCache.clear()
-    this._textbookChapters = []
-  }
+	/** 失效全部缓存（教师删除资料 / 修改 serverUrl 时调用） */
+	public invalidateCache(): void {
+		this._wikiCache.clear()
+		this._textbookChapters = []
+	}
 
-  /** 获取当前 wikiCache 中已缓存的总 chunk 数（公开 API 给主对话流程用） */
-  public getWikiCacheSize(): number {
-    let n = 0
-    for (const arr of this._wikiCache.values()) n += arr.length
-    return n
-  }
+	/** 获取当前 wikiCache 中已缓存的总 chunk 数（公开 API 给主对话流程用） */
+	public getWikiCacheSize(): number {
+		let n = 0
+		for (const arr of this._wikiCache.values()) n += arr.length
+		return n
+	}
 
-  /**
-   * 【v2.13】生成资料索引（周 → 标题列表），供注入 system prompt 使用。
-   * **只取元数据，不含正文** —— 正文改由 MCP 工具按需检索（见 spec §D6）。
-   */
-  public buildIndexGroups(): Array<{ week: number; titles: string[] }> {
-    const byWeek = new Map<number, string[]>()
-    const push = (week: number, rawTitle: string): void => {
-      if (week > this._currentWeek) {
-        return
-      }
-      const title = normalizeIndexTitle(rawTitle)
-      if (!title) {
-        return
-      }
-      let arr = byWeek.get(week)
-      if (!arr) {
-        arr = []
-        byWeek.set(week, arr)
-      }
-      if (!arr.includes(title)) {
-        arr.push(title)
-      }
-    }
+	/**
+	 * 【v2.13】生成资料索引（周 → 标题列表），供注入 system prompt 使用。
+	 * **只取元数据，不含正文** —— 正文改由 MCP 工具按需检索（见 spec §D6）。
+	 */
+	public buildIndexGroups(): Array<{ week: number; titles: string[] }> {
+		const byWeek = new Map<number, string[]>()
+		const push = (week: number, rawTitle: string): void => {
+			// 【F4】不再 `if (week > this._currentWeek) return`：模型需要知道"后面还有什么"，
+			//        否则只能说"未发布"，无法给出"这属于第 N 周"的定位。仍只注入标题元数据（无正文）。
+			const title = normalizeIndexTitle(rawTitle)
+			if (!title) {
+				return
+			}
+			let arr = byWeek.get(week)
+			if (!arr) {
+				arr = []
+				byWeek.set(week, arr)
+			}
+			if (!arr.includes(title)) {
+				arr.push(title)
+			}
+		}
 
-    for (const chunks of this._wikiCache.values()) {
-      for (const c of chunks) {
-        push(c.applicable_week, c.title)
-      }
-    }
+		for (const chunks of this._wikiCache.values()) {
+			for (const c of chunks) {
+				push(c.applicable_week, c.title)
+			}
+		}
 
-    // 【v2.13】教材章节也并入索引。
-    // 为什么必须并入：正文改由 MCP 检索，而 MCP 检索的是 `wiki_chunks`。
-    // 若教师尚未对某教材执行 publish-as-wiki，其正文根本不在 `wiki_chunks` 里
-    // —— 此时"索引里连章节目录都没有"会让教材内容对模型完全隐形。
-    // 只加"周 + 标题"（复用 normalizeIndexTitle 去重），不注入正文。
-    for (const ch of this._textbookChapters) {
-      push(ch.applicable_week, ch.title)
-    }
+		// 【v2.13】教材章节也并入索引。
+		// 为什么必须并入：正文改由 MCP 检索，而 MCP 检索的是 `wiki_chunks`。
+		// 若教师尚未对某教材执行 publish-as-wiki，其正文根本不在 `wiki_chunks` 里
+		// —— 此时"索引里连章节目录都没有"会让教材内容对模型完全隐形。
+		// 只加"周 + 标题"（复用 normalizeIndexTitle 去重），不注入正文。
+		for (const ch of this._textbookChapters) {
+			push(ch.applicable_week, ch.title)
+		}
 
-    return Array.from(byWeek.entries())
-      .map(([week, titles]) => ({ week, titles }))
-      .sort((a, b) => a.week - b.week)
-  }
+		return Array.from(byWeek.entries())
+			.map(([week, titles]) => ({ week, titles }))
+			.sort((a, b) => a.week - b.week)
+	}
 
-  /**
-   * 【v2.13】wiki MCP 是否可用（由连接状态决定）。
-   * 不可用时注入“检索不可用”状态声明，而**不**退回全文注入（见 spec §D5）。
-   */
-  public isWikiMcpAvailable(): boolean {
-    return this._wikiMcpAvailable
-  }
+	/**
+	 * 【v2.13】wiki MCP 是否可用（由连接状态决定）。
+	 * 不可用时注入“检索不可用”状态声明，而**不**退回全文注入（见 spec §D5）。
+	 */
+	public isWikiMcpAvailable(): boolean {
+		return this._wikiMcpAvailable
+	}
 
-  /** 由 WikiMcpRegistrar / McpHub 在探测到连接状态后回写 */
-  public setWikiMcpAvailable(available: boolean): void {
-    this._wikiMcpAvailable = available
-  }
+	/** 由 WikiMcpRegistrar / McpHub 在探测到连接状态后回写 */
+	public setWikiMcpAvailable(available: boolean): void {
+		this._wikiMcpAvailable = available
+	}
 
-  // ============================================================================
-  //  v2.0 增量：教材加载与切换
-  // ============================================================================
+	// ============================================================================
+	//  v2.0 增量：教材加载与切换
+	// ============================================================================
 
-  /** 获取当前生效教材 ID（空字符串表示未设置） */
-  public getCurrentTextbookId(): string {
-    return this._currentTextbookId
-  }
+	/** 获取当前生效教材 ID（空字符串表示未设置） */
+	public getCurrentTextbookId(): string {
+		return this._currentTextbookId
+	}
 
-  /**
-   * 切换教材（写 VS Code 全局配置 + 失效缓存）。
-   * 下次 fetchWikiForWeek / loadTextbookForWeek 会用新 ID。
-   */
-  public async setCurrentTextbook(textbookId: string): Promise<void> {
-    const id = textbookId.trim()
-    await vscode.workspace
-      .getConfiguration("clineTeaching")
-      .update("currentTextbookId", id, vscode.ConfigurationTarget.Global)
-    this._currentTextbookId = id
-    this.invalidateCache()
-  }
+	/**
+	 * 切换教材（写 VS Code 全局配置 + 失效缓存）。
+	 * 下次 fetchWikiForWeek / loadTextbookForWeek 会用新 ID。
+	 */
+	public async setCurrentTextbook(textbookId: string): Promise<void> {
+		const id = textbookId.trim()
+		await vscode.workspace
+			.getConfiguration("clineTeaching")
+			.update("currentTextbookId", id, vscode.ConfigurationTarget.Global)
+		this._currentTextbookId = id
+		this.invalidateCache()
+	}
 
-  /**
-   * 拉取教材章节（v2.0）。
-   * 若 currentTextbookId 为空则跳过；否则请求 GET /api/v1/wiki?max_week=N&textbook_id=...。
-   * 返回的章节缓存到 _textbookChapters（供教材切换与后续索引/展示使用）。
-   */
-  public async loadTextbookForWeek(week: number): Promise<TextbookChapter[]> {
-    if (!this._currentTextbookId) return []
-    const targetWeek = clampWeek(week)
-    const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}&textbook_id=${encodeURIComponent(this._currentTextbookId)}`
-    try {
-      const resp = await fetch(url)
-      if (!resp.ok) {
-        Logger.warn(`[LLMWikiService] 拉取教材章节失败: ${resp.status}`)
-        return this._textbookChapters
-      }
-      const json = (await resp.json()) as { data: WikiChunk[]; textbook_chapters: TextbookChapter[] }
-      this._textbookChapters = json.textbook_chapters ?? []
-      Logger.log(
-        `[LLMWikiService] 教材章节: ${this._textbookChapters.length} 章 (textbookId=${this._currentTextbookId})`,
-      )
-      return this._textbookChapters
-    } catch (e) {
-      Logger.error(`[LLMWikiService] 拉取教材异常:`, e)
-      return this._textbookChapters
-    }
-  }
+	/**
+	 * 拉取教材章节（v2.0）。
+	 * 若 currentTextbookId 为空则跳过；否则请求 GET /api/v1/wiki?max_week=N&textbook_id=...。
+	 * 返回的章节缓存到 _textbookChapters（供教材切换与后续索引/展示使用）。
+	 */
+	public async loadTextbookForWeek(week: number): Promise<TextbookChapter[]> {
+		if (!this._currentTextbookId) return []
+		const targetWeek = clampWeek(week)
+		const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}&textbook_id=${encodeURIComponent(this._currentTextbookId)}`
+		try {
+			const resp = await fetch(url)
+			if (!resp.ok) {
+				Logger.warn(`[LLMWikiService] 拉取教材章节失败: ${resp.status}`)
+				return this._textbookChapters
+			}
+			const json = (await resp.json()) as { data: WikiChunk[]; textbook_chapters: TextbookChapter[] }
+			this._textbookChapters = json.textbook_chapters ?? []
+			Logger.log(`[LLMWikiService] 教材章节: ${this._textbookChapters.length} 章 (textbookId=${this._currentTextbookId})`)
+			return this._textbookChapters
+		} catch (e) {
+			Logger.error(`[LLMWikiService] 拉取教材异常:`, e)
+			return this._textbookChapters
+		}
+	}
 
-  /**
-   * 按周数渐进式拉取 Wiki 资料。
-   * 缓存策略：baseId 维度去重，相同 baseId 不重复请求。
-   *
-   * 【v2.0 增量】同时拉取教材章节（若 currentTextbookId 已设置）。
-   */
-  public async fetchWikiForWeek(week: number): Promise<WikiChunk[]> {
-    const targetWeek = clampWeek(week)
-    this._currentWeek = targetWeek
-    await vscode.workspace
-      .getConfiguration("clineTeaching")
-      .update("currentWeek", targetWeek, vscode.ConfigurationTarget.Global)
+	/**
+	 * 按周数渐进式拉取 Wiki 资料。
+	 * 缓存策略：baseId 维度去重，相同 baseId 不重复请求。
+	 *
+	 * 【v2.0 增量】同时拉取教材章节（若 currentTextbookId 已设置）。
+	 */
+	public async fetchWikiForWeek(week: number): Promise<WikiChunk[]> {
+		const targetWeek = clampWeek(week)
+		this._currentWeek = targetWeek
+		await vscode.workspace
+			.getConfiguration("clineTeaching")
+			.update("currentWeek", targetWeek, vscode.ConfigurationTarget.Global)
 
-    // 内存缓存中已有的 baseId
-    const cached: WikiChunk[] = []
-    for (const arr of this._wikiCache.values()) cached.push(...arr)
+		// 内存缓存中已有的 baseId
+		const cached: WikiChunk[] = []
+		for (const arr of this._wikiCache.values()) cached.push(...arr)
 
-    // 找出未缓存的 baseId（调用后端 max_week 接口一次拿全）
-    // 这里简化：直接 GET /api/v1/wiki?max_week=N 全量拿，缓存里去重
-    // 【v2.0】附加 textbook_id 参数（若已设置），后端会 JOIN 返回 textbook_chapters
-    const tbParam = this._currentTextbookId
-      ? `&textbook_id=${encodeURIComponent(this._currentTextbookId)}`
-      : ""
-    const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}${tbParam}`
-    try {
-      const resp = await fetch(url)
-      if (!resp.ok) {
-        Logger.warn(`[LLMWikiService] 拉取 Wiki 失败: ${resp.status}`)
-        return cached
-      }
-      const json = (await resp.json()) as WikiListResponse & { textbook_chapters?: TextbookChapter[] }
+		// 找出未缓存的 baseId（调用后端 max_week 接口一次拿全）
+		// 这里简化：直接 GET /api/v1/wiki?max_week=N 全量拿，缓存里去重
+		// 【v2.0】附加 textbook_id 参数（若已设置），后端会 JOIN 返回 textbook_chapters
+		const tbParam = this._currentTextbookId ? `&textbook_id=${encodeURIComponent(this._currentTextbookId)}` : ""
+		const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}${tbParam}`
+		try {
+			const resp = await fetch(url)
+			if (!resp.ok) {
+				Logger.warn(`[LLMWikiService] 拉取 Wiki 失败: ${resp.status}`)
+				return cached
+			}
+			const json = (await resp.json()) as WikiListResponse & { textbook_chapters?: TextbookChapter[] }
 
-      // 【v2.0】更新教材章节缓存
-      if (Array.isArray(json.textbook_chapters)) {
-        this._textbookChapters = json.textbook_chapters
-      }
-      const allChunks = json.data ?? []
+			// 【v2.0】更新教材章节缓存
+			if (Array.isArray(json.textbook_chapters)) {
+				this._textbookChapters = json.textbook_chapters
+			}
+			const allChunks = json.data ?? []
 
-      // 按 baseId 聚合
-      const grouped = new Map<string, WikiChunk[]>()
-      for (const c of allChunks) {
-        const baseId = c.id.includes("__chunk") ? c.id.split("__chunk")[0] : c.id
-        if (!grouped.has(baseId)) grouped.set(baseId, [])
-        grouped.get(baseId)!.push(c)
-      }
+			// 按 baseId 聚合
+			const grouped = new Map<string, WikiChunk[]>()
+			for (const c of allChunks) {
+				const baseId = c.id.includes("__chunk") ? c.id.split("__chunk")[0] : c.id
+				if (!grouped.has(baseId)) grouped.set(baseId, [])
+				grouped.get(baseId)!.push(c)
+			}
 
-      // 仅替换对应 baseId 的缓存（保留其他 baseId 不动）
-      for (const [baseId, chunks] of grouped.entries()) {
-        this._wikiCache.set(baseId, chunks)
-      }
+			// 仅替换对应 baseId 的缓存（保留其他 baseId 不动）
+			for (const [baseId, chunks] of grouped.entries()) {
+				this._wikiCache.set(baseId, chunks)
+			}
 
-      // 返回本周数可见的所有 chunk
-      const visible = allChunks.filter((c) => c.applicable_week <= targetWeek)
-      Logger.log(
-        `[LLMWikiService] 拉取成功: max_week=${targetWeek}, chunks=${visible.length}, baseIds=${grouped.size}`,
-      )
-      return visible
-    } catch (e) {
-      Logger.error(`[LLMWikiService] 拉取异常:`, e)
-      return cached
-    }
-  }
-
+			// 返回本周数可见的所有 chunk
+			const visible = allChunks.filter((c) => c.applicable_week <= targetWeek)
+			Logger.log(`[LLMWikiService] 拉取成功: max_week=${targetWeek}, chunks=${visible.length}, baseIds=${grouped.size}`)
+			return visible
+		} catch (e) {
+			Logger.error(`[LLMWikiService] 拉取异常:`, e)
+			return cached
+		}
+	}
 }
 
 // ============================================================================
@@ -398,13 +385,13 @@ const MAX_INDEX_TITLE_CHARS = 60
  *   - 标题**可能含换行/制表符**，直接拼进索引会把排版冲垮（出现两行粘连）。
  */
 function normalizeIndexTitle(raw: string): string {
-  const oneLine = raw.replace(/\s+/g, " ").trim()
-  const noChunkSuffix = oneLine.replace(/\s*\(\d+\/\d+\)$/, "")
-  return noChunkSuffix.length > MAX_INDEX_TITLE_CHARS ? `${noChunkSuffix.slice(0, MAX_INDEX_TITLE_CHARS)}…` : noChunkSuffix
+	const oneLine = raw.replace(/\s+/g, " ").trim()
+	const noChunkSuffix = oneLine.replace(/\s*\(\d+\/\d+\)$/, "")
+	return noChunkSuffix.length > MAX_INDEX_TITLE_CHARS ? `${noChunkSuffix.slice(0, MAX_INDEX_TITLE_CHARS)}…` : noChunkSuffix
 }
 
 function clampWeek(w: number): number {
-  if (Number.isNaN(w) || w < 1) return 1
-  if (w > 18) return 18
-  return Math.floor(w)
+	if (Number.isNaN(w) || w < 1) return 1
+	if (w > 18) return 18
+	return Math.floor(w)
 }

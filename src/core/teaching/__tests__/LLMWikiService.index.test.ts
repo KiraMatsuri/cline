@@ -1,8 +1,8 @@
-import { expect } from "chai";
-import { LLMWikiService } from "../LLMWikiService";
+import { expect } from "chai"
+import { LLMWikiService } from "../LLMWikiService"
 
 describe("LLMWikiService.buildIndexGroups", () => {
-	it("按周聚合标题且不返回超过当前周的资料", () => {
+	it("★【F4】按周聚合标题，且放行超过当前周的资料（索引全周可见）", () => {
 		const svc = LLMWikiService.getInstance()
 		// 直接注入内部缓存（测试用）
 		;(svc as unknown as { _wikiCache: Map<string, unknown[]> })._wikiCache = new Map([
@@ -12,8 +12,9 @@ describe("LLMWikiService.buildIndexGroups", () => {
 		;(svc as unknown as { _currentWeek: number })._currentWeek = 5
 
 		const groups = svc.buildIndexGroups()
-		expect(groups.map((g) => g.week)).to.deep.equal([3])
+		expect(groups.map((g) => g.week)).to.deep.equal([3, 9])
 		expect(groups[0].titles).to.deep.equal(["列表"])
+		expect(groups[1].titles).to.deep.equal(["装饰器"])
 	})
 
 	it("★ 同一周内标题去重，且周序升序", () => {
@@ -21,10 +22,13 @@ describe("LLMWikiService.buildIndexGroups", () => {
 		;(svc as unknown as { _wikiCache: Map<string, unknown[]> })._wikiCache = new Map([
 			["b", [{ id: "b1", title: "装饰器", applicable_week: 5, content: "y" }]],
 			["a", [{ id: "a1", title: "函数基础", applicable_week: 2, content: "x" }]],
-			["c", [
-				{ id: "c1", title: "装饰器", applicable_week: 5, content: "z" },
-				{ id: "c2", title: "函数进阶", applicable_week: 5, content: "w" },
-			]],
+			[
+				"c",
+				[
+					{ id: "c1", title: "装饰器", applicable_week: 5, content: "z" },
+					{ id: "c2", title: "函数进阶", applicable_week: 5, content: "w" },
+				],
+			],
 		])
 		;(svc as unknown as { _currentWeek: number })._currentWeek = 5
 
@@ -110,7 +114,7 @@ describe("LLMWikiService.buildIndexGroups — 教材章节并入（v2.13）", ()
 		setInternals(svc, new Map(), [], 1)
 	})
 
-	it("★ 教材章节同样受教学边界过滤，且与 wiki 标题跨来源去重", () => {
+	it("★【F4】教材章节与 wiki 标题跨来源去重，且不再被周数过滤", () => {
 		const svc = LLMWikiService.getInstance()
 		setInternals(
 			svc,
@@ -123,8 +127,11 @@ describe("LLMWikiService.buildIndexGroups — 教材章节并入（v2.13）", ()
 		)
 
 		const groups = svc.buildIndexGroups()
-		// 第 9 周章节被过滤；wiki 与教材同章（仅 (i/n) 后缀不同）合并为一条
-		expect(groups).to.deep.equal([{ week: 1, titles: ["第1章 变量"] }])
+		// 第 9 周章节不再被过滤（索引全周可见）；wiki 与教材同章（仅 (i/n) 后缀不同）合并为一条
+		expect(groups).to.deep.equal([
+			{ week: 1, titles: ["第1章 变量"] },
+			{ week: 9, titles: ["未来章节"] },
+		])
 
 		setInternals(svc, new Map(), [], 1)
 	})

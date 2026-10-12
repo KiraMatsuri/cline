@@ -14,13 +14,21 @@ describe("buildWikiSystemPrompt", () => {
 	it("★ 必须包含认知边界约束段", () => {
 		const s = buildWikiSystemPrompt(opts)
 		expect(s).to.include("认知边界约束")
-		expect(s).to.include("严禁使用超出第 5 周")
+		expect(s).to.include("第 5 周")
 	})
 
-	it("★ 必须包含「检索为空时不得展开讲解」规则", () => {
+	it("★【F4】检索为空时必须给出 A/B/C 三档策略，而不是一律拒答", () => {
 		const s = buildWikiSystemPrompt(opts)
-		expect(s).to.include("检索结果为空")
-		expect(s).to.include("不要展开讲解")
+		expect(s).to.include("不要一律拒答")
+		expect(s).to.include("【A 在进度内】")
+		expect(s).to.include("【B 超纲、无资料】")
+		expect(s).to.include("【C 超纲、可联网】")
+		// B 档的三个必须项
+		expect(s).to.include("这属于第 N 周内容")
+		expect(s).to.include("前置基础")
+		expect(s).to.include("不给完整可运行实现")
+		// 旧口径的拒答指令必须彻底消失（它是 M2' 失败的指令源）
+		expect(s).to.not.include("不要展开讲解其具体用法")
 	})
 
 	it("包含资料索引且不含全文", () => {
@@ -42,12 +50,12 @@ describe("buildWikiSystemPrompt", () => {
 	it("★ MCP 不可用时仍保留认知边界约束（不得随全文一起去掉）", () => {
 		const s = buildWikiSystemPrompt({ ...opts, mcpAvailable: false })
 		expect(s).to.include("认知边界约束")
-		expect(s).to.include("严禁使用超出第 5 周")
+		expect(s).to.include("第 5 周")
 	})
 
-	it("★ week 越界被 clamp（不泄露后续周）", () => {
+	it("★ week 越界被 clamp 到 18", () => {
 		const s = buildWikiSystemPrompt({ ...opts, week: 99 })
-		expect(s).to.include("严禁使用超出第 18 周")
+		expect(s).to.include("第 18 周")
 		// 索引仍应在（其周次 3/5 都 ≤ 18）
 		expect(s).to.include("第 3 周")
 	})
