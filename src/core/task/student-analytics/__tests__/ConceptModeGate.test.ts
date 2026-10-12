@@ -20,7 +20,7 @@ const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog => ({
 })
 
 const s = (o: Partial<Parameters<typeof nextConceptMode>[1]>) => ({
-	category: undefined as never,
+	category: undefined,
 	studentEdited: false,
 	wantsCompleteImpl: false,
 	...o,
@@ -54,10 +54,15 @@ describe("F3 · 概念模式粘性", () => {
 		st = nextConceptMode(st, s({ category: "debugging" }))
 		expect(st.active).to.equal(false)
 	})
-	it("退出后不会因后续概念提问而自动复活（需重新进入判定）", () => {
+	it("★ 退出后需新的概念信号才可重新进入（非概念提问不得复活）", () => {
 		let st = nextConceptMode(INITIAL_CONCEPT_MODE_STATE, s({ category: "algorithm" }))
 		st = nextConceptMode(st, s({ category: "debugging" }))
+		expect(st.active).to.equal(false)
+		// ① 非概念分类不得复活
 		expect(nextConceptMode(st, s({ category: "other" })).active).to.equal(false)
+		expect(nextConceptMode(st, s({ category: "code_generation", wantsCompleteImpl: true })).active).to.equal(false)
+		// ② 学生再次提出概念问题 ⇒ 按"学生侧分类"口径重新进入
+		expect(nextConceptMode(st, s({ category: "algorithm" })).active).to.equal(true)
 	})
 	it("completeImplDemands 只增不减", () => {
 		let st = nextConceptMode(INITIAL_CONCEPT_MODE_STATE, s({ category: "algorithm" }))
@@ -80,5 +85,35 @@ describe("F3 · 概念模式粘性", () => {
 		// 若 BehaviorMonitor 在这里读分类，概念护栏会被助手侧事件错误撤销。
 		m.ingest(ev({ eventType: "adoption_infer", category: "language_request" }))
 		expect(m.getConceptModeState().active).to.equal(true)
+	})
+
+	it("★ reset() 后概念状态复位", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(ev({ eventType: "task_start", role: "user", category: "algorithm" }))
+		expect(m.getConceptModeState().active).to.equal(true)
+		m.reset()
+		expect(m.getConceptModeState().active).to.equal(false)
+		expect(m.getConceptModeState().completeImplDemands).to.equal(0)
+	})
+
+	it("★ AI 落盘（editor: ai）不得退出概念模式，学生本人编辑才退出", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(ev({ eventType: "task_start", role: "user", category: "explanation" }))
+		m.ingest(ev({ eventType: "code_edit", editor: "ai" }))
+		expect(m.getConceptModeState().active).to.equal(true)
+		m.ingest(ev({ eventType: "code_edit", editor: "user" }))
+		expect(m.getConceptModeState().active).to.equal(false)
+	})
+
+	it("★ CODE_WORK 的四个分类都能退出概念模式（参数化）", () => {
+		for (const category of ["debugging", "refactoring", "testing", "language_request"] as const) {
+			const st = nextConceptMode(INITIAL_CONCEPT_MODE_STATE, {
+				category: "algorithm",
+				studentEdited: false,
+				wantsCompleteImpl: false,
+			})
+			const exited = nextConceptMode(st, { category, studentEdited: false, wantsCompleteImpl: false })
+			expect(exited.active, `category=${category} 应退出概念模式`).to.equal(false)
+		}
 	})
 })

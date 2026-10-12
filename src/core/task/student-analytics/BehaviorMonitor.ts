@@ -108,14 +108,15 @@ export class BehaviorMonitor {
 
 		// 【方案 C-1】只采纳"学生侧"事件的分类：首句提问是 task_start，后续追问是 turn_message。
 		// 助手事件里也带 category，但那是"AI 输出被分成什么"，不能当学生意图用。
-		if (event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")) {
+		// 【F3】该判定同时被下方概念护栏复用 —— 两者必须保持同一"学生侧意图"口径，故只算一次。
+		const isStudentIntent = event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")
+		if (isStudentIntent) {
 			this.currentTaskCategory = event.category
 		}
 
 		// 【F3】概念护栏的任务级粘性：索要完整代码**不退出**。
-		// ⚠️ 分类只在「学生侧」事件上读：实测 adoption_infer 事件也带 category（如 language_request），
-		//    若不加这个门，助手侧事件会误触发 CODE_WORK 退出。与 currentTaskCategory 同一口径。
-		const isStudentIntent = event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")
+		// ⚠️ 分类只在「学生侧」事件上读（isStudentIntent）：实测 adoption_infer 事件也带 category
+		//    （如 language_request），若不加这个门，助手侧事件会误触发 CODE_WORK 退出。
 		this.conceptModeState = nextConceptMode(this.conceptModeState, {
 			category: isStudentIntent ? event.category : undefined,
 			studentEdited: event.eventType === "code_edit" && event.editor !== "ai",

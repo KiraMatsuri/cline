@@ -21,6 +21,11 @@ export interface ConceptModeSignals {
 
 export interface ConceptModeState {
 	active: boolean
+	/**
+	 * 概念模式**存续期间**学生索要「完整实现」的次数。
+	 * 只在 active === true 时递增：护栏一旦退出（学生本人编辑代码 / 意图转向已有具体代码），
+	 * 后续的 code_generation 请求不再计入 —— 它反映的是"护栏顶着多少次压力"，而非全局计数。
+	 */
 	completeImplDemands: number
 }
 

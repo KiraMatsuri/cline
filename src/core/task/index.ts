@@ -73,11 +73,7 @@ import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
 import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
-import {
-	buildConceptModeConstraint,
-	detectConceptModeViolation,
-	isConceptModeCategory,
-} from "@/core/teaching/conceptModeConstraint"
+import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
@@ -1122,10 +1118,13 @@ export class Task {
 
 			// 【方案 C-2】概念问答模式下若给出疑似完整实现，只记录告警（不拦截、不改内容）。
 			// 目的是让"提示词没拦住"这件事在日志里可见 —— 与项目其它地方"失败可见"的原则一致。
+			// ★【F3】可见化门控必须与注入点同一口径：跟随**粘性**护栏（getConceptModeState().active），
+			// 而不是"单轮分类"。粘性护栏可以在单轮分类已不再是概念类的后续回合里继续保持激活；
+			// 若这里仍按单轮分类判定，恰恰在"学生反复索要完整代码 ⇒ 该轮被重分类为 code_generation"
+			// 这个最需要暴露违规的场景下，违规日志会被整段跳过（护栏在、可见化没了）。
 			try {
-				const monitor = this.getBehaviorMonitor()
-				const category = monitor?.getTaskCategory()
-				if (isConceptModeCategory(category)) {
+				const conceptState = this.getBehaviorMonitor()?.getConceptModeState()
+				if (conceptState?.active) {
 					const violation = detectConceptModeViolation(assistantText)
 					if (violation.violated) {
 						Logger.warn(
