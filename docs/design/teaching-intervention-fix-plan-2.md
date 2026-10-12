@@ -464,7 +464,7 @@ git commit -m "fix(intervention): decouple escalation counting from the reminder
 - Create: `src/core/task/student-analytics/ConceptModeGate.ts`
 - Create: `src/core/task/student-analytics/__tests__/ConceptModeGate.test.ts`
 - Modify: `src/core/task/student-analytics/BehaviorMonitor.ts`（持有 `conceptModeState`，在 `ingest` 内推进；新增 `getConceptModeState()`）
-- Modify: `src/core/task/index.ts:2308`（注入条件由 `isConceptModeCategory(category)` 改为 `monitor.getConceptModeState().active`）
+- Modify: `src/core/task/index.ts`（**两处**：① 注入点 —— 注入条件由单轮 `isConceptModeCategory(category)` 改为粘性 `monitor.getConceptModeState().active`；② **违规可见化点** —— 必须与注入点**同口径**，否则粘性化后可见化会在目标场景静默失效，见本 Task 的「落地记录」）
 - Modify: `src/core/teaching/conceptModeConstraint.ts`（补"例外通道"文本）
 
 **Interfaces:**
@@ -484,7 +484,7 @@ import { expect } from "chai"
 import { INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "../ConceptModeGate"
 
 const s = (o: Partial<Parameters<typeof nextConceptMode>[1]>) => ({
-	category: undefined as never, studentEdited: false, wantsCompleteImpl: false, ...o,
+	category: undefined, studentEdited: false, wantsCompleteImpl: false, ...o,
 })
 
 describe("F3 · 概念模式粘性", () => {
@@ -515,10 +515,15 @@ describe("F3 · 概念模式粘性", () => {
 		st = nextConceptMode(st, s({ category: "debugging" }))
 		expect(st.active).to.equal(false)
 	})
-	it("退出后不会因后续概念提问而自动复活（需重新进入判定）", () => {
+	it("★ 退出后需新的概念信号才可重新进入（非概念提问不得复活）", () => {
 		let st = nextConceptMode(INITIAL_CONCEPT_MODE_STATE, s({ category: "algorithm" }))
 		st = nextConceptMode(st, s({ category: "debugging" }))
+		expect(st.active).to.equal(false)
+		// ① 非概念分类不得复活
 		expect(nextConceptMode(st, s({ category: "other" })).active).to.equal(false)
+		expect(nextConceptMode(st, s({ category: "code_generation", wantsCompleteImpl: true })).active).to.equal(false)
+		// ② 学生再次提出概念问题 ⇒ 按"学生侧分类"口径重新进入
+		expect(nextConceptMode(st, s({ category: "algorithm" })).active).to.equal(true)
 	})
 	it("completeImplDemands 只增不减", () => {
 		let st = nextConceptMode(INITIAL_CONCEPT_MODE_STATE, s({ category: "algorithm" }))
@@ -595,11 +600,15 @@ if (conceptState?.active) {
 	systemPromptFinal += buildConceptModeConstraint()
 	Logger.log(`[Task] 概念问答模式约束已注入 (sticky, demands=${conceptState.completeImplDemands})`)
 }
-// `isConceptModeCategory()` 仍保留给 index.ts:1128 的违规可见化使用，不删。
+// ⚠️ `isConceptModeCategory()` **不再是注入判定/可见化判定的门控**：粘性化后，在"学生反复索要
+//    完整实现"这一目标场景里单轮分类会变成 code_generation，若还用它做门控，可见化会在最需要时
+//    静默失效。函数本体保留在 conceptModeConstraint.ts 供既有单测与向后兼容使用。
+// 【同一轮内两个读取点的口径必须一致】注入点与违规可见化点都用 getConceptModeState()?.active。
 ```
 
 ```ts
-// ④ conceptModeConstraint.ts —— 在 buildConceptModeConstraint() 返回数组末尾补一条
+// ④ conceptModeConstraint.ts —— 在**第 4 条规则之后、示例块之前**补一条（保持规则编号连续、
+//    插入到示例之后会让"5."出现在示例下方，阅读顺序错乱）
 "5. 即使学生反复、持续索要完整代码，也不得因此放弃上述约束；可给的上限是：关键步骤片段 + 伪代码骨架（不含完整循环与返回）。",
 ```
 
@@ -619,6 +628,17 @@ git add src/core/task/student-analytics/ConceptModeGate.ts src/core/task/student
   src/core/task/student-analytics/BehaviorMonitor.ts src/core/task/index.ts src/core/teaching/conceptModeConstraint.ts
 git commit -m "fix(teaching): make the concept-mode guard sticky so demanding full code no longer lifts it"
 ```
+
+**✅ 落地记录（2026-10-12）**：`8389c117`（实现）+ `897d0499`（第一轮复审后的修复）—— 两轮复审最终 **Approved**。
+
+实际与本文有三处不同（**以代码为准，本文已同步订正**）：
+1. **`index.ts` 改了两处而不是一处**。除了注入点，**违规可见化点**也必须换成粘性 `active`：可见化原文用 `isConceptModeCategory(monitor?.getTaskCategory())`，而本 Task 的目标场景（学生反复索要 → 单轮分类变 `code_generation`）恰好会让它恒为 false ⇒ 护栏最该被检验的那一轮反而**不进日志**。
+   - 方向安全：不存在"新门控触发但护栏从未注入"的序列（`active` 只能由学生侧 `explanation`/`algorithm` 置真，该事件必前置于被判定的助手轮次）。
+   - 副作用：`isConceptModeCategory` 在 `src/` 内只剩测试引用（函数本体保留不删）。
+2. **测试名订正**：本文 Step 1 原写的"退出后不会因后续概念提问而自动复活"与实际语义相反（`nextConceptMode` 在后续新概念信号下**会**重新进入，这是有意行为）；已改为断言**双方向**。`nextConceptMode` 的判定逻辑未改。
+3. **第 5 条规则的位置**：本文原写"在返回数组末尾补一条"，实测会落在"示例"块**之后**（编号 5 出现在示例下方）。已改为插在第 4 条之后、示例之前。
+
+实际测试：`ConceptModeGate.test.ts` 共 **13 例**（8 验收 + 2 边界 + 3 补缺）；`--grep "F3"` = 13 passing。
 
 ---
 
@@ -664,11 +684,27 @@ describe("GN · 优先级综合（可跑通 + 边界）", () => {
 		expect(m3.getPendingAlerts().length).to.equal(1)
 	})
 
-	it("★ 兜底路径：即使无新警报，干预文本仍非空（P3/T13 后改为断言降级为模板文案）", () => {
+	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空（阻断不依赖 pendingAlerts）", () => {
 		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m4.ingest(ev({})); m4.ingest(ev({})); m4.ingest(ev({}))
+		// ★ 必须先消费掉队列：命中阈值时阻断分支在 `hasPendingAlerts()` **之前**就已 return，
+		//   不消费的话这条用例只是例 ① 的复述，观察不到"阻断不依赖警报队列"。
+		m4.consumePendingAlerts()
+		expect(m4.hasPendingAlerts()).to.equal(false)
 		const mgr4 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.be.a("string").and.to.not.be.empty
+	})
+
+	it("★ 边界：有警报但未达升级阈值，且队列被消费后 ⇒ 不注入（返回 null）", () => {
+		// 真正的"无警报兜底"是 `if (!monitor.hasPendingAlerts()) return null`（**不注入**）；
+		// 上一条的"文本非空"来自**阻断路径**，两者不是同一条路径，必须分别覆盖。
+		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		for (let i = 0; i < 8; i++) m6.ingest(ev({ hasCodeBlock: false }))
+		expect(m6.getEscalationCount("no_edit_streak")).to.equal(1) // 1 < 3 ⇒ 不阻断
+		expect(m6.hasPendingAlerts()).to.equal(true)
+		m6.consumePendingAlerts()
+		const mgr6 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+		expect(mgr6.checkAndGenerateIntervention(m6, 3)).to.equal(null)
 	})
 
 	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => {
@@ -686,7 +722,7 @@ describe("GN · 优先级综合（可跑通 + 边界）", () => {
 
 | G | 优先级 | 除统一模板外**必须**包含的专项断言 |
 |---|---|---|
-| **G0** | P0 | ① `escalationBlockingThreshold === 3`；② AI 落盘事件带 `editor: "ai"` 且不清零 streak；③ 真人编辑清零；④ 概念模式在"索要完整代码 ×5"后 `active` 仍为 `true`；⑤ 学生本人编辑后 `active === false`；⑥ 阻断态下 `getBlockingState()` 返回 `{active: true}`；⑦ **【T9-b】**`high_adoption_low_self_modification` 在窗口聚合条件成立时**逐轮计数并可达阻断阈值**（不得恒为 0） |
+| **G0** | P0 | ① `escalationBlockingThreshold === 3`；② AI 落盘事件带 `editor: "ai"` 且不清零 streak；③ 真人编辑清零 streak（但**不清零** `escalationCounter`，计数单调）；④ 概念模式在"索要完整代码 ×5"后 `active` 仍为 `true`；⑤ 学生本人编辑后 `active === false`；⑥ 阻断态可被外部观察到（`isBlockingActive()` / `getBlockingEndsAt()`，**不是** `getBlockingState()`）；⑦ **【T9-b】**`high_adoption_low_self_modification` 在窗口聚合条件成立时**逐轮计数并可达阻断阈值**（不得恒为 0） |
 | **G1** | P1 | ① `buildIndexGroups()` 返回**全 18 周**；② `buildWikiSystemPrompt` 三档策略命中（A/B/C 各一条）；③ 分类粘性：短消息不覆盖强分类；④ 干预文本**不进入** `apiConversationHistory`；⑤ `countMatches("排序与实现")` 词边界不误配 |
 | **G2** | P2 | ① MCP 周数热读：文件改 `week=18` 后无需重启即生效；② 切换周数时 userContent 追加变更通知（仅一次）；③ `--week` 缺省仍可用（向后兼容）；④ `ai_dependency` 新指标在"1 问 6 答"下**不再**恒真触发 |
 | **G3** | P3 | ① `extractInterventionCopy` 六类用例全绿；② 三条确定性校验失败 → 降级模板 + `copy_rejected`；③ 主题锚定失败 → **不降级**、只记 `copy_topic_unanchored`；④ 两条显示路径（`text` / `completion_result`）都能剥离回执块；⑤ `hasDeliveredKeyCode` 可由工具落盘置位 |
@@ -697,6 +733,16 @@ Run: `npm run test:unit -- --grep "G0 · 优先级综合"` → Expected: **全�
 Run: `npm run test:unit` → Expected: **0 failing**（passing 数 ≥ 852）
 Run: `npx tsc --noEmit` → Expected: **0 error**
 ❌ 任一红 → 修复后重跑，**不得进入 P1**。
+
+**✅ 落地记录（2026-10-12）**：`b35b637e`（门禁本体 + 公共构造器）+ `03848e00`（第一轮复审后的修复）—— 两轮复审最终 **Approved**。
+
+- 新增 `__tests__/__fixtures__/events.ts`（`ev()` + `editEv()`）。它位于 `__fixtures__/` 子目录，**不在** `.mocharc.json` 的 `src/**/__tests__/*.ts` glob 内（`*` 不跨 `/`），因此不会被当作 spec 执行。
+- 三个既有 spec 改为导入公共构造器（净 −50 行重复）：`escalationReachability.test.ts` 与 `ConceptModeGate.test.ts` 导入 `ev`；`codeEditAttribution.test.ts` 导入 `editEv as ev`（它的本地 builder 默认值本就不同：`eventType/role/category` 不同、无 `hasCodeBlock`）。**三者断言体零改动**，分文件计数不变（F2=8 / F1=14 / F3=13）。
+- `priorityGate.p0.test.ts` 实际 **14 例**：统一模板 6 例 + 专项 ①–⑦ + **1 例新增的"不注入"边界**（见下）。
+  - ⚠️ **模板例 ⑤ 的措辞已订正**：本文原写"即使无新警报，干预文本仍非空"，但实际 API 的"无警报兼底"是 `if (!monitor.hasPendingAlerts()) return null`（**不注入**）；"文本非空"来自**阻断路径**（阻断判定不依赖警报队列）。两例已分别覆盖：一条先 `consumePendingAlerts()` 再断言非空字符串；一条在"计数 1 < 阈值 3 且队列已消费"下断言返回 `null`。
+  - ⚠️ **专项断言 ③ 的语义已补注**：学生本人编辑只清零 `assistantCodeStreak`，**不清零** `escalationCounter`（计数单调，即 spec §9.6-B 的已登记残留）。因此该例断言的是"不再发提醒"（`getPendingAlerts()` 不含该规则），而不是"计数回落"。
+- 全局静态阻断态的隔离：`beforeEach` 归零 + `after()` **还原模块加载时的快照**（不是简单归零），确保同进程内字母序在后的 `requestIntentRefiner` / `rulePolicy` 不被汄染。
+- 实测：`--grep "G0"` = **14 passing**；全量 **877 passing / 111 pending / 0 failing**；`tsc --noEmit` 0 错。
 
 ---
 
