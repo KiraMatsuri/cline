@@ -9,8 +9,8 @@ describe("干预参数基线（方案 D 止血）", () => {
 		expect(MANAGER_DEFAULTS.blockingCooldownMs).to.equal(60_000)
 	})
 
-	it("★ 同规则升级阈值 6（原 4），且两处副本必须一致", () => {
-		expect(MONITOR_DEFAULTS.escalationBlockingThreshold).to.equal(6)
+	it("★ 同规则升级阈值 3（原 4 → 6 → 3），且两处副本必须一致", () => {
+		expect(MONITOR_DEFAULTS.escalationBlockingThreshold).to.equal(3)
 		// TeachingInterventionManager 的这份从未被读取（升级判定走 monitor.shouldEscalateToBlocking），
 		// 两份不一致会造成"改了值却没生效"且无任何报错 —— 用测试锁住。
 		expect(MANAGER_DEFAULTS.escalationBlockingThreshold).to.equal(MONITOR_DEFAULTS.escalationBlockingThreshold)

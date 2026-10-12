@@ -22,7 +22,7 @@ export interface BehaviorMonitorOptions {
 	adoptionRateThreshold?: number
 	selfModificationThreshold?: number
 	minAdoptionSamples?: number
-	/** 触发阻断式干预的同规则累计次数阈值（默认 6 次） */
+	/** 触发阻断式干预的同规则累计次数阈值（默认 3 次） */
 	escalationBlockingThreshold?: number
 }
 
@@ -45,9 +45,9 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	adoptionRateThreshold: 0.7,
 	selfModificationThreshold: 0.25,
 	minAdoptionSamples: 2,
-	// 【方案 D 止血】4 → 6。★ 权威值在本文件：升级判定走 shouldEscalateToBlocking()，
-	// TeachingInterventionManager 里那份同名配置从未被读取。
-	escalationBlockingThreshold: 6,
+	// 【F1】6 → 3：对齐「第 3 次违规即阻断」的验收口径。★ 权威值在本文件：升级判定走
+	// shouldEscalateToBlocking()，TeachingInterventionManager 里那份同名配置从未被读取。
+	escalationBlockingThreshold: 3,
 })
 
 export class BehaviorMonitor {
@@ -109,7 +109,7 @@ export class BehaviorMonitor {
 		}
 
 		this.updateRealtimeStreaks(event)
-		this.evaluateRules()
+		this.evaluateRules(event)
 	}
 
 	private updateRealtimeStreaks(event: StudentInteractionLog): void {
@@ -157,19 +157,20 @@ export class BehaviorMonitor {
 		}
 	}
 
-	private evaluateRules(): void {
+	private evaluateRules(event: StudentInteractionLog): void {
 		// 【方案 C-1】按学生意图分流：概念问答下停用代码类规则。
-		// ⚠️ 本门控只停用「评估」，**不停用「计数」**：updateRealtimeStreaks() 仍在每次 ingest 时推进
-		// assistantCodeStreak / turnsSinceLastEdit。因此一旦 C-3 翻转把学生重分类为 code_generation，
-		// 下一个助手回合就可能直接触发 consecutive_code_generation 并开始升级 —— 这是**有意行为**
-		// （回归场景 5 断言此点），不是 bug。
+		// ⚠️ 【F1】升级计数已从 notify() 移入被本门控包裹的 check*Rule()，因此门控现在**同时停用
+		// 「评估」与「计数」**（这也是「概念问答下不可升级」断言的依据）。updateRealtimeStreaks()
+		// 仍会在每次 ingest 时推进 assistantCodeStreak / turnsSinceLastEdit，所以一旦 C-3 翻转把学生
+		// 重分类为 code_generation，下一个助手回合就可能触发 consecutive_code_generation 并重新开始计数
+		// —— 这是**有意行为**（回归场景 5 断言此点），不是 bug。
 		const policy = (ruleId: BehaviorRuleId): boolean => getRulePolicy(ruleId, this.currentTaskCategory).enabled
 
 		if (policy("consecutive_code_generation")) {
-			this.checkConsecutiveCodeGenerationRule()
+			this.checkConsecutiveCodeGenerationRule(event)
 		}
 		if (policy("no_edit_streak")) {
-			this.checkNoEditStreakRule()
+			this.checkNoEditStreakRule(event)
 		}
 		if (policy("high_adoption_low_self_modification")) {
 			this.checkHighAdoptionLowSelfModificationRule()
@@ -179,7 +180,27 @@ export class BehaviorMonitor {
 		}
 	}
 
-	private checkConsecutiveCodeGenerationRule(): void {
+	/**
+	 * 【F1】该事件是否构成一次「代码生成违规」计数。
+	 * 违规单位 = **一个推进 assistantCodeStreak 的 turn_message**：助手回合且携带真实（fenced）代码块。
+	 * 其它事件（user turn_message / adoption_infer / file_save / code_edit / task_start）不计 ——
+	 * 否则单轮会因伴随事件被重复计数，或“学生提问”本身就把升级阈值推满（方案 D 想避免的情况）。
+	 */
+	private isAssistantCodeTurn(event: StudentInteractionLog): boolean {
+		if (event.eventType !== "turn_message" || event.role !== "assistant") {
+			return false
+		}
+		// 与 updateRealtimeStreaks() 保持同一判定：缺少 hasCodeBlock 的旧事件回退到 hasCode
+		return event.hasCodeBlock ?? event.hasCode
+	}
+
+	private checkConsecutiveCodeGenerationRule(event: StudentInteractionLog): void {
+		// 【F1】★ 计数与提醒冷却/阈值解耦：命中的回合当即计一次，不受 cooldownMs 影响；
+		// 下面的 streak 阈值只在决定「是否发提醒」时生效。
+		if (this.isAssistantCodeTurn(event)) {
+			this.bumpEscalation("consecutive_code_generation")
+		}
+
 		if (this.assistantCodeStreak < this.options.consecutiveAssistantCodeThreshold) {
 			return
 		}
@@ -192,7 +213,13 @@ export class BehaviorMonitor {
 		)
 	}
 
-	private checkNoEditStreakRule(): void {
+	private checkNoEditStreakRule(event: StudentInteractionLog): void {
+		// 【F1】★ 违规单位 = 任意 turn_message（它总会推进 turnsSinceLastEdit）；
+		// 计数不受提醒冷却/阈值影响，阈值只在决定「是否发提醒」时生效。
+		if (event.eventType === "turn_message") {
+			this.bumpEscalation("no_edit_streak")
+		}
+
 		if (this.turnsSinceLastEdit < this.options.noEditTurnStreakThreshold) {
 			return
 		}
@@ -203,6 +230,16 @@ export class BehaviorMonitor {
 			this.turnsSinceLastEdit,
 			this.options.noEditTurnStreakThreshold,
 		)
+	}
+
+	/**
+	 * 【F1】累加某规则的升级计数并返回新值。
+	 * 与 notify() 解耦：提醒受 cooldownMs 节流，计数不受任何冷却影响。
+	 */
+	private bumpEscalation(ruleId: BehaviorRuleId): number {
+		const n = (this.escalationCounter[ruleId] ?? 0) + 1
+		this.escalationCounter[ruleId] = n
+		return n
 	}
 
 	private checkHighAdoptionLowSelfModificationRule(): void {
@@ -295,9 +332,9 @@ export class BehaviorMonitor {
 
 		this.lastReminderAt[ruleId] = now
 
-		// 递增同规则累计触发次数（用于阻断式干预升级判定）
-		const escalationCount = (this.escalationCounter[ruleId] ?? 0) + 1
-		this.escalationCounter[ruleId] = escalationCount
+		// 【F1】冷却只挡提示，不再挡计数：计数已由 check*Rule() 在冷却之外完成，
+		// 此处仅读取当前累计值（原为 `?? 0) + 1`，导致阈值被 120s 冷却结构性锁死）。
+		const escalationCount = this.getEscalationCount(ruleId)
 
 		Logger.info(
 			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.options.escalationBlockingThreshold})`,
@@ -349,6 +386,14 @@ export class BehaviorMonitor {
 	 */
 	public getEscalationCount(ruleId: BehaviorRuleId): number {
 		return this.escalationCounter[ruleId] ?? 0
+	}
+
+	/**
+	 * 【F1】列出当前已达到阻断升级阈值的规则 ID（供 TeachingInterventionManager 使用）。
+	 * 阻断判定不依赖 pendingAlerts，因此提醒队列为空时仍可升级。
+	 */
+	public getRuleIdsAtBlockingThreshold(): BehaviorRuleId[] {
+		return (Object.keys(this.escalationCounter) as BehaviorRuleId[]).filter((ruleId) => this.shouldEscalateToBlocking(ruleId))
 	}
 
 	/**

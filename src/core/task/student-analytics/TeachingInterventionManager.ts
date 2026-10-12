@@ -37,7 +37,8 @@ export const DEFAULT_OPTIONS: Readonly<Required<InterventionManagerOptions>> = O
 	logToOutputChannel: true,
 	// ⚠️ 本项在管理器内**从未被读取**（升级判定走 monitor.shouldEscalateToBlocking）。
 	// 保留是为了与 BehaviorMonitor 的值保持一致；改升级阈值请改 BehaviorMonitor。
-	escalationBlockingThreshold: 6,
+	// 【F1】6 → 3：与 BehaviorMonitor.DEFAULT_OPTIONS 同步（见 __tests__/interventionParams.test.ts）。
+	escalationBlockingThreshold: 3,
 	// 【方案 D 止血】180_000 → 60_000。阻隔 3 分钟对"概念问答误触发"场景过重。
 	blockingCooldownMs: 60_000,
 })
@@ -125,6 +126,26 @@ export class TeachingInterventionManager {
 			TeachingInterventionManager.globalLastBlockingIntervention = null
 		}
 
+		// ===== 阻断升级（独立入口）=====
+		// 【F1】阻断判定不依赖 pendingAlerts：只要某条规则的累计违规数达到阈值，
+		// 即使提醒因冷却未入队 / 已被消费，也在此升级为阻断。
+		const blockingRule = monitor.getRuleIdsAtBlockingThreshold()[0]
+		if (blockingRule) {
+			const count = monitor.getEscalationCount(blockingRule)
+			return this.triggerBlocking(
+				monitor,
+				{
+					ruleId: blockingRule,
+					message: "",
+					triggeredAt: new Date().toISOString(),
+					metricValue: count,
+					threshold: monitor.getEscalationBlockingThreshold(),
+					escalationCount: count,
+				},
+				turnIndex,
+			)
+		}
+
 		// 检查是否有待处理的警报
 		if (!monitor.hasPendingAlerts()) {
 			return null
@@ -160,63 +181,69 @@ export class TeachingInterventionManager {
 			return null
 		}
 
-		// 检查是否有警报达到了阻断升级阈值
-		const blockingAlert = alerts.find((alert) =>
-			monitor.shouldEscalateToBlocking(alert.ruleId),
-		)
-
 		let intervention: InterventionMessage
 		let injectionText: string
 
+		// 【F1】防御性回退：上面的 getRuleIdsAtBlockingThreshold() 入口已覆盖此情形。
+		// 保留 alerts 侧判定并复用同一个 triggerBlocking()，避免两处阻断分支漂移（DRY）。
+		const blockingAlert = alerts.find((alert) => monitor.shouldEscalateToBlocking(alert.ruleId))
 		if (blockingAlert) {
-			// ===== 阻断式干预 =====
-			intervention = generateBlockingInterventionMessage(
-				blockingAlert,
-				this.options.blockingCooldownMs,
-			)
-
-			// 标记阻断已触发
-			monitor.markBlockingTriggered()
-			this.blockingActive = true
-			this.blockingEndsAt = Date.now() + this.options.blockingCooldownMs
-
-			// 【v2.7】同步全局阻断状态（退出/新建对话后仍生效）
-			TeachingInterventionManager.globalBlockingEndsAt = this.blockingEndsAt
-			TeachingInterventionManager.globalLastBlockingIntervention = intervention
-
-			// 保存阻断干预消息（用于冷却期间展示提醒）
-			this.lastBlockingIntervention = intervention
-
-			// 格式化为注入文本
-			injectionText = formatInterventionForInjection(intervention)
-
-			Logger.info(
-				`[TeachingIntervention][${this.taskId}] BLOCKING INTERVENTION triggered: rule=${intervention.ruleId}, ` +
-				`escalationCount=${blockingAlert.escalationCount}, disabledFeatures=${intervention.disabledFeatures?.join(",")}, ` +
-				`cooldown=${intervention.countdownSeconds}s`,
-			)
-		} else {
-			// ===== 普通提示式干预 =====
-			const eligibleAlerts = alerts.filter((alert) => this.isRuleCooldownExpired(alert.ruleId))
-			if (eligibleAlerts.length === 0) {
-				Logger.info(`[TeachingIntervention][${this.taskId}] skipped: all alerts in rule-level cooldown`)
-				return null
-			}
-
-			const priorityAlert = this.selectHighestPriorityAlert(eligibleAlerts)
-			intervention = generateInterventionMessage(
-				priorityAlert,
-				this.options.preferredStyle,
-				this.options.globalCooldownMs,
-			)
-			injectionText = formatInterventionForInjection(intervention)
-
-			if (this.options.logToOutputChannel) {
-				Logger.info(
-					`[TeachingIntervention][${this.taskId}] INJECTING intervention: rule=${intervention.ruleId}, severity=${intervention.severity}, style=${intervention.style}, escalationCount=${priorityAlert.escalationCount}`,
-				)
-			}
+			return this.triggerBlocking(monitor, blockingAlert, turnIndex)
 		}
+
+		// ===== 普通提示式干预 =====
+		const eligibleAlerts = alerts.filter((alert) => this.isRuleCooldownExpired(alert.ruleId))
+		if (eligibleAlerts.length === 0) {
+			Logger.info(`[TeachingIntervention][${this.taskId}] skipped: all alerts in rule-level cooldown`)
+			return null
+		}
+
+		const priorityAlert = this.selectHighestPriorityAlert(eligibleAlerts)
+		intervention = generateInterventionMessage(priorityAlert, this.options.preferredStyle, this.options.globalCooldownMs)
+		injectionText = formatInterventionForInjection(intervention)
+
+		if (this.options.logToOutputChannel) {
+			Logger.info(
+				`[TeachingIntervention][${this.taskId}] INJECTING intervention: rule=${intervention.ruleId}, severity=${intervention.severity}, style=${intervention.style}, escalationCount=${priorityAlert.escalationCount}`,
+			)
+		}
+
+		// 记录干预
+		this.recordIntervention(intervention, turnIndex)
+
+		return injectionText
+	}
+
+	/**
+	 * 【F1】触发阻断式干预。
+	 *
+	 * 从 checkAndGenerateIntervention() 抽出（原为内联分支），供两个入口复用：
+	 *   ① 阈值式入口（getRuleIdsAtBlockingThreshold）—— 不依赖提醒队列；
+	 *   ② alerts 侧回退入口 —— 保持原有行为。
+	 */
+	private triggerBlocking(monitor: BehaviorMonitor, alert: BehaviorAlert, turnIndex: number): string {
+		const intervention = generateBlockingInterventionMessage(alert, this.options.blockingCooldownMs)
+
+		// 标记阻断已触发
+		monitor.markBlockingTriggered()
+		this.blockingActive = true
+		this.blockingEndsAt = Date.now() + this.options.blockingCooldownMs
+
+		// 【v2.7】同步全局阻断状态（退出/新建对话后仍生效）
+		TeachingInterventionManager.globalBlockingEndsAt = this.blockingEndsAt
+		TeachingInterventionManager.globalLastBlockingIntervention = intervention
+
+		// 保存阻断干预消息（用于冷却期间展示提醒）
+		this.lastBlockingIntervention = intervention
+
+		// 格式化为注入文本
+		const injectionText = formatInterventionForInjection(intervention)
+
+		Logger.info(
+			`[TeachingIntervention][${this.taskId}] BLOCKING INTERVENTION triggered: rule=${intervention.ruleId}, ` +
+				`escalationCount=${alert.escalationCount}, disabledFeatures=${intervention.disabledFeatures?.join(",")}, ` +
+				`cooldown=${intervention.countdownSeconds}s`,
+		)
 
 		// 记录干预
 		this.recordIntervention(intervention, turnIndex)
