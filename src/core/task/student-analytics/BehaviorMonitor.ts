@@ -214,14 +214,16 @@ export class BehaviorMonitor {
 	}
 
 	private checkNoEditStreakRule(event: StudentInteractionLog): void {
-		// 【F1】★ 违规单位 = 任意 turn_message（它总会推进 turnsSinceLastEdit）；
-		// 计数不受提醒冷却/阈值影响，阈值只在决定「是否发提醒」时生效。
-		if (event.eventType === "turn_message") {
-			this.bumpEscalation("no_edit_streak")
-		}
-
+		// 【F1-fix】★ 违规单位 = **规则条件成立的那一个 turn_message**（turnsSinceLastEdit >= 阈值），
+		// 不是「任意 turn_message」。旧写法在条件判断**之前**无条件 bump，等于每来一个回合就记一次违规：
+		// 阈值 3 时学生「边改代码边提问」问到第 3 句就被误阻断（且学生真的编辑时计数器并不归零）。
+		// 计数仍与提醒冷却解耦（不受 cooldownMs 影响），阈值也仍在决定「是否发提醒」时生效。
 		if (this.turnsSinceLastEdit < this.options.noEditTurnStreakThreshold) {
 			return
+		}
+
+		if (event.eventType === "turn_message") {
+			this.bumpEscalation("no_edit_streak")
 		}
 
 		this.notify(

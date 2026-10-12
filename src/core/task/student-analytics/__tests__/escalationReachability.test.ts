@@ -113,6 +113,29 @@ describe("F1 · 升级阈值可达性", () => {
 		expect(m.getPendingAlerts().length).to.equal(0)
 	})
 
+	it("★ 学生持续动手时，no_edit_streak 不得累积升级（否则会被误阻断）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		// 5 个回合，每个回合之间都有"学生本人"的代码编辑 → turnsSinceLastEdit 始终 < 8
+		for (let i = 0; i < 5; i++) {
+			m.ingest(ev({ eventType: "turn_message", role: "user", category: "code_generation" }))
+			m.ingest(ev({ eventType: "code_edit", editor: "user" }))
+		}
+		expect(m.getEscalationCount("no_edit_streak")).to.equal(0)
+		expect(m.shouldEscalateToBlocking("no_edit_streak")).to.equal(false)
+	})
+
+	it("★ 真正连续 8 轮未编辑后，no_edit_streak 才逐轮累积", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3, noEditTurnStreakThreshold: 8 })
+		for (let i = 0; i < 8; i++) {
+			m.ingest(ev({ eventType: "turn_message", role: "assistant" }))
+		}
+		expect(m.getEscalationCount("no_edit_streak")).to.equal(1) // 第 8 轮才首次命中
+		m.ingest(ev({ eventType: "turn_message", role: "assistant" }))
+		m.ingest(ev({ eventType: "turn_message", role: "assistant" }))
+		expect(m.getEscalationCount("no_edit_streak")).to.equal(3)
+		expect(m.shouldEscalateToBlocking("no_edit_streak")).to.equal(true)
+	})
+
 	// 必须挂在 describe 内部：顶层的 after() 属于**根套件**，要等到整个运行结束才执行，
 	// 而这里需要在下一个 spec 文件（interventionRegression）加载前就把全局态复位。
 	after(() => {
