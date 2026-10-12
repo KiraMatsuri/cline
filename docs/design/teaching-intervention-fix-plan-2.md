@@ -78,7 +78,7 @@
 ## 2. 执行顺序与门槛
 
 ```
-P0：T2(F2) → T1(F1) → T3(F3)         → G0  综合
+P0：T2(F2) → T1(F1) → T9-b(F1回归) → T3(F3)  → G0  综合
 P1：T4(F4) → T5(F5) → T6(F6)         → G1  综合
 P2：T7(F7) → T8(F8) → T9(F9)         → G2  综合
 P3：T10(F10) → T11(F11) → T13(F13)   → G3  综合
@@ -93,8 +93,9 @@ P4：T12(F12 方言归一化)               → G4  综合
                                          ↓
                                  人工验收 M1–M14'
 ```
-
 - **P0 内部顺序为 F2 → F1 → F3**：F2 让 AI 落盘不再清零 streak，F1 才谈得上"计数可达"；F3 让护栏不被索要撤销。顺序颠倒会导致 T1 的测试无法构造出"3 次索要即阻断"。
+- **T9-b 前提到 P0 收尾（T1 之后、T3 之前）**：它是 **F1 自身引入的回归**（`notify()` 移出计数后 `high_adoption_low_self_modification` 计数恒为 0），属于 T1 的完整交付范围；放在 P0 可让 **G0 直接覆盖该回归**。
+  - 若留在 P2 才修，则 P0/P1 的综合性门禁会在"已知能力回退"状态下通过，意义打折。
 - **P4（F12）必须最后做**：它改的是**感知层**（`parseAssistantMessageV2` 的输入），一旦出错会连带影响**所有**工具调用，因此：
   1. 只有在 **G-ALL（P0–P3）全绿**之后才能开工；
   2. 开工前必须先做 **git 存档**：`git commit -am "chore: checkpoint before P4 dialect normalization"` + `git tag -a pre-f12-checkpoint -m "G-ALL (P0-P3) 全绿基线"`；
@@ -685,7 +686,7 @@ describe("GN · 优先级综合（可跑通 + 边界）", () => {
 
 | G | 优先级 | 除统一模板外**必须**包含的专项断言 |
 |---|---|---|
-| **G0** | P0 | ① `escalationBlockingThreshold === 3`；② AI 落盘事件带 `editor: "ai"` 且不清零 streak；③ 真人编辑清零；④ 概念模式在"索要完整代码 ×5"后 `active` 仍为 `true`；⑤ 学生本人编辑后 `active === false`；⑥ 阻断态下 `getBlockingState()` 返回 `{active: true}` |
+| **G0** | P0 | ① `escalationBlockingThreshold === 3`；② AI 落盘事件带 `editor: "ai"` 且不清零 streak；③ 真人编辑清零；④ 概念模式在"索要完整代码 ×5"后 `active` 仍为 `true`；⑤ 学生本人编辑后 `active === false`；⑥ 阻断态下 `getBlockingState()` 返回 `{active: true}`；⑦ **【T9-b】**`high_adoption_low_self_modification` 在窗口聚合条件成立时**逐轮计数并可达阻断阈值**（不得恒为 0） |
 | **G1** | P1 | ① `buildIndexGroups()` 返回**全 18 周**；② `buildWikiSystemPrompt` 三档策略命中（A/B/C 各一条）；③ 分类粘性：短消息不覆盖强分类；④ 干预文本**不进入** `apiConversationHistory`；⑤ `countMatches("排序与实现")` 词边界不误配 |
 | **G2** | P2 | ① MCP 周数热读：文件改 `week=18` 后无需重启即生效；② 切换周数时 userContent 追加变更通知（仅一次）；③ `--week` 缺省仍可用（向后兼容）；④ `ai_dependency` 新指标在"1 问 6 答"下**不再**恒真触发 |
 | **G3** | P3 | ① `extractInterventionCopy` 六类用例全绿；② 三条确定性校验失败 → 降级模板 + `copy_rejected`；③ 主题锚定失败 → **不降级**、只记 `copy_topic_unanchored`；④ 两条显示路径（`text` / `completion_result`）都能剥离回执块；⑤ `hasDeliveredKeyCode` 可由工具落盘置位 |
@@ -1182,15 +1183,24 @@ git commit -m "fix(assistant-message): normalize the DSML tool-call dialect befo
 
 **Files:** Modify `src/core/task/student-analytics/BehaviorMonitor.ts`（`checkHighAdoptionLowSelfModificationRule` + 其调用点）；Test 追加到 `__tests__/escalationReachability.test.ts`。
 
+**✅ 落地记录（2026-10-12）**：已随 **P0 收尾**实现，commit **`2c350a01`**。
+- 签名定为 `checkHighAdoptionLowSelfModificationRule(event: StudentInteractionLog)`，计数条件复用 **`this.isAssistantCodeTurn(event)`**（与本文件另两条规则同一口径），而非布尔 `isTurn`。
+- 专项 `--grep "T9-b"` **4 passing**；F1 组 **14 passing**；全量 **850 passing / 111 pending / 0 failing**；`tsc --noEmit` 0 error。
+- 该修复已纳入 **G0** 的断言范围（见 §4）。
+
 ```ts
-private checkHighAdoptionLowSelfModificationRule(isTurn: boolean): void {
+private checkHighAdoptionLowSelfModificationRule(event: StudentInteractionLog): void {
 	// …原有判定（minAdoptionSamples / adoptionRate / selfModificationRate）逐字不变…
 	if (
 		adoptionRate >= this.options.adoptionRateThreshold &&
 		selfModificationRate <= this.options.selfModificationThreshold
 	) {
-		// 【裁定 C】与其它两条规则同口径：命中即计数，不受提醒冷却影响
-		if (isTurn) this.bumpEscalation("high_adoption_low_self_modification")
+		// 【裁定 C】与其它两条规则同口径：命中即计数，不受提醒冷却影响。
+		// ★ 必须做单位约束：本规则命中条件来自滚动窗口的聚合量，若"每次 ingest 命中即 +1"，
+		//   一次提问（约 5~11 条事件）就会把阈值推满。
+		if (this.isAssistantCodeTurn(event)) {
+			this.bumpEscalation("high_adoption_low_self_modification")
+		}
 		this.notify(
 			"high_adoption_low_self_modification",
 			`近期建议采纳率较高（${(adoptionRate * 100).toFixed(0)}%），但自主修改偏少，建议在采纳后再做一次本地优化。`,
@@ -1199,25 +1209,27 @@ private checkHighAdoptionLowSelfModificationRule(isTurn: boolean): void {
 		)
 	}
 }
-// evaluateRules 内的调用点同步改为：this.checkHighAdoptionLowSelfModificationRule(isTurn)
+// evaluateRules 内的调用点同步改为：this.checkHighAdoptionLowSelfModificationRule(event)
 ```
 
-**必测（阈值可达性；改动前必红）**
+**必测（阈值可达性；改动前必红）** —— 共 4 例，全部落在 `__tests__/escalationReachability.test.ts`：
+① 采纳率高 + 自主修改少 → 逐轮计数并达阈值；② 自主修改率达标 → 不计数；
+③ 采纳样本 < `minAdoptionSamples` → 不计数（边界）；④ 学生回合不计数（违规单位边界）。
 
 ```ts
-it("★ high_adoption_low_self_modification 仍能达到阻断阈值（裁定 C）", () => {
+it("★【T9-b】采纳率高 + 自主修改少时逐轮计数，可达阻断阈值", () => {
 	const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+	m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+	m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
 	for (let i = 0; i < 3; i++) {
-		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
-		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
-		m.ingest(ev({ eventType: "turn_message", role: "assistant", hasCodeBlock: true }))
+		m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
 	}
 	expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(3)
 	expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(true)
 })
 ```
 
-> ⚠️ 上例为**示意**：`minAdoptionSamples` 默认 2，且要求 `assistantWithCodeCount > 0`、`codeEditCount/assistantWithCodeCount ≤ selfModificationThreshold`。实现者必须**以 `checkHighAdoptionLowSelfModificationRule` 的真实条件为准**构造能真正命中的事件序列（可用 `debug: true` 看 `[BehaviorMonitor][debug] adoption rule:` 行校准），不得为了过测试而放宽规则条件。
+> ⚠️ 构造事件序列时必须**以 `checkHighAdoptionLowSelfModificationRule` 的真实条件为准**：`determinedAdoptions.length >= minAdoptionSamples(2)`、`assistantWithCodeCount > 0`（注意该分母用的是 `hasCode`，不是 `hasCodeBlock`）、`codeEditCount/assistantWithCodeCount <= selfModificationThreshold`。可用 `debug: true` 看 `[BehaviorMonitor][debug] adoption rule:` 行校准。**不得为了过测试而放宽规则条件。**
 
 ### 裁定 A / B：不改代码，登记为已知残留
 
@@ -1233,11 +1245,10 @@ M4' **必须记录"第几次索要触发阻断"**：
 | **第 3 次**触发 | 违规单位维持现状 ✓（现状：正文含 fenced 块的助手回合，实测一次请求约 +1） |
 | **第 1 或第 2 次**触发 | 该规则的违规单位改为「**每个学生回合**」（一次索要最多 +1），作为**新计划项**处理 |
 
-### G2 断言补强（`priorityGate.p2.test.ts`）
+### 断言归属调整（因 T9-b 前提到 P0）
 
-追加两条：
-1. `high_adoption_low_self_modification` 在样本足够且比率越界时**逐轮计数并可达阈值**（对应 T9-b）；
-2. `high_recent_ai_dependency` 由 T9 改造后同样可达阈值（对应 F9）。
+- **G0**：新增专项断言 ⑦ —— `high_adoption_low_self_modification` 逐轮计数并可达阻断阈值（T9-b 已落地 `2c350a01`，其 4 例测试已在 `escalationReachability.test.ts` 中生效）。
+- **G2**：仅保留一条补强 —— `high_recent_ai_dependency` 由 T9 改造后同样可达阈值（对应 F9）。
 
 ---
 
