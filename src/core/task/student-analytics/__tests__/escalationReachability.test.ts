@@ -136,6 +136,53 @@ describe("F1 · 升级阈值可达性", () => {
 		expect(m.shouldEscalateToBlocking("no_edit_streak")).to.equal(true)
 	})
 
+	// ---- 【T9-b / 裁定 C】high_adoption_low_self_modification 的升级能力回归 ----
+	// notify() 移出自增后，该规则若不在 check*Rule() 内计数，计数将**恒为 0**：
+	// 命中只产生提醒，永远升不了级 —— 这是 F1 引入的静默能力回退。
+
+	it("★【T9-b】采纳率高 + 自主修改少时逐轮计数，可达阻断阈值", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		// 2 次"已采纳"判定（达到 minAdoptionSamples=2，采纳率 100%）
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		// 3 个助手代码回合，期间学生 0 次自主编辑 → 自主修改率 0 ≤ 0.25
+		for (let i = 0; i < 3; i++) {
+			m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
+		}
+		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(3)
+		expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(true)
+	})
+
+	it("【T9-b】自主修改率达标时不计数（规则条件不成立）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		// 先编辑再出代码：自主修改率 = 1/1 = 100% > 25%
+		m.ingest(ev({ eventType: "code_edit", editor: "user" }))
+		m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
+		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(0)
+	})
+
+	it("【T9-b】采纳样本不足（< minAdoptionSamples=2）时不计数（边界）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		for (let i = 0; i < 3; i++) {
+			m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
+		}
+		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(0)
+	})
+
+	it("【T9-b】违规单位 = 助手代码回合：学生回合不计数", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
+		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(1)
+		m.ingest(ev({ role: "user", category: "code_generation" }))
+		m.ingest(ev({ role: "user", category: "code_generation" }))
+		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(1)
+	})
+
 	// 必须挂在 describe 内部：顶层的 after() 属于**根套件**，要等到整个运行结束才执行，
 	// 而这里需要在下一个 spec 文件（interventionRegression）加载前就把全局态复位。
 	after(() => {

@@ -173,7 +173,7 @@ export class BehaviorMonitor {
 			this.checkNoEditStreakRule(event)
 		}
 		if (policy("high_adoption_low_self_modification")) {
-			this.checkHighAdoptionLowSelfModificationRule()
+			this.checkHighAdoptionLowSelfModificationRule(event)
 		}
 		if (policy("high_recent_ai_dependency")) {
 			this.checkHighRecentAiDependencyRule()
@@ -244,7 +244,7 @@ export class BehaviorMonitor {
 		return n
 	}
 
-	private checkHighAdoptionLowSelfModificationRule(): void {
+	private checkHighAdoptionLowSelfModificationRule(event: StudentInteractionLog): void {
 		const determinedAdoptions = this.recentEvents.filter(
 			(e) => e.eventType === "adoption_infer" && e.adoptionStatus && e.adoptionStatus !== "unknown",
 		)
@@ -280,6 +280,16 @@ export class BehaviorMonitor {
 			adoptionRate >= this.options.adoptionRateThreshold &&
 			selfModificationRate <= this.options.selfModificationThreshold
 		) {
+			// 【T9-b / 裁定 C】★ 与其它两条规则同口径：命中即计数，不受提醒冷却影响。
+			// 违规单位沿用 F1 的统一口径 —— **一个推进 assistantCodeStreak 的助手代码回合**。
+			// 本规则的命中条件来自滚动窗口的聚合量（不由当前事件单独决定），所以必须靠事件单位
+			// 约束计数频率：若写成「每次 ingest 命中即 +1」，一次提问（约 5~11 条事件）就会把阈值推满。
+			// 归因：F1 把自增从 notify()（受 120s 冷却节流）移出后，此处若不同步补上，
+			// 该规则的升级计数将**恒为 0** —— 命中只产生提醒，永远升不了级。
+			if (this.isAssistantCodeTurn(event)) {
+				this.bumpEscalation("high_adoption_low_self_modification")
+			}
+
 			this.notify(
 				"high_adoption_low_self_modification",
 				`近期建议采纳率较高（${(adoptionRate * 100).toFixed(0)}%），但自主修改偏少，建议在采纳后再做一次本地优化。`,
