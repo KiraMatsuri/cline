@@ -259,14 +259,28 @@ export class TaskClassifier {
 	}
 
 	/**
-	 * 计算文本中匹配的关键词数量
+	 * 计算文本中匹配的关键词数量。
+	 *
+	 * 【F5/F11】ASCII 拉丁词必须用**词边界**匹配，否则 `go` 会命中 `algorithm`/`going`、
+	 * `js` 会命中 `json`，制造假分类（实测：助手输出被误判为 `language_request`）。
+	 * CJK 没有词边界概念，保持 `includes`。
+	 *
+	 * ⚠️ 不能直接用 `\b`：`c++` / `c#` 以非单词字符结尾，`\bc\+\+\b` 在任何文本上都不成立。
+	 * 因此按首/尾字符是否为 `\w` **分别**加边界断言。
 	 */
 	private countMatches(text: string, keywords: string[]): number {
 		let count = 0
 		for (const keyword of keywords) {
-			if (text.includes(keyword.toLowerCase())) {
-				count++
+			const k = keyword.toLowerCase()
+			if (!/^[a-z0-9+#.]+$/.test(k)) {
+				// CJK 或多词短语：无词边界概念
+				if (text.includes(k)) count++
+				continue
 			}
+			const esc = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+			const left = /^\w/.test(k) ? "(?<![\\w])" : ""
+			const right = /\w$/.test(k) ? "(?![\\w])" : ""
+			if (new RegExp(`${left}${esc}${right}`, "i").test(text)) count++
 		}
 		return count
 	}

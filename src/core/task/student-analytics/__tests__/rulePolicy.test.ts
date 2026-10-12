@@ -45,4 +45,15 @@ describe("getRulePolicy（方案 C-1）", () => {
 			}
 		}
 	})
+
+	it("★【F5】code_generation 下代码类规则可用且可升级（粘性要守住的正是这个口径）", () => {
+		expect(getRulePolicy("consecutive_code_generation", "code_generation")).to.deep.equal({
+			enabled: true,
+			canEscalateToBlocking: true,
+		})
+		expect(getRulePolicy("no_edit_streak", "code_generation")).to.deep.equal({
+			enabled: true,
+			canEscalateToBlocking: true,
+		})
+	})
 })

@@ -51,6 +51,14 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	escalationBlockingThreshold: 3,
 })
 
+/** 【F5】可覆盖 `code_generation` 的"强信号"分类：都表示学生正在处理**新的具体代码** */
+const STRONG_SIGNAL_CATEGORIES: ReadonlySet<TaskCategory> = new Set<TaskCategory>([
+	"code_generation",
+	"debugging",
+	"refactoring",
+	"testing",
+])
+
 export class BehaviorMonitor {
 	private readonly taskId: string
 	private readonly options: Required<BehaviorMonitorOptions>
@@ -111,7 +119,17 @@ export class BehaviorMonitor {
 		// 【F3】该判定同时被下方概念护栏复用 —— 两者必须保持同一"学生侧意图"口径，故只算一次。
 		const isStudentIntent = event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")
 		if (isStudentIntent) {
-			this.currentTaskCategory = event.category
+			const prev = this.currentTaskCategory
+			// 【F5】分类粘性：`code_generation` 一旦确立就"粘住" —— 后续的 algorithm/explanation/other
+			// 不再覆盖它（实测：一个代码生成任务会因为追问「再实现一个快速排序」被判成 algorithm，
+			// 使代码类规则被 rulePolicy 静默停用）。只有"在新代码上工作"的强信号才可覆盖。
+			if (
+				prev === undefined ||
+				STRONG_SIGNAL_CATEGORIES.has(event.category as TaskCategory) ||
+				prev !== "code_generation"
+			) {
+				this.currentTaskCategory = event.category
+			}
 		}
 
 		// 【F3】概念护栏的任务级粘性：索要完整代码**不退出**。
