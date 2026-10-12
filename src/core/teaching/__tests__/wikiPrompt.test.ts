@@ -14,7 +14,7 @@ describe("buildWikiSystemPrompt", () => {
 	it("★ 必须包含认知边界约束段", () => {
 		const s = buildWikiSystemPrompt(opts)
 		expect(s).to.include("认知边界约束")
-		expect(s).to.include("第 5 周")
+		expect(s).to.include("第 5 周及更早")
 	})
 
 	it("★【F4】检索为空时必须给出 A/B/C 三档策略，而不是一律拒答", () => {
@@ -50,7 +50,7 @@ describe("buildWikiSystemPrompt", () => {
 	it("★ MCP 不可用时仍保留认知边界约束（不得随全文一起去掉）", () => {
 		const s = buildWikiSystemPrompt({ ...opts, mcpAvailable: false })
 		expect(s).to.include("认知边界约束")
-		expect(s).to.include("第 5 周")
+		expect(s).to.include("第 5 周及更早")
 	})
 
 	it("★ week 越界被 clamp 到 18", () => {

@@ -329,7 +329,10 @@ export class LLMWikiService {
 		// 这里简化：直接 GET /api/v1/wiki?max_week=N 全量拿，缓存里去重
 		// 【v2.0】附加 textbook_id 参数（若已设置），后端会 JOIN 返回 textbook_chapters
 		const tbParam = this._currentTextbookId ? `&textbook_id=${encodeURIComponent(this._currentTextbookId)}` : ""
-		const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}${tbParam}`
+		// 【F4】按最大周拉取（后端硬过滤 applicable_week <= max_week，只按当前周请求会让
+		//        buildIndexGroups() 永远看不到后续周，F4 变成空操作）。
+		// ⚠️ 不得把返回值放宽：下面仍用 `applicable_week <= targetWeek` 过滤出"本周可见"集合。
+		const url = `${this._serverUrl}/api/v1/wiki?max_week=${INDEX_FETCH_MAX_WEEK}${tbParam}`
 		try {
 			const resp = await fetch(url)
 			if (!resp.ok) {
@@ -359,7 +362,9 @@ export class LLMWikiService {
 
 			// 返回本周数可见的所有 chunk
 			const visible = allChunks.filter((c) => c.applicable_week <= targetWeek)
-			Logger.log(`[LLMWikiService] 拉取成功: max_week=${targetWeek}, chunks=${visible.length}, baseIds=${grouped.size}`)
+			Logger.log(
+				`[LLMWikiService] 拉取成功: fetchMaxWeek=${INDEX_FETCH_MAX_WEEK}, week=${targetWeek}, visibleChunks=${visible.length}, totalChunks=${allChunks.length}, baseIds=${grouped.size}`,
+			)
 			return visible
 		} catch (e) {
 			Logger.error(`[LLMWikiService] 拉取异常:`, e)
@@ -389,6 +394,10 @@ function normalizeIndexTitle(raw: string): string {
 	const noChunkSuffix = oneLine.replace(/\s*\(\d+\/\d+\)$/, "")
 	return noChunkSuffix.length > MAX_INDEX_TITLE_CHARS ? `${noChunkSuffix.slice(0, MAX_INDEX_TITLE_CHARS)}…` : noChunkSuffix
 }
+
+/** 【F4】拉取用上界：目录索引需要"全 18 周可见"，故按后端允许的最大周拉取；
+ *  "能取用"的边界不在这里收窄 —— 已发布资料的**检索**仍由 MCP server 的 `--week` + 后端 SQL 强制。 */
+const INDEX_FETCH_MAX_WEEK = 18
 
 function clampWeek(w: number): number {
 	if (Number.isNaN(w) || w < 1) return 1
