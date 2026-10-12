@@ -1172,6 +1172,75 @@ git commit -m "fix(assistant-message): normalize the DSML tool-call dialect befo
 
 ---
 
+## 7.6 复审裁定落地的追加改动（2026-10-12）
+
+> 依据 `teaching-intervention-acceptance-and-revisions.md` **§9.6** 的三项裁定：**A / B 不改代码**（按原方案 + 登记残留），**C 必须落地**。
+
+### T9-b（裁定 C）：恢复 `high_adoption_low_self_modification` 的升级能力
+
+**性质**：**计划遗漏的静默能力回退** —— `notify()` 移出自增后全仓只剩 2 个 `bumpEscalation` 调用点，该规则计数**恒为 0**，在 `rulePolicy` 判定 `canEscalateToBlocking: true` 的分类下再也无法升级为阻断。
+
+**Files:** Modify `src/core/task/student-analytics/BehaviorMonitor.ts`（`checkHighAdoptionLowSelfModificationRule` + 其调用点）；Test 追加到 `__tests__/escalationReachability.test.ts`。
+
+```ts
+private checkHighAdoptionLowSelfModificationRule(isTurn: boolean): void {
+	// …原有判定（minAdoptionSamples / adoptionRate / selfModificationRate）逐字不变…
+	if (
+		adoptionRate >= this.options.adoptionRateThreshold &&
+		selfModificationRate <= this.options.selfModificationThreshold
+	) {
+		// 【裁定 C】与其它两条规则同口径：命中即计数，不受提醒冷却影响
+		if (isTurn) this.bumpEscalation("high_adoption_low_self_modification")
+		this.notify(
+			"high_adoption_low_self_modification",
+			`近期建议采纳率较高（${(adoptionRate * 100).toFixed(0)}%），但自主修改偏少，建议在采纳后再做一次本地优化。`,
+			adoptionRate,
+			this.options.adoptionRateThreshold,
+		)
+	}
+}
+// evaluateRules 内的调用点同步改为：this.checkHighAdoptionLowSelfModificationRule(isTurn)
+```
+
+**必测（阈值可达性；改动前必红）**
+
+```ts
+it("★ high_adoption_low_self_modification 仍能达到阻断阈值（裁定 C）", () => {
+	const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+	for (let i = 0; i < 3; i++) {
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
+		m.ingest(ev({ eventType: "turn_message", role: "assistant", hasCodeBlock: true }))
+	}
+	expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(3)
+	expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(true)
+})
+```
+
+> ⚠️ 上例为**示意**：`minAdoptionSamples` 默认 2，且要求 `assistantWithCodeCount > 0`、`codeEditCount/assistantWithCodeCount ≤ selfModificationThreshold`。实现者必须**以 `checkHighAdoptionLowSelfModificationRule` 的真实条件为准**构造能真正命中的事件序列（可用 `debug: true` 看 `[BehaviorMonitor][debug] adoption rule:` 行校准），不得为了过测试而放宽规则条件。
+
+### 裁定 A / B：不改代码，登记为已知残留
+
+- **A**：不采纳"学生本人编辑时计数 `−1`"——三条否决理由见 spec §9.6（解决不了根因 / 计数器须单调可断言 / 与 `blockingTriggered` 叠加后无意义）⇒ 计数语义**维持原方案**。
+- **B**：接受"长期间歇编辑仍可累计到阻断"这一残留。若要消除，正确形式是 **学生本人 `code_edit` → 清零两个代码规则的 `escalationCounter`**（**不是 `−1`**）。已在 spec §9.6 登记，**本次不实施**，留给 1.0.7 之后按需决定。
+
+### M4' 的判据补强（人工验收时必填）
+
+M4' **必须记录"第几次索要触发阻断"**：
+
+| 实测 | 处置 |
+|---|---|
+| **第 3 次**触发 | 违规单位维持现状 ✓（现状：正文含 fenced 块的助手回合，实测一次请求约 +1） |
+| **第 1 或第 2 次**触发 | 该规则的违规单位改为「**每个学生回合**」（一次索要最多 +1），作为**新计划项**处理 |
+
+### G2 断言补强（`priorityGate.p2.test.ts`）
+
+追加两条：
+1. `high_adoption_low_self_modification` 在样本足够且比率越界时**逐轮计数并可达阈值**（对应 T9-b）；
+2. `high_recent_ai_dependency` 由 T9 改造后同样可达阈值（对应 F9）。
+
+---
+
 ## 8. G-ALL 全量综合测试
 
 > **执行两次**：**G-ALL（P0–P3）** 在 P3 之后、git 存档之前；**G-ALL'（最终）** 在 P4 之后、人工验收之前。两次都跑同一套命令与断言。

@@ -576,6 +576,43 @@ attemptApiRequest → checkAndGenerateIntervention
 >
 > 完整实施步骤、真实方言样本与测试用例见 `teaching-intervention-fix-plan-2.md` §7.5。
 
+### 9.6 F1/F9 复审裁定与计划修订（2026-10-12，实施期追加）
+
+> 来源：F1 实施完成后的两轮任务复审把 3 项计划层面的问题升级给人裁定。以下为裁定与依据。
+
+#### A —— 「学生本人编辑时计数 `−1`」**不采纳**，按原方案
+
+**裁定理由（三条，任一即足以否决）**
+
+1. **`−1` 解决不了根因。** 误阻断的真正来源是**违规单位**，不是"编辑没有抵消"。实测（`student_interactions.log`）：
+   `write_to_file` 回合的 `hasCodeBlock` 为 **`false`**（代码在工具参数里，不在正文），故**不计**；只有正文含 fenced 块的回合（如 `attempt_completion`）才计 —— 即**一次请求通常只 +1**，但多步请求可能 +2~+3。
+   若一次请求内就到阈值，**学生在请求期间根本没有编辑机会**，`−1` 无从生效。
+2. **计数器必须单调可断言。** `escalationCount` 会进入 alert、日志与 F13 的结构化事件；非单调会让"升级次数"这一指标语义含混，且"是否达标"依赖编辑时序 ⇒ **不可复现、难写断言**，与 §0 的"边界必可断言"冲突。
+3. **与 `blockingTriggered` 一次性守卫叠加后失去意义**：阻断一旦触发，递减不再影响任何行为。
+
+#### B —— 按原方案后，**该问题仍会存在**（登记为已知残留）
+
+| 序列（`no_edit_streak`，提醒阈值 8 / 阻断阈值 3） | 结局 |
+|---|---|
+| 8 轮无编辑 → count1 → **学生改码**（`turnsSinceLastEdit=0`，**count 仍 1**）→ 再 8 轮 → count2 → 改码 → 再 8 轮 → count3 | **被阻断**（只是比修复前慢） |
+
+- 结论：**"长期间歇编辑的学生仍会累计到阻断"** 在"不做编辑侧调整"下**依然出现**。
+- 若日后要消除它，**正确形式是「学生本人 `code_edit` → 将两个代码规则的 `escalationCounter` 清零」**（确定性、可断言、与 `reset()` 语义一致），**而不是 `−1`**。本次按裁定不实施，登记待议。
+- 另注：`no_edit_streak` 的**单次连续**误阻断已被 F1 修复波消除（计数改为仅在"连续未编辑 ≥8 轮"后推进），残留的仅为上面这种**跨周期累计**。
+
+#### C —— `high_adoption_low_self_modification` 的升级能力**直接修**（计划遗漏）
+
+- **事实**：`notify()` 不再自增后，全仓只剩 **2 个** `bumpEscalation` 调用点（`consecutive_code_generation`、`no_edit_streak`）⇒ `high_adoption_low_self_modification` 与 `high_recent_ai_dependency` 计数**恒为 0**，在 `rulePolicy` 判定 `canEscalateToBlocking: true` 的分类下**再也无法升级为阻断**。
+- `high_recent_ai_dependency` 由 §9.3 的 **F9（T9）** 恢复；**`high_adoption_low_self_modification` 在旧计划中从未被恢复** ⇒ 属**静默能力回退**，必须补。
+- **落地**：见 `teaching-intervention-fix-plan-2.md` §7.6（T9-b）。
+
+#### 附：违规单位的口径风险（实施期新发现，登记为**验收判据**）
+
+- 现状：`consecutive_code_generation` 的违规单位 = **正文含 fenced 块的助手回合**（实测一次请求约 +1）。
+- 风险：多步请求（多次以代码块作答）可能在**单个请求内**推到阈值 3 ⇒ 第 1~2 次索要就被阻断，与 M4' 的"第 3 次"口径不符。
+- **判据**（写入 M4'）：若实测在**第 1 或第 2 次**索要即阻断 ⇒ 该规则的违规单位应改为「**每个学生回合**」（一次索要最多 +1）；若第 3 次才阻断 ⇒ 维持现状。
+
+
 ### 9.5 P3 追加项明细（F13）
 
 > **来源**：人工验收中的**意外行为**，经分析后决定转为**有意设计**。
