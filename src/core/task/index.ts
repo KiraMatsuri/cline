@@ -9,15 +9,15 @@ import { EnvironmentContextTracker } from "@core/context/context-tracking/Enviro
 import { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
 import { ModelContextTracker } from "@core/context/context-tracking/ModelContextTracker"
 import {
-	getGlobalClineRules,
-	getLocalClineRules,
-	refreshClineRulesToggles,
+    getGlobalClineRules,
+    getLocalClineRules,
+    refreshClineRulesToggles,
 } from "@core/context/instructions/user-instructions/cline-rules"
 import {
-	getLocalAgentsRules,
-	getLocalCursorRules,
-	getLocalWindsurfRules,
-	refreshExternalRulesToggles,
+    getLocalAgentsRules,
+    getLocalCursorRules,
+    getLocalWindsurfRules,
+    refreshExternalRulesToggles,
 } from "@core/context/instructions/user-instructions/external-rules"
 import { sendPartialMessageEvent } from "@core/controller/ui/subscribeToPartialMessage"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
@@ -29,11 +29,11 @@ import { summarizeTask } from "@core/prompts/contextManagement"
 import { formatResponse } from "@core/prompts/responses"
 import { parseSlashCommands } from "@core/slash-commands"
 import {
-	ensureRulesDirectoryExists,
-	ensureTaskDirectoryExists,
-	GlobalFileNames,
-	getSavedApiConversationHistory,
-	getSavedClineMessages,
+    ensureRulesDirectoryExists,
+    ensureTaskDirectoryExists,
+    GlobalFileNames,
+    getSavedApiConversationHistory,
+    getSavedClineMessages,
 } from "@core/storage/disk"
 import { releaseTaskLock } from "@core/task/TaskLockUtils"
 import { isMultiRootEnabled } from "@core/workspace/multi-root-utils"
@@ -72,6 +72,7 @@ import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
+import { appendEphemeralIntervention } from "@/core/task/student-analytics/ephemeralIntervention"
 import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
 import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
@@ -80,23 +81,23 @@ import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
 import {
-	CommandExecutor,
-	CommandExecutorCallbacks,
-	FullCommandExecutorConfig,
-	StandaloneTerminalManager,
+    CommandExecutor,
+    CommandExecutorCallbacks,
+    FullCommandExecutorConfig,
+    StandaloneTerminalManager,
 } from "@/integrations/terminal"
 import { ClineError, ClineErrorType, ErrorService } from "@/services/error"
 import { telemetryService } from "@/services/telemetry"
 import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
 import {
-	ClineAssistantContent,
-	ClineContent,
-	ClineImageContentBlock,
-	ClineMessageModelInfo,
-	ClineStorageMessage,
-	ClineTextContentBlock,
-	ClineToolResponseContent,
-	ClineUserContent,
+    ClineAssistantContent,
+    ClineContent,
+    ClineImageContentBlock,
+    ClineMessageModelInfo,
+    ClineStorageMessage,
+    ClineTextContentBlock,
+    ClineToolResponseContent,
+    ClineUserContent,
 } from "@/shared/messages"
 import { ApiFormat } from "@/shared/proto/cline/models"
 import { ShowMessageType } from "@/shared/proto/index.host"
@@ -113,15 +114,15 @@ import { FocusChainManager } from "./focus-chain"
 import { MessageStateHandler } from "./message-state"
 import { StreamResponseHandler } from "./StreamResponseHandler"
 import {
-	AdoptionTracker,
-	BehaviorMonitor,
-	CodeEditTracker,
-	contentAnalyzer,
-	type StudentInteractionLog,
-	StudentLogPersister,
-	type SuggestionType,
-	TeachingInterventionManager,
-	taskClassifier,
+    AdoptionTracker,
+    BehaviorMonitor,
+    CodeEditTracker,
+    contentAnalyzer,
+    type StudentInteractionLog,
+    StudentLogPersister,
+    type SuggestionType,
+    TeachingInterventionManager,
+    taskClassifier,
 } from "./student-analytics"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
@@ -903,6 +904,8 @@ export class Task {
 	private interventionManager: TeachingInterventionManager | undefined
 	// 上一条 assistant turn 的分类信息（用于同主题判断）
 	private lastAssistantCategory: string | undefined
+	/** 【F6】本轮待注入的干预文本：只进 system prompt，绝不写进 apiConversationHistory */
+	private pendingInterventionText: string | undefined
 
 	/**
 	 * 设置全局代码编辑追踪器（由 extension.ts 在激活时调用）
@@ -2314,6 +2317,16 @@ export class Task {
 			Logger.warn("[Task] 概念问答模式约束注入失败，跳过:", e)
 		}
 
+		// 【F6】把本轮的干预文本追加到 system prompt（本轮一次性；绝不写入 apiConversationHistory）
+		{
+			const injected = appendEphemeralIntervention(systemPromptFinal, this.pendingInterventionText)
+			systemPromptFinal = injected.systemPrompt
+			if (injected.applied) {
+				this.pendingInterventionText = undefined
+				Logger.log(`[TeachingIntervention][${this.taskId}] ephemeral intervention injected into system prompt`)
+			}
+		}
+
 		const contextManagementMetadata = await this.contextManager.getNewContextMessagesAndMetadata(
 			this.messageStateHandler.getApiConversationHistory(),
 			this.messageStateHandler.getClineMessages(),
@@ -2960,14 +2973,13 @@ export class Task {
 					return false
 				}
 
-				// 普通干预: 作为文本注入到 userContent
+				// 普通干预：【F6】只作为**本轮** system prompt 后缀，不进对话历史
+				// （写进 userContent 会被 addToApiConversationHistory 持久化，而模型上下文只来自该历史，
+				//   于是"干预靠模型转述"这一机制会导致模型持续仿写 —— 见 spec §7.2 的 0 次命中证据）
 				if (interventionText) {
-					userContent.push({
-						type: "text",
-						text: interventionText,
-					})
+					this.pendingInterventionText = interventionText
 					Logger.info(
-						`[TeachingIntervention][${this.taskId}] hint intervention injected at apiRequestCount=${this.taskState.apiRequestCount}`,
+						`[TeachingIntervention][${this.taskId}] hint intervention queued for system prompt (not persisted) at apiRequestCount=${this.taskState.apiRequestCount}`,
 					)
 				}
 			}

@@ -276,8 +276,8 @@ export function formatInterventionForInjection(intervention: InterventionMessage
 		`<teaching_intervention rule="${intervention.ruleId}" severity="${intervention.severity}" style="${intervention.style}">`,
 		intervention.content,
 		"",
-		"请在你的回复开头，先用简短友好的方式呈现上述学习提示（保留 emoji），然后用分隔线分开，再继续正常回答用户的问题。",
-		"注意：不要提及这是系统自动插入的消息，要让提示看起来像是你主动给出的教学建议。",
+		"请在你的回复开头，用 <teaching_intervention_copy> 块给出本轮的干预文案（格式见任务书）。",
+		"注：不要提及这是系统自动插入的消息；但**必须**使用上述块，不得只在正文里自由发挥。",
 		"</teaching_intervention>",
 	].join("\n")
 }
