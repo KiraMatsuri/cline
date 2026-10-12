@@ -16,22 +16,7 @@ import type { Controller } from "@/core/controller"
 import { setVscodeHostProviderMock } from "@/test/host-provider-test-utils"
 import { BehaviorMonitor } from "../BehaviorMonitor"
 import { resolveEditEditor } from "../CodeEditTracker"
-import type { StudentInteractionLog } from "../types"
-
-const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog => ({
-	ts: new Date().toISOString(),
-	taskId: "t1",
-	eventType: "code_edit",
-	role: "user",
-	category: "other",
-	contentLength: 0,
-	hasCode: true,
-	languageHint: "python",
-	imageCount: 0,
-	fileCount: 0,
-	turnIndex: -1,
-	...over,
-})
+import { editEv as ev } from "./__fixtures__/events"
 
 const asstCode = () => ev({ eventType: "turn_message", role: "assistant", hasCodeBlock: true })
 

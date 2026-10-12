@@ -1,23 +1,7 @@
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
 import { INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "../ConceptModeGate"
-import type { StudentInteractionLog } from "../types"
-
-const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog => ({
-	ts: new Date().toISOString(),
-	taskId: "t1",
-	eventType: "turn_message",
-	role: "assistant",
-	category: "code_generation",
-	contentLength: 0,
-	hasCode: true,
-	hasCodeBlock: true,
-	languageHint: "python",
-	imageCount: 0,
-	fileCount: 0,
-	turnIndex: -1,
-	...over,
-})
+import { ev } from "./__fixtures__/events"
 
 const s = (o: Partial<Parameters<typeof nextConceptMode>[1]>) => ({
 	category: undefined,

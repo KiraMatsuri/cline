@@ -2,7 +2,7 @@ import { expect } from "chai"
 import { after } from "mocha"
 import { BehaviorMonitor } from "../BehaviorMonitor"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
-import type { StudentInteractionLog } from "../types"
+import { ev } from "./__fixtures__/events"
 
 // 【测试卫生】TeachingInterventionManager 的阻断状态是**跨会话全局静态**（v2.7 防
 // 「退出/新建对话」绕过），本文件的阻断用例必然写它；而 .mocharc.json 把全部 spec 放在
@@ -14,22 +14,6 @@ const managerStaticState = TeachingInterventionManager as unknown as {
 	globalBlockingEndsAt: number
 	globalLastBlockingIntervention: unknown
 }
-
-const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog => ({
-	ts: new Date().toISOString(),
-	taskId: "t1",
-	eventType: "turn_message",
-	role: "assistant",
-	category: "code_generation",
-	contentLength: 0,
-	hasCode: true,
-	hasCodeBlock: true,
-	languageHint: "python",
-	imageCount: 0,
-	fileCount: 0,
-	turnIndex: -1,
-	...over,
-})
 
 describe("F1 · 升级阈值可达性", () => {
 	it("★ 阈值恰为 3：第 2 次不升级，第 3 次升级（边界）", () => {
