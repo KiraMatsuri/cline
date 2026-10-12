@@ -68,13 +68,31 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 		expect(m3.getPendingAlerts().length).to.equal(1)
 	})
 
-	it("★ 兜底路径：即使无新警报，干预文本仍非空", () => {
+	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空（阻断不依赖 pendingAlerts）", () => {
 		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m4.ingest(ev({}))
 		m4.ingest(ev({}))
 		m4.ingest(ev({}))
+		// 必须先消费掉队列，否则这条用例只是例 ① 的重复：命中阈值时阻断分支在
+		// `hasPendingAlerts()` 之前就已 return，队列里有没有警报都看不出来。
+		m4.consumePendingAlerts()
+		expect(m4.hasPendingAlerts()).to.equal(false)
 		const mgr4 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.be.a("string").and.to.not.be.empty
+	})
+
+	it("★ 边界：有警报但未达升级阈值，且队列被消费后 ⇒ 不注入（返回 null，不得凭空产出文本）", () => {
+		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		// 8 个纯文字助手回合：no_edit_streak 在第 8 轮首次命中（提醒入队，计数 1 < 3，不阻断）
+		for (let i = 0; i < 8; i++) {
+			m6.ingest(ev({ hasCodeBlock: false }))
+		}
+		expect(m6.getEscalationCount("no_edit_streak")).to.equal(1)
+		expect(m6.hasPendingAlerts()).to.equal(true)
+		m6.consumePendingAlerts()
+		expect(m6.hasPendingAlerts()).to.equal(false)
+		const mgr6 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+		expect(mgr6.checkAndGenerateIntervention(m6, 3)).to.equal(null)
 	})
 
 	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => {
