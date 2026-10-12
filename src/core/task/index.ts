@@ -2300,15 +2300,16 @@ export class Task {
 			"- 不要以我在思考、首先、其次等表述来复述推理过程。\n" +
 			"- 直接、简洁地给出最终答案与必要的解释即可。"
 
-		// 【方案 C-2】概念问答模式：禁止给出完整可运行代码，只给关键步骤片段。
-		// 判定依据取"学生意图分类"（BehaviorMonitor 从用户侧事件捕获），
-		// 而不是助手回复的分类 —— 后者是"AI 输出被分成什么"，不能代表学生意图。
+		// 【方案 C-2 / F3】概念问答模式：禁止给出完整可运行代码，只给关键步骤片段。
+		// 判定依据取 BehaviorMonitor 的**任务级粘性状态**，而不是"单轮分类" —— 单轮分类下
+		// 学生再问一次完整代码就会把该轮重分类为 code_generation，护栏被静默撤销（等于学生
+		// 多要一次就能拆掉）。粘性状态下只有「学生本人编辑代码」或「意图转向已有具体代码」
+		// 才会退出，反复索要只被计数（见 ConceptModeGate）。
 		try {
-			const monitor = this.getBehaviorMonitor()
-			const category = monitor?.getTaskCategory()
-			if (isConceptModeCategory(category)) {
+			const conceptState = this.getBehaviorMonitor()?.getConceptModeState()
+			if (conceptState?.active) {
 				systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()
-				Logger.log(`[Task] 概念问答模式约束已注入 (category=${category})`)
+				Logger.log(`[Task] 概念问答模式约束已注入 (sticky, demands=${conceptState.completeImplDemands})`)
 			}
 		} catch (e) {
 			Logger.warn("[Task] 概念问答模式约束注入失败，跳过:", e)

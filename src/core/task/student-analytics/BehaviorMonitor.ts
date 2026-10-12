@@ -6,6 +6,7 @@
  */
 
 import { Logger } from "@/shared/services/Logger"
+import { type ConceptModeState, INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "./ConceptModeGate"
 import { getRulePolicy } from "./rulePolicy"
 import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog, TaskCategory } from "./types"
 
@@ -64,6 +65,9 @@ export class BehaviorMonitor {
 	/** 【方案 C-1】最近一次**学生**事件的意图分类（用于规则分流） */
 	private currentTaskCategory: TaskCategory | undefined
 
+	/** 【F3】概念问答模式的粘性状态（任务级；反复索要完整代码也不退出） */
+	private conceptModeState: ConceptModeState = INITIAL_CONCEPT_MODE_STATE
+
 	/** 同规则累计触发次数（用于阻断式干预升级判定） */
 	private escalationCounter: Partial<Record<BehaviorRuleId, number>> = {}
 
@@ -107,6 +111,16 @@ export class BehaviorMonitor {
 		if (event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")) {
 			this.currentTaskCategory = event.category
 		}
+
+		// 【F3】概念护栏的任务级粘性：索要完整代码**不退出**。
+		// ⚠️ 分类只在「学生侧」事件上读：实测 adoption_infer 事件也带 category（如 language_request），
+		//    若不加这个门，助手侧事件会误触发 CODE_WORK 退出。与 currentTaskCategory 同一口径。
+		const isStudentIntent = event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")
+		this.conceptModeState = nextConceptMode(this.conceptModeState, {
+			category: isStudentIntent ? event.category : undefined,
+			studentEdited: event.eventType === "code_edit" && event.editor !== "ai",
+			wantsCompleteImpl: isStudentIntent && event.category === "code_generation",
+		})
 
 		this.updateRealtimeStreaks(event)
 		this.evaluateRules(event)
@@ -393,6 +407,11 @@ export class BehaviorMonitor {
 		return this.currentTaskCategory
 	}
 
+	/** 【F3】当前任务的概念问答模式粘性状态（供 index.ts 决定是否注入护栏） */
+	public getConceptModeState(): ConceptModeState {
+		return { ...this.conceptModeState }
+	}
+
 	/**
 	 * 获取同规则累计触发次数
 	 */
@@ -452,5 +471,6 @@ export class BehaviorMonitor {
 		this.escalationCounter = {}
 		this.blockingTriggered = false
 		this.currentTaskCategory = undefined
+		this.conceptModeState = INITIAL_CONCEPT_MODE_STATE
 	}
 }
