@@ -238,11 +238,28 @@ const mcpWikiServerConfig = {
 	plugins: [aliasResolverPlugin, esbuildProblemMatcherPlugin],
 }
 
+// Web search MCP server configuration (F8)
+//
+// 与 mcpWikiServerConfig **同构**：它同样是**独立的 stdio MCP server 进程**，由插件以
+// `process.execPath` + ELECTRON_RUN_AS_NODE=1 拉起（见 WebMcpRegistrar.ts 的 D1 说明）。
+// 因此：
+//   - 必须 `external: []`：它不能用 vscode API，也不需要把 vscode 留给宿主；
+//     @modelcontextprotocol/sdk 等依赖要真正打进产物里。
+//   - 不挂 copyWasmFiles：这个进程用不到 tree-sitter。
+//   - 产物固定为 `mcp-web-search-server.js`，与 WebMcpRegistrar 里的 args 路径约定一致。
+const mcpWebSearchServerConfig = {
+	...baseConfig,
+	entryPoints: ["src/core/teaching/mcp-web/webSearchServer.ts"],
+	outfile: `${destDir}/mcp-web-search-server.js`,
+	external: [],
+	plugins: [aliasResolverPlugin, esbuildProblemMatcherPlugin],
+}
+
 async function main() {
 	const config = standalone ? standaloneConfig : e2eBuild ? e2eBuildConfig : extensionConfig
 
 	// e2e 构建只产出测试用产物，不产出 MCP server
-	const configs = e2eBuild ? [config] : [config, mcpWikiServerConfig]
+	const configs = e2eBuild ? [config] : [config, mcpWikiServerConfig, mcpWebSearchServerConfig]
 
 	if (watch) {
 		for (const c of configs) {

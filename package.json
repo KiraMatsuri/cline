@@ -450,6 +450,11 @@
 					"default": false,
 					"description": "教学限制模式：启用后编辑器内单次粘贴最多允许 5 行（超出拦截并提示）",
 					"scope": "machine"
+				},
+				"clineTeaching.webSearchEnabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "启用联网检索 MCP 工具（web_search）。仅用于校验通用知识；回答口径仍以教材与当前周为准。默认关闭，由教师端统一下发。"
 				}
 			}
 		}

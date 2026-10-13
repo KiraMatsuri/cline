@@ -14,7 +14,7 @@ import { sendWorktreesButtonClickedEvent } from "./core/controller/ui/subscribeT
 import { WebviewProvider } from "./core/webview"
 import { createClineAPI } from "./exports"
 import { cleanupTestMode, initializeTestMode } from "./services/test/TestMode"
-import "./utils/path"; // necessary to have access to String.prototype.toPosix
+import "./utils/path" // necessary to have access to String.prototype.toPosix
 
 import path from "node:path"
 import type { ExtensionContext } from "vscode"
@@ -39,8 +39,8 @@ import { findMatchingNotebookCell, getContextForCommand, showWebview } from "./h
 import { abortCommitGeneration, generateCommitMsg } from "./hosts/vscode/commit-message-generator"
 import { registerClineOutputChannel } from "./hosts/vscode/hostbridge/env/debugLog"
 import {
-    disposeVscodeCommentReviewController,
-    getVscodeCommentReviewController,
+	disposeVscodeCommentReviewController,
+	getVscodeCommentReviewController,
 } from "./hosts/vscode/review/VscodeCommentReviewController"
 import { VscodeTerminalManager } from "./hosts/vscode/terminal/VscodeTerminalManager"
 import { VscodeDiffViewProvider } from "./hosts/vscode/VscodeDiffViewProvider"
@@ -141,8 +141,9 @@ export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push({ dispose: () => llmWikiService.dispose() })
 
 	// 【v2.13】wiki MCP server 自注册（缺失即重建 / command·args 被篡改即覆盖；disabled 则尊重）
-	const { ensureWikiMcpServer, probeWikiMcpAvailability, registerWikiMcpConfigWatcher, watchWikiServerDisabled } =
-		await import("./core/teaching/WikiMcpRegistrar")
+	const { ensureWikiMcpServer, probeWikiMcpAvailability, registerWikiMcpConfigWatcher, watchWikiServerDisabled } = await import(
+		"./core/teaching/WikiMcpRegistrar"
+	)
 	await ensureWikiMcpServer(context)
 	registerWikiMcpConfigWatcher(context)
 	// 【v2.13】探测 wiki MCP 连接状态 → 回写 LLMWikiService
@@ -151,6 +152,34 @@ export async function activate(context: vscode.ExtensionContext) {
 	// 【v2.13】wiki server 被禁用时提示后果并提供"重新启用"
 	// （禁用点击发生在 Cline 自带 MCP 面板里，无法直接拦截 → 配置变化后轮询检测，见 spec §D5）
 	watchWikiServerDisabled(context)
+
+	// 【F8】联网检索 MCP server 自注册（provider 无关；**默认关闭**，由教师端统一下发）
+	// 与 wiki 同构：缺失即重建 / command·args 被篡改即覆盖；关闭则**移除条目**（非 disabled:true）。
+	// 检索能力由**教学后端**端点提供（D1），端点缺失/不可达时由 server 返回结构化错误、不阻断对话。
+	const { syncWebSearchMcpServer } = await import("./core/teaching/WebMcpRegistrar")
+	const syncWebSearch = async (): Promise<void> => {
+		try {
+			const webCfg = vscode.workspace.getConfiguration("clineTeaching")
+			await syncWebSearchMcpServer({
+				enabled: webCfg.get<boolean>("webSearchEnabled") ?? false,
+				execPath: process.execPath,
+				scriptPath: path.join(context.extensionPath, "dist", "mcp-web-search-server.js"),
+				serverUrl: (webCfg.get<string>("serverUrl") ?? "").trim(),
+			})
+		} catch (e) {
+			// 注册失败不应阻断插件启动
+			Logger.error("[extension.ts] 注册联网检索 MCP server 失败:", e as Error)
+		}
+	}
+	await syncWebSearch()
+	// 开关或后端地址变化 → 重写/移除条目（serverUrl 会写进 args，故一并监听）
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration("clineTeaching.webSearchEnabled") || e.affectsConfiguration("clineTeaching.serverUrl")) {
+				void syncWebSearch()
+			}
+		}),
+	)
 
 	// 【v2.5】自动日志路径由 VscodeWebviewProvider.assignmentManager 统一处理
 	// （该实例已调用 startWatchingWorkspaceOpen，避免双实例导致 cachedAutoLogPath 不同步）
