@@ -77,6 +77,7 @@ import { refineStudentCategory } from "@/core/task/student-analytics/RequestInte
 import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
+import { nextWeekSwitch } from "@/core/teaching/weekSwitchNotice"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
@@ -906,6 +907,8 @@ export class Task {
 	private lastAssistantCategory: string | undefined
 	/** 【F6】本轮待注入的干预文本：只进 system prompt，绝不写进 apiConversationHistory */
 	private pendingInterventionText: string | undefined
+	/** 【F7】上次注入周切换通知时的教学周；undefined = 本任务尚未注入过 */
+	private lastInjectedWeek: number | undefined
 
 	/**
 	 * 设置全局代码编辑追踪器（由 extension.ts 在激活时调用）
@@ -2993,6 +2996,19 @@ export class Task {
 		} catch (error) {
 			// 干预机制出错不应影响正常对话流
 			Logger.warn("[TeachingIntervention] intervention check failed, continuing normally", error)
+		}
+
+		// 【F7】周数切换通知：**有意写入对话历史** —— 它的作用正是对抗“模型延续旧进度拒答”
+		// （spec §8.3 的对话历史自我锚定）。仅在与上次注入的周数不同时注入一次。
+		// 放在阻断早退之后：阻断回合不会发 API 请求，若在那之前注入会被白白消费掉。
+		{
+			const wk = LLMWikiService.getInstance().getCurrentWeek()
+			const sw = nextWeekSwitch(this.lastInjectedWeek, wk)
+			if (sw.notice) {
+				userContent.push({ type: "text", text: sw.notice })
+				Logger.log(`[Task] 教学周切换通知已注入: ${this.lastInjectedWeek} → ${wk}`)
+			}
+			this.lastInjectedWeek = sw.lastWeek
 		}
 
 		// getting verbose details is an expensive operation, it uses globby to top-down build file structure of project which for large projects can take a few seconds

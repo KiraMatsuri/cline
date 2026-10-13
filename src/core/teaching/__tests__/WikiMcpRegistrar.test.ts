@@ -1,11 +1,12 @@
 import { expect } from "chai"
+import { parseMcpArgs } from "../mcp/args"
 import {
-    buildWikiServerEntry,
-    decideWriteAction,
-    detectDisabledTransition,
-    isWikiServerConnected,
-    mergeWikiServerEntry,
-    removeWikiServerEntry,
+	buildWikiServerEntry,
+	decideWriteAction,
+	detectDisabledTransition,
+	isWikiServerConnected,
+	mergeWikiServerEntry,
+	removeWikiServerEntry,
 } from "../WikiMcpRegistrar"
 
 const base = {
@@ -186,5 +187,23 @@ describe("isWikiServerConnected", () => {
 			},
 		} as never
 		expect(isWikiServerConnected(bad)).to.equal(false)
+	})
+})
+
+describe("parseMcpArgs", () => {
+	it("★【F7】--week-file 可选；缺省为 undefined（向后兼容）", () => {
+		expect(parseMcpArgs(["--week", "5", "--server", "http://x"]).weekFile).to.equal(undefined)
+		expect(parseMcpArgs(["--week", "5", "--server", "http://x", "--week-file", "C:/a/b.json"]).weekFile).to.equal(
+			"C:/a/b.json",
+		)
+		// 空值视为未提供
+		expect(parseMcpArgs(["--week-file", "  "]).weekFile).to.equal(undefined)
+	})
+
+	it("★【F7】--week-file 不得影响既有参数解析", () => {
+		const a = parseMcpArgs(["--week", "9", "--server", "http://h:4001/", "--week-file", "f.json"])
+		expect(a.week).to.equal(9)
+		expect(a.serverUrl).to.equal("http://h:4001")
+		expect(a.weekFile).to.equal("f.json")
 	})
 })

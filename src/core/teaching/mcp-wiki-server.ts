@@ -18,10 +18,24 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import { parseMcpArgs } from "./mcp/args"
 import { callListWeeks, callReadChunk, callSearchWiki } from "./mcp/wikiBackend"
 import { SEARCH_WIKI_DESCRIPTION } from "./mcp/wikiToolDescriptions"
+import { readWeekState } from "./weekStateFile"
 
-const { week, serverUrl } = parseMcpArgs(process.argv.slice(2))
+const { week, serverUrl, weekFile } = parseMcpArgs(process.argv.slice(2))
 
 const server = new Server({ name: "wiki", version: "1.0.0" }, { capabilities: { tools: {} } })
+
+/**
+ * 【F7】每次工具调用前热读周数文件 ⇒ 改周数**无需重启 MCP 进程**。
+ * 文件缺失/损坏/越界 → 回退 spawn 时的 `--week`（向后兼容，永不抛错）。
+ */
+async function effectiveWeek(): Promise<number> {
+	if (!weekFile) return week
+	try {
+		return (await readWeekState(weekFile)) ?? week
+	} catch {
+		return week
+	}
+}
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
 	tools: [
@@ -63,15 +77,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 			return { content: [{ type: "text", text: JSON.stringify({ error: "wiki_backend_not_configured" }) }] }
 		}
 		if (name === "search_wiki") {
-			const r = await callSearchWiki(serverUrl, week, String(args.query ?? ""), Number(args.limit ?? 5))
+			const r = await callSearchWiki(serverUrl, await effectiveWeek(), String(args.query ?? ""), Number(args.limit ?? 5))
 			return { content: [{ type: "text", text: JSON.stringify(r) }] }
 		}
 		if (name === "read_wiki_chunk") {
-			const r = await callReadChunk(serverUrl, week, String(args.chunk_id ?? ""))
+			const r = await callReadChunk(serverUrl, await effectiveWeek(), String(args.chunk_id ?? ""))
 			return { content: [{ type: "text", text: JSON.stringify(r) }] }
 		}
 		if (name === "list_wiki_weeks") {
-			const r = await callListWeeks(serverUrl, week)
+			const r = await callListWeeks(serverUrl, await effectiveWeek())
 			return { content: [{ type: "text", text: JSON.stringify(r) }] }
 		}
 		return { content: [{ type: "text", text: JSON.stringify({ error: `unknown_tool: ${name}` }) }] }

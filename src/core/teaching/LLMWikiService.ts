@@ -28,6 +28,8 @@
 
 import * as vscode from "vscode"
 import { Logger } from "@/shared/services/Logger"
+import { writeWeekState } from "./weekStateFile"
+import { weekStateFilePath } from "./weekStatePath"
 
 // ============================================================================
 //  类型定义
@@ -184,6 +186,8 @@ export class LLMWikiService {
 		const w = clampWeek(week)
 		await vscode.workspace.getConfiguration("clineTeaching").update("currentWeek", w, vscode.ConfigurationTarget.Global)
 		this._currentWeek = w
+		// 【F7】同步写共享文件（fire-and-forget），让 MCP 进程无需重启即可热读到新周数
+		void writeWeekState(await weekStateFilePath(), w).catch(() => {})
 		this.invalidateCache() // 周数变化 → 重新拉取
 	}
 
@@ -317,6 +321,8 @@ export class LLMWikiService {
 	public async fetchWikiForWeek(week: number): Promise<WikiChunk[]> {
 		const targetWeek = clampWeek(week)
 		this._currentWeek = targetWeek
+		// 【F7】同步写共享文件（fire-and-forget），让 MCP 进程无需重启即可热读到新周数
+		void writeWeekState(await weekStateFilePath(), targetWeek).catch(() => {})
 		await vscode.workspace
 			.getConfiguration("clineTeaching")
 			.update("currentWeek", targetWeek, vscode.ConfigurationTarget.Global)

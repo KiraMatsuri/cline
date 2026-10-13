@@ -26,11 +26,17 @@ export function clampWeek(n: unknown): number {
 export interface McpArgs {
 	week: number
 	serverUrl: string
+	/**
+	 * 【F7】周状态文件路径（可选）。提供时 MCP 进程每次工具调用前热读该文件取周数，
+	 * 从而改周数**无需重启 MCP 进程**；文件缺失/损坏/越界则回退 `week`。
+	 */
+	weekFile: string | undefined
 }
 
 export function parseMcpArgs(argv: string[]): McpArgs {
 	let week = 1
 	let serverUrl = ""
+	let weekFile: string | undefined
 
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i]
@@ -41,8 +47,11 @@ export function parseMcpArgs(argv: string[]): McpArgs {
 			const raw = String(argv[i + 1] ?? "").trim()
 			serverUrl = raw.endsWith("/") ? raw.slice(0, -1) : raw
 			i++
+		} else if (a === "--week-file") {
+			weekFile = String(argv[i + 1] ?? "").trim() || undefined
+			i++
 		}
 	}
 
-	return { week, serverUrl }
+	return { week, serverUrl, weekFile }
 }

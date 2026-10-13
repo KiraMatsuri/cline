@@ -28,6 +28,8 @@ import { HostProvider } from "@/hosts/host-provider"
 import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
 import { clampWeek } from "./mcp/args"
+import { writeWeekState } from "./weekStateFile"
+import { weekStateFilePath } from "./weekStatePath"
 
 /** McpHub 的最小结构依赖（便于单测，避免 teaching 层绑定 McpHub 实现） */
 export interface McpHubLike {
@@ -54,11 +56,20 @@ export function buildWikiServerEntry(opts: {
 	scriptPath: string
 	week: number
 	serverUrl: string
+	/**
+	 * 【F7】周状态文件绝对路径（由插件侧 `weekStateFilePath()` 算好传入）。
+	 * 可选：仅在提供时追加 `--week-file`，保持旧 args 逐字不变（向后兼容）。
+	 */
+	weekStateFile?: string
 }): McpServerEntry {
+	const args = [opts.scriptPath, "--week", String(clampWeek(opts.week)), "--server", opts.serverUrl]
+	if (opts.weekStateFile) {
+		args.push("--week-file", opts.weekStateFile)
+	}
 	return {
 		type: "stdio",
 		command: opts.execPath,
-		args: [opts.scriptPath, "--week", String(clampWeek(opts.week)), "--server", opts.serverUrl],
+		args,
 		// stdio server 是独立进程：用 VS Code 自带的 node 运行脚本
 		env: { ELECTRON_RUN_AS_NODE: "1" },
 		autoApprove: [...WIKI_TOOL_NAMES],
@@ -188,11 +199,16 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 		}
 
 		const scriptPath = path.join(context.extensionPath, "dist", "mcp-wiki-server.js")
+		// 【F7】周状态文件路径由插件侧算好（MCP 进程内没有 vscode，无法自行推导）。
+		// 顺手先写一次，保证 server 首次读到文件时它已存在。
+		const weekStateFile = await weekStateFilePath()
+		await writeWeekState(weekStateFile, clampWeek(week))
 		const entry = buildWikiServerEntry({
 			execPath: process.execPath,
 			scriptPath,
 			week,
 			serverUrl,
+			weekStateFile,
 		})
 
 		const { filePath, map, raw, outcome } = await readMcpSettings(settingsDir)
