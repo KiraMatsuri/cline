@@ -74,4 +74,34 @@ describe("buildWikiSystemPrompt", () => {
 		expect(s).to.include("后续索引已省略")
 		expect(s.length).to.be.lessThan(4000)
 	})
+
+	it("★【裁定 b】分级截断：18 周长标题下，后续周次不得消失，且长度有界", () => {
+		const index = Array.from({ length: 18 }, (_, i) => ({
+			week: i + 1,
+			titles: Array.from({ length: 8 }, (_, j) => `第${i + 1}周标题摘要编号${j}${"补".repeat(40)}`),
+		}))
+		const s = buildWikiSystemPrompt({ week: 5, index, mcpAvailable: true })
+		// F4 的目标：模型必须知道"后面还有什么" ⇒ 18 周全部都要出现
+		for (let w = 1; w <= 18; w++) {
+			expect(s, `第 ${w} 周应出现在索引里`).to.include(`第 ${w} 周`)
+		}
+		// 超纲周走简略形态（周号 + 主题数）
+		expect(s).to.include("（8 个主题）")
+		// 长度有界：不得退化成全文注入
+		expect(s.length).to.be.lessThan(4000)
+	})
+
+	it("★【裁定 b】进度内列标题、超纲只列主题数", () => {
+		const s = buildWikiSystemPrompt({
+			week: 5,
+			index: [
+				{ week: 5, titles: ["装饰器"] },
+				{ week: 9, titles: ["生成器"] },
+			],
+			mcpAvailable: true,
+		})
+		expect(s).to.include("第 5 周：装饰器") // 进度内 → 标题
+		expect(s).to.include("第 9 周：（1 个主题）") // 超纲 → 只给主题数
+		expect(s).to.not.include("生成器") // 超纲周不得泄露标题
+	})
 })

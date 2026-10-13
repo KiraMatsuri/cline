@@ -62,10 +62,19 @@ export function buildWikiSystemPrompt(opts: WikiPromptOptions): string {
 	}
 
 	// ② 资料索引（只含元数据；控制长度，避免退化成"全文注入"）
+	// 【F4 + 裁定 b】分级截断：
+	//   - 「进度内」（week <= 当前周）→ 列标题（最多 MAX_TITLES_PER_GROUP 条）
+	//   - 「超纲」（week > 当前周）→ 只列「周号 + 主题数」，只为了让模型知道"后面还有什么"（正是 F4 的目标）
+	//   - 预算不够时**优先把详细行降级为简略行**，而不是 break：旧实现在超预算时 break，
+	//     而它是按周升序的，于是被砍掉的正是"当前周之后"的周次 —— 恰好与 F4 目标相反。
+	//   - 仅当连简略行都放不下时才输出占位并停止（此时长度仍严格有界）
 	const lines: string[] = []
 	let used = 0
 	for (const g of opts.index.slice().sort((a, b) => a.week - b.week)) {
-		const line = `- 第 ${g.week} 周：${g.titles.slice(0, MAX_TITLES_PER_GROUP).join(" / ")}`
+		const detailed = `- 第 ${g.week} 周：${g.titles.slice(0, MAX_TITLES_PER_GROUP).join(" / ")}`
+		const compact = `- 第 ${g.week} 周：（${g.titles.length} 个主题）`
+		const inProgress = g.week <= week
+		const line = inProgress && used + detailed.length <= MAX_INDEX_CHARS ? detailed : compact
 		if (used + line.length > MAX_INDEX_CHARS) {
 			lines.push(`- …（后续索引已省略）`)
 			break
