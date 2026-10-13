@@ -23,6 +23,6 @@ export const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog 
 	...over,
 })
 
-/** code_edit 事件：`editor` 缺省即"按人工处理"（与生产侧的向后兼容语义一致） */
+/** code_edit 事件：`editor` 缺省即"按人工处理"（与生产侧的向后兼容语义一致）；code_edit 本身不携带代码块 */
 export const editEv = (over: Partial<StudentInteractionLog>): StudentInteractionLog =>
-	ev({ eventType: "code_edit", role: "user", category: "other", ...over })
+	ev({ eventType: "code_edit", role: "user", category: "other", hasCode: false, hasCodeBlock: false, ...over })

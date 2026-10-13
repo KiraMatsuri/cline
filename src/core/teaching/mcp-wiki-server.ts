@@ -17,6 +17,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { parseMcpArgs } from "./mcp/args"
 import { callListWeeks, callReadChunk, callSearchWiki } from "./mcp/wikiBackend"
+import { SEARCH_WIKI_DESCRIPTION } from "./mcp/wikiToolDescriptions"
 
 const { week, serverUrl } = parseMcpArgs(process.argv.slice(2))
 
@@ -26,10 +27,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 	tools: [
 		{
 			name: "search_wiki",
-			description:
-				"在课程资料库中按关键词检索。只返回当前教学周之前（含）已发布的资料。" +
-				"返回 0 条表示该知识点尚未在当前进度内发布 —— 此时**仍可讲解**，但需标注所属周次、" +
-				"补齐当前进度内的前置基础，并**不要给出完整可运行实现**。",
+			description: SEARCH_WIKI_DESCRIPTION,
 			inputSchema: {
 				type: "object",
 				properties: {

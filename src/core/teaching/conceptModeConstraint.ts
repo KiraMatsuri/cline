@@ -36,7 +36,14 @@ export function buildConceptModeConstraint(): string {
 	].join("\n")
 }
 
-/** 该分类是否属于「概念问答模式」（决定是否注入约束 / 检查违规） */
+/**
+ * 该分类是否属于「概念问答模式」（单轮口径）。
+ *
+ * ⚠️ **自 F3 起，本函数不再是注入或违规可见化的门控** —— index.ts 的两处都改用
+ * `BehaviorMonitor.getConceptModeState().active`（任务级粘性），因为在"学生反复索要完整实现"
+ * 这一目标场景里单轮分类会变成 code_generation，用单轮口径做门控会让护栏在最需要时静默失效。
+ * 保留本函数：它是纯函数，既有单测（conceptModeConstraint.test.ts）覆盖，且可供离线复算/向后兼容使用。
+ */
 export function isConceptModeCategory(category: string | undefined): boolean {
 	return category === "explanation" || category === "algorithm"
 }

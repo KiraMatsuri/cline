@@ -84,6 +84,14 @@ describe("F2 · wasRecentlyWrittenByCline 只读语义（不得破坏既有 watc
 		t.markFileAsEditedByCline("./src/bar.ts")
 		expect(t.wasRecentlyWrittenByCline("src/bar.ts")).to.equal(true) // 前导 ./
 	})
+
+	it("★【F2 残留】win32 下大小写不敏感：与 arePathsEqual 口径一致", () => {
+		// POSIX 上 Src/ 与 src/ 是不同目录，大小写折叠是错的 ⇒ 仅 win32 断言
+		if (process.platform !== "win32") return
+		const t = new FileContextTracker({} as Controller, "t1")
+		t.markFileAsEditedByCline("SRC/Foo.ts") // 工具侧：大写
+		expect(t.wasRecentlyWrittenByCline("src/foo.ts")).to.equal(true) // 查询侧：小写
+	})
 })
 
 // Task 2 Step 5 的护栏原本只写在 src/core/context/context-tracking/FileContextTracker.test.ts，

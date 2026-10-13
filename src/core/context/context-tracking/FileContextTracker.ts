@@ -21,12 +21,17 @@ import type { FileMetadataEntry } from "./ContextTrackerTypes"
  * 都产出相对路径，因此可接受。
  */
 export function canonicalPathKey(p: string): string {
-	return p
+	const normalized = p
 		.trim()
 		.replace(/\\/g, "/")
 		.replace(/^\.\//, "")
 		.replace(/\/{2,}/g, "/")
 		.replace(/\/+$/, "")
+	// 【F2 残留修复】Windows 文件系统大小写不敏感，且 arePathsEqual()（src/utils/path.ts）在 win32 下
+	// 同样做 toLowerCase —— 这里不统一大小写的话，"模型给的相对路径"与"watcher 报告的 fsPath"
+	// 大小写不一致时会 miss，使该次 AI 落盘被误判成"学生动手"，F2 在那个文件上失效。
+	// ⚠️ 不得无条件 lowercase：POSIX 上 Src/ 与 src/ 是不同目录。
+	return process.platform === "win32" ? normalized.toLowerCase() : normalized
 }
 
 // This class is responsible for tracking file operations that may result in stale context.
