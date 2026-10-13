@@ -50,6 +50,13 @@ export interface ResolveCopyInput {
 	body: string
 	/** 本轮注入的模板文案（`undefined` ⇒ 本轮没有注入。展示层**不得**提前清空它） */
 	lastInjectionTemplate?: string
+	/**
+	 * 本轮**已经交付过**一条文案（由调用方在回合内累计）。
+	 * 一次决策只投递一条文案：同一回合的第 2、3 个 text 块只做剥离。
+	 * 否则（回执块在第 1 块、第 2 块无块）分支 ③ 会再投递一次模板并把 `T` 多记一次，
+	 * 使 M9' 守恒式 ② `D ≥ C + T` **按构造失败**，而失败原因会被误读为「该干预却没干预」。
+	 */
+	copyAlreadyDelivered?: boolean
 	/** 最近 2 轮学生输入（喂给主题锚定启发式） */
 	recentTexts: string
 	/** 本轮决策的规则 / 力度 / 风格（随事件落库，供教师端对账） */
@@ -65,8 +72,12 @@ export interface ResolveCopyResult {
 	event: InterventionCopyEvent | undefined
 }
 
-/** 「像提示语」的关键词（与系统提示里的防仿写约束配套，只记账不拦截） */
-const HINT_MARKERS = /学习提示|独立编码提示|实践建议|反思/
+/**
+ * 「像提示语」的关键词（与系统提示里的防仿写约束配套，只记账不拦截）。
+ * ⚠️ 刻意**收窄**：不能写成 `建议|反思|提示` 这类泛词 —— 正常回答里一句「建议你反思一下这段代码」
+ * 就会让 N 虚高，而 N 是 ③ `C + T + N ≥ D` 的加项，虚高的 N 会**掩盖**真实的 ③ 缺口。
+ */
+const HINT_MARKERS = /学习提示|独立编码提示|实践建议|动手试试/
 
 /**
  * 「像不像一段学习提示语」——**启发式**，只用于记账（`N`）。
@@ -85,6 +96,11 @@ export function looksLikeInterventionHint(body: string): boolean {
  * 纯函数：同样的输入必然得到同样的输出，因此可以脱离 `Task`/vscode 直接断言。
  */
 export function resolveInterventionCopyForDisplay(input: ResolveCopyInput): ResolveCopyResult {
+	// 【M9' ②】一次决策只投递一条文案：同回合的后续 text 块只剥离、不投递、不记账
+	if (input.copyAlreadyDelivered) {
+		return { text: undefined, event: undefined }
+	}
+
 	const meta = {
 		interventionRuleId: input.interventionRuleId,
 		interventionSeverity: input.interventionSeverity,

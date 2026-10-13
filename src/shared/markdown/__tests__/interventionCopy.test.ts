@@ -50,6 +50,44 @@ describe("F13 · 回执块解析与剥离", () => {
 		expect(r.rest).to.equal("上文\n\n下文")
 	})
 
+	it("★ 空行与粘行：3+ 空行收敛为 1 个空行；两侧都没换行时补回段落分隔", () => {
+		// 块**之前**已有 3 个换行：不得让多余空行漏给学生
+		expect(extractInterventionCopy(`AAAA\n\n\n${block("文案")}\nBBBB`).rest).to.equal("AAAA\n\nBBBB")
+		// 块紧贴左邻文字、右侧是换行：不得把两段文字**粘死**
+		expect(extractInterventionCopy(`上文${block("文案")}\n\n\n正文`).rest).to.equal("上文\n\n正文")
+	})
+
+	it("★ 围栏代码块内的标签视为**正文示例**：不剥离、不产生 found（防幻影干预）", () => {
+		// 任务书自带回执格式示例，模型「复述格式」时很常见；若当成真实回执块，
+		// 示例会被截断，且这段示例还会被当成一次真实干预文案展示给学生。
+		const text = `示例：\n\`\`\`\n${block("请先动手写一版？")}\n\`\`\`\n正文`
+		const r = extractInterventionCopy(text)
+		expect(r.found).to.equal(null)
+		expect(r.rest).to.equal(text)
+	})
+
+	it("★ 残渣清理：孤立闭标签 / 嵌套残留 / 属性含 `>` 都不把 XML 漏给学生", () => {
+		// 孤立闭标签：无开标签时也要清掉（否则正文里出现字面量）
+		const stray = extractInterventionCopy("正文前 </teaching_intervention_copy> 正文后")
+		expect(stray.found).to.equal(null)
+		expect(stray.rest).to.not.include("teaching_intervention_copy")
+
+		// 真嵌套（块中块）：开标签不得混进 copy（copy 是直接投给学生的文案），闭标签残渣也要清掉
+		const nested = extractInterventionCopy(
+			"<teaching_intervention_copy>A<teaching_intervention_copy>B</teaching_intervention_copy></teaching_intervention_copy>",
+		)
+		expect(nested.found?.copy).to.equal("AB")
+		expect(nested.found?.copy).to.not.include("teaching_intervention_copy")
+		expect(nested.rest).to.equal("")
+
+		// 属性值里含 `>`：不得把 `b">` 当成文案（旧 `[^>]*` 写法会）
+		const gt = extractInterventionCopy(
+			'<teaching_intervention_copy rule="a>b" severity="gentle">请先动手写一版？</teaching_intervention_copy>',
+		)
+		expect(gt.found?.rule).to.equal("a>b")
+		expect(gt.found?.copy).to.equal("请先动手写一版？")
+	})
+
 	it("★ 空块 → copy 为空串（交由校验拒绝），且块仍被剥离", () => {
 		const r = extractInterventionCopy(
 			`<teaching_intervention_copy rule="no_edit_streak" severity="gentle"></teaching_intervention_copy>\n\n正文`,

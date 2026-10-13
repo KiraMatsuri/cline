@@ -100,6 +100,21 @@ describe("F13 · 文案展示决策（M9' 记账）", () => {
 		expect(r.event).to.equal(undefined)
 	})
 
+	it("★ 同回合的**后续** text 块不得重复投递（否则 M9' ② `D ≥ C + T` 按构造失败）", () => {
+		// 一个 assistant 消息可能有多个 text 块：第 1 块给了回执块、第 2 块是普通正文。
+		// 若第 2 块走分支 ③（有注入 + 无块 ⇒ 投模板），学生会看到**两条**文案而只有一条决策，
+		// 且 `T` 被多记一次 ⇒ ② 失败，而失败原因会被误读为「该干预却没干预」（P3 复审 C1）。
+		const r = resolveInterventionCopyForDisplay({
+			found: null,
+			body: "下面我逐行解释。",
+			lastInjectionTemplate: "模板兜底文案",
+			recentTexts: "",
+			copyAlreadyDelivered: true,
+		})
+		expect(r.text).to.equal(undefined)
+		expect(r.event).to.equal(undefined)
+	})
+
 	it("★ 恒等：正文为空且无 found/无注入 → 无文案、无事件（不得凭空产出）", () => {
 		const r = resolveInterventionCopyForDisplay({
 			found: null,

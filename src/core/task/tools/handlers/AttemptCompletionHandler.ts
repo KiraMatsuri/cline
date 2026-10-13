@@ -55,6 +55,14 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 		const result: string | undefined = block.params.result
 		const command: string | undefined = block.params.command
 
+		// ⚠️ 【F13 残留登记】本文件是**展示路径**：只剥离、**不**参与 M9' 记账。
+		// 任务书明确要求模型把回执块写在**正文**（`result` 参数不计入教学对账），但模型仍可能违反。
+		// 违反时的表现：正文侧记一条 `block_missing`（>T）并把模板兜底展示给学生，而本路径又展示了
+		// 模型写在 `result` 里的那份文案 ⇒ 一个决策对应两条可见文案，M9' ①（`V = C + T`）因此不成立。
+		// 这是**设计层面的残留**，不加记账：本层拿不到 `lastInjectionTemplate`/本轮交付状态（都在 Task 上），
+		// 强行补记账需要跨层状态，且会把「模型不遵从契约」这一真实信号洗掉。
+		// 人工验收 M9' 时若见 ① 不成立，先查 `result` 参数里是否混进了回执块。
+
 		// Validate required parameters
 		if (!result) {
 			config.taskState.consecutiveMistakeCount++

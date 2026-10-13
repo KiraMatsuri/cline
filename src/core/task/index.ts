@@ -925,6 +925,12 @@ export class Task {
 	private lastInjectionMeta: { ruleId: BehaviorRuleId; severity: InterventionSeverity; style: InterventionStyle } | undefined
 	/** 【F13】最近 K=5 条**已展示**的干预文案，回传给任务书要求「换一种说法」（M13'） */
 	private recentInterventionCopies: string[] = []
+	/**
+	 * 【F13】本回合是否已经交付过一条干预文案（与 `lastInjectionTemplate` 同步重置）。
+	 * 一次决策只投递一条文案 —— 一个 assistant 消息可能有**多个 text 块**，若每个块都走分支 ③，
+	 * 兜底模板会被重复投递并把 `T` 多记一次 ⇒ M9' ② `D ≥ C + T` 按构造失败（P3 复审 C1）。
+	 */
+	private interventionCopyDeliveredThisTurn = false
 	/** 【F13】最近 2 轮学生输入（主题锚定启发式用；只写 advisory，绝不影响是否展示/是否干预） */
 	private recentStudentTexts: string[] = []
 	/** 【F7】上次注入周切换通知时的教学周；undefined = 本任务尚未注入过 */
@@ -2751,6 +2757,8 @@ export class Task {
 						found,
 						body: content,
 						lastInjectionTemplate: this.lastInjectionTemplate,
+						// 【M9' ②】一次决策只投递一条文案：同回合的第 2、3 个 text 块只剥离
+						copyAlreadyDelivered: this.interventionCopyDeliveredThisTurn,
 						recentTexts: this.recentStudentTexts.join("\n"),
 						interventionRuleId: this.lastInjectionMeta?.ruleId,
 						interventionSeverity: this.lastInjectionMeta?.severity,
@@ -2758,6 +2766,7 @@ export class Task {
 					})
 					if (shown.text) {
 						content = content ? `${shown.text}\n\n---\n\n${content}` : shown.text
+						this.interventionCopyDeliveredThisTurn = true
 						// 【M13'】记住已展示的文案，下一轮任务书据此要求「换一种说法」
 						this.recentInterventionCopies = [...this.recentInterventionCopies, shown.text].slice(-5)
 					}
@@ -3097,6 +3106,7 @@ export class Task {
 			this.pendingInterventionText = undefined
 			this.lastInjectionTemplate = undefined
 			this.lastInjectionMeta = undefined
+			this.interventionCopyDeliveredThisTurn = false
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()

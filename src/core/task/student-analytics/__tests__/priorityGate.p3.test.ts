@@ -140,6 +140,10 @@ describe("G3 · 优先级综合（可跑通 + 边界）", () => {
 		// F13 硬要求 2：剥离只喂展示，历史累积仍是原始 chunk 文本
 		expect(taskSrc).to.include("assistantTextOnly += chunk.text")
 		expect(handlerSrc).to.not.include("addToApiConversationHistory")
+		// 【P3 复审 C1】一次决策只投递一条文案：同回合「已交付」标志必须存在、随回合入口重置、并传给纯函数
+		expect(taskSrc).to.include("copyAlreadyDelivered: this.interventionCopyDeliveredThisTurn")
+		expect(taskSrc).to.include("this.interventionCopyDeliveredThisTurn = false") // 回合入口重置
+		expect(taskSrc).to.include("this.interventionCopyDeliveredThisTurn = true") // 交付后置位
 	})
 
 	it("【G3-⑤】关键实现武装：正文 fenced 块**或**写文件工具（F10），且单任务内单调", () => {
@@ -204,8 +208,11 @@ describe("G3 · 优先级综合（可跑通 + 边界）", () => {
 		expect(shown.event?.interventionSeverity).to.equal("gentle")
 		expect(shown.event?.interventionStyle).to.equal("hint")
 
-		// ⑤ 硬要求 2：被剥离的是**展示副本**，模型原始回复里回执块依然在（历史由 assistantTextOnly 承载）
-		expect(modelReply).to.include("<teaching_intervention_copy")
-		expect(modelReply).to.include(modelCopy)
+		// ⑤ 纯函数级：剥离结果（= 展示正文）不含 XML，但正文文字一字不少
+		// ⚠️ 这里**不能**用 `expect(modelReply).to.include("<teaching_intervention_copy")` 来声称
+		// 「历史里保留了回执块」—— 那断言的是本测试自己拼出的字符串常量，**恒真**（P3 复审 M2）。
+		// 历史侧的真实覆盖只能由人工验收 M9' 或 G3-④ 的结构守卫承担。
+		expect(rest).to.not.include("<teaching_intervention_copy")
+		expect(rest).to.include("下面是插入排序的说明。")
 	})
 })

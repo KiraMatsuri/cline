@@ -47,11 +47,11 @@ describe("F13 · 展示路径剥离（AttemptCompletionHandler）", () => {
 		const handlerSrc = fs.readFileSync(path.join(__dirname, "..", "AttemptCompletionHandler.ts"), "utf8")
 		const taskSrc = fs.readFileSync(path.join(__dirname, "..", "..", "..", "index.ts"), "utf8")
 
-		// AttemptCompletionHandler：一次 import + 三处调用（:37 partial / :120 command 分支 / :151 no-command 分支）
+		// AttemptCompletionHandler：一次 import + 三处**逐字相同**的剥离调用
+		// （不用裸子串计数：`rest` 可被无关文本满足 —— P3 复审 M3）
 		expect(handlerSrc).to.include("extractInterventionCopy")
 		expect(handlerSrc).to.include('from "@/shared/markdown/interventionCopy"')
-		expect((handlerSrc.match(/extractInterventionCopy\(result\)/g) ?? []).length).to.be.at.least(3)
-		expect((handlerSrc.match(/rest/g) ?? []).length).to.be.at.least(3)
+		expect((handlerSrc.match(/const \{ rest \} = extractInterventionCopy\(result\)/g) ?? []).length).to.equal(3)
 		// 只有 say（展示），不得有持久化路径 —— F13 硬要求 2 的前置条件
 		expect(handlerSrc).to.not.include("addToApiConversationHistory")
 
