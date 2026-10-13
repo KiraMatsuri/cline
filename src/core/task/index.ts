@@ -73,6 +73,7 @@ import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
 import { getSystemPrompt } from "@/core/prompts/system-prompt"
 import { appendEphemeralIntervention } from "@/core/task/student-analytics/ephemeralIntervention"
+import { nextHasDeliveredKeyCode } from "@/core/task/student-analytics/keyCodeDelivery"
 import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
 import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
@@ -1105,16 +1106,18 @@ export class Task {
 
 			// 分析 AI 回复内容
 			const analysis = contentAnalyzer.analyze(assistantText)
-			// 【方案 C-3】记录"关键实现已给出"，供后续学生提问的意图翻转判定使用
-			if (analysis.hasCodeBlock) {
-				this.hasDeliveredKeyCode = true
-			}
-			const category = taskClassifier.classify(assistantText)
 
-			// 提取使用的工具列表
+			// 提取使用的工具列表（【F10】需先于下面的 hasDeliveredKeyCode 判定计算）
 			const toolsUsed = assistantMessageContent
 				.filter((block) => block.type === "tool_use" && block.name)
 				.map((block) => block.name as string)
+
+			// 【F10】方案 C-3 的武装条件从"仅正文 fenced 块"扩展为"正文块 **或** 写文件工具"：
+			// AI 真实工作流是用工具落盘（代码在工具参数里、不在正文），只认正文会让方案 C-3 永不武装。
+			// 【F10】单任务内单调，不回落（与改造前一致）。
+			this.hasDeliveredKeyCode = nextHasDeliveredKeyCode(this.hasDeliveredKeyCode, analysis.hasCodeBlock, toolsUsed)
+
+			const category = taskClassifier.classify(assistantText)
 
 			// 推断建议类型
 			const suggestionType = this.inferSuggestionType(toolsUsed, assistantText)
