@@ -157,7 +157,10 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 		// 源码结构守卫（index.ts 是请求组装点）
 		const indexSrc = fs.readFileSync(path.join(__dirname, "..", "..", "index.ts"), "utf-8")
 		expect(indexSrc).to.include("appendEphemeralIntervention(systemPromptFinal, this.pendingInterventionText)") // 已接线到 system prompt
-		expect(indexSrc).to.include("this.pendingInterventionText = interventionText") // 干预文本的来源
+		// 【F13】干预文本的来源改为**结构化决策**（`checkAndGenerateInterventionDecision`）：
+		// 除注入文本外还要拿到模板兜底文案与规则/力度/风格（硬要求 1 的落库字段），
+		// 因此这里的字面量随之更新 —— 断言语义未变（仍是「pendingInterventionText 由干预判定赋值」）。
+		expect(indexSrc).to.include("this.pendingInterventionText = decision.injectionText")
 		// 关键否定断言：不得把 interventionText 当作某个 push() 的 text 值（那会被持久化进历史）
 		const pushedAsContent = /text:\s*interventionText\b/.test(indexSrc)
 		expect(pushedAsContent).to.equal(false)

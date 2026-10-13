@@ -8,6 +8,7 @@ import { telemetryService } from "@services/telemetry"
 import { findLastIndex } from "@shared/array"
 import { COMPLETION_RESULT_CHANGES_FLAG } from "@shared/ExtensionMessage"
 import { ClineDefaultTool } from "@shared/tools"
+import { dropUnclosedInterventionCopy, extractInterventionCopy } from "@/shared/markdown/interventionCopy"
 import { Logger } from "@/shared/services/Logger"
 import type { ToolResponse } from "../../index"
 import { buildUserFeedbackContent } from "../../utils/buildUserFeedbackContent"
@@ -28,14 +29,21 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 	 * Matches the original conditional logic structure for command vs no-command cases
 	 */
 	async handlePartialBlock(block: ToolUse, uiHelpers: StronglyTypedUIHelpers): Promise<void> {
-		const result = block.params.result
 		const command = block.params.command
+		// `result` 的静态类型是 `string | undefined`（参数可为空）；归一为空串后即可直接喂给
+		// `extractInterventionCopy`，与原 `removeClosingTag(block, "result", undefined)` 的显示行为一致。
+		const result = block.params.result ?? ""
 
 		if (!command) {
 			// no command, still outputting partial result
+			// 【F13】回执块只在此处（展示路径）剥离：写入 apiConversationHistory 的是另一个变量
+			// （`assistantTextOnly`），所以剥离不会影响历史里保留的回执块（F13 硬要求 2）。
+			// partial 阶段块通常还没闭合，用 dropUnclosedInterventionCopy() 把开标签及其后内容整体丢弃，
+			// 避免学生看到 `<teaching_intervention_copy …>` 残渣。
+			const { rest } = extractInterventionCopy(result)
 			await uiHelpers.say(
 				"completion_result",
-				uiHelpers.removeClosingTag(block, "result", result),
+				uiHelpers.removeClosingTag(block, "result", dropUnclosedInterventionCopy(rest)),
 				undefined,
 				undefined,
 				block.partial,
@@ -117,7 +125,9 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 		if (command) {
 			if (lastMessage && lastMessage.ask !== "command") {
 				// haven't sent a command message yet so first send completion_result then command
-				const completionMessageTs = await config.callbacks.say("completion_result", result, undefined, undefined, false)
+				// 【F13】展示路径剥离（理由同上：持久化用的是 `assistantTextOnly`）
+				const { rest } = extractInterventionCopy(result)
+				const completionMessageTs = await config.callbacks.say("completion_result", rest, undefined, undefined, false)
 				await config.callbacks.saveCheckpoint(true, completionMessageTs)
 				await addNewChangesFlagToLastCompletionResultMessage()
 				telemetryService.captureTaskCompleted(config.ulid)
@@ -147,7 +157,9 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 			commandResult = execCommandResult
 		} else {
 			// Send the complete completion_result message (partial was already removed above)
-			const completionMessageTs = await config.callbacks.say("completion_result", result, undefined, undefined, false)
+			// 【F13】展示路径剥离（理由同上：持久化用的是 `assistantTextOnly`）
+			const { rest } = extractInterventionCopy(result)
+			const completionMessageTs = await config.callbacks.say("completion_result", rest, undefined, undefined, false)
 			await config.callbacks.saveCheckpoint(true, completionMessageTs)
 			await addNewChangesFlagToLastCompletionResultMessage()
 			telemetryService.captureTaskCompleted(config.ulid)

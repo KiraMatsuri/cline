@@ -6,6 +6,7 @@
  * 可扩展更多规则和模板。
  */
 
+import { buildCopyTaskSheet } from "./InterventionCopyContract"
 import type { BehaviorAlert, BehaviorRuleId, InterventionMessage, InterventionSeverity, InterventionStyle } from "./types"
 
 /** 单条消息模板 */
@@ -263,26 +264,29 @@ export function generateInterventionMessage(
 }
 
 /**
- * 将干预消息格式化为可注入到对话上下文的文本片段
- * 使用 <teaching_intervention> 标签包裹，LLM 可据此在回复中自然融入教学引导
+ * 将干预消息格式化为可注入到系统提示的文本片段（用 <teaching_intervention> 标签包裹，便于审计）。
+ *
+ * 【F13】普通干预的下发内容不再是「请把上面这段提示呈现一遍」这种自由改写软指引，而是一份
+ * **文案写作任务书**：决策（rule/severity/style）仍由代码给定，模型只负责「怎么说」。
+ * 任务书里含三要素、硬约束与**回执块格式**，模型按契约把文案写在回执块里，
+ * 由 `InterventionCopyContract.validateCopy()` 判定是否采用（不过则降级 `TEMPLATE_REGISTRY`）。
+ *
+ * @param intervention 干预消息
+ * @param recentCopies 最近已展示过的文案（要求模型「换一种说法」）；缺省为空
  */
-export function formatInterventionForInjection(intervention: InterventionMessage): string {
+export function formatInterventionForInjection(intervention: InterventionMessage, recentCopies: readonly string[] = []): string {
 	// 阻断式干预使用专用格式化
 	if (intervention.interventionType === "blocking") {
 		return formatBlockingInterventionForInjection(intervention)
 	}
 
-	return [
-		`<teaching_intervention rule="${intervention.ruleId}" severity="${intervention.severity}" style="${intervention.style}">`,
-		intervention.content,
-		"",
-		"请在你的回复开头，先用简短友好的方式呈现上述学习提示（保留 emoji），然后用分隔线分开，再继续正常回答用户的问题。",
-		// 【F6→T13 过渡】暂**不**要求模型产出 <teaching_intervention_copy> 回执块：
-		// 回执块的**剥离与校验**属于 T13（P3）。现在就先要求块，而显示层还没挂剥离，
-		// 学生会直接看到 `<teaching_intervention_copy …>` 残渣。⇒ 块契约与剥离同时落地（T13）。
-		"注：不要提及这是系统自动插入的消息，直接以你的口吻给出这段学习提示。",
-		"</teaching_intervention>",
-	].join("\n")
+	return buildCopyTaskSheet({
+		ruleId: intervention.ruleId,
+		severity: intervention.severity,
+		style: intervention.style,
+		templateText: intervention.content,
+		recentCopies,
+	})
 }
 
 /**

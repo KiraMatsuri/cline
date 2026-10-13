@@ -30,6 +30,10 @@ export type LogEventType =
 	| "code_edit" // 学生代码编辑行为
 	| "file_save" // 学生保存文件行为
 	| "adoption_infer" // AI 建议采纳推断结果
+	// 【F13 硬要求 1】干预决策事件（M9' 的 `D`）。F6 之后干预文本不再进 apiConversationHistory，
+	// 这是「本轮判定要干预」的**唯一**持久痕迹。
+	| "intervention_decision"
+	| "intervention_copy" // 【F13】文案展示决策事件（M9' 的 `C` / `T` / `N`）
 
 /**
  * 消息角色
@@ -109,6 +113,21 @@ export interface StudentInteractionLog {
 	editor?: "user" | "ai"
 	/** AI 建议采纳推断（仅 role=assistant 时，会在后续事件中回填） */
 	adoptionStatus?: AdoptionStatus
+	// ===== 【F13】教学干预的结构化对账字段（全部可选，向后兼容旧 JSONL） =====
+	/** 【F13】干预决策的规则（仅 eventType=intervention_decision） */
+	interventionRuleId?: BehaviorRuleId
+	/** 【F13】干预力度档（仅 eventType=intervention_decision） */
+	interventionSeverity?: InterventionSeverity
+	/** 【F13】干预风格（仅 eventType=intervention_decision） */
+	interventionStyle?: InterventionStyle
+	/** 【F13】学生实际看到的文案来源：模型叙述 或 模板兜底（仅 eventType=intervention_copy） */
+	copyVoice?: "model" | "template"
+	/** 【F13】文案判定结果（M9'：accepted→C，rejected→T，hint_without_injection→N） */
+	copyDecision?: "copy_accepted" | "copy_rejected" | "hint_without_injection"
+	/** 【F13】降级原因（`block_missing` / `too_long` / `has_fenced_code` / `no_blank` / `forbidden_phrase` / `blocking_template`） */
+	copyReasons?: string[]
+	/** 【F13】启发性建议（`topic_unanchored`）—— 只记账，不影响是否展示 */
+	copyAdvisories?: string[]
 }
 
 /**

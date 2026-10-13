@@ -90,6 +90,7 @@ import {
 } from "@/integrations/terminal"
 import { ClineError, ClineErrorType, ErrorService } from "@/services/error"
 import { telemetryService } from "@/services/telemetry"
+import { dropUnclosedInterventionCopy, extractInterventionCopy } from "@/shared/markdown/interventionCopy"
 import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
 import {
 	ClineAssistantContent,
@@ -118,14 +119,19 @@ import { StreamResponseHandler } from "./StreamResponseHandler"
 import {
 	AdoptionTracker,
 	BehaviorMonitor,
+	type BehaviorRuleId,
 	CodeEditTracker,
 	contentAnalyzer,
+	type InterventionSeverity,
+	type InterventionStyle,
 	type StudentInteractionLog,
 	StudentLogPersister,
 	type SuggestionType,
 	TeachingInterventionManager,
 	taskClassifier,
 } from "./student-analytics"
+import { type InterventionCopyEvent, resolveInterventionCopyForDisplay } from "./student-analytics/interventionDisplay"
+import type { InterventionDecision } from "./student-analytics/TeachingInterventionManager"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
 import { detectAvailableCliTools, extractProviderDomainFromUrl, updateApiReqMsg } from "./utils"
@@ -908,6 +914,19 @@ export class Task {
 	private lastAssistantCategory: string | undefined
 	/** 【F6】本轮待注入的干预文本：只进 system prompt，绝不写进 apiConversationHistory */
 	private pendingInterventionText: string | undefined
+	/**
+	 * 【F13】本轮的模板文案：模型未按契约产出回执块、或被校验拒绝时用它兜底（干预一次都不丢）。
+	 * 与 `pendingInterventionText` **同生命周期**（回合入口重置）—— 展示点**不得**提前清空：
+	 * 注入点在 `attemptApiRequest`、展示点在 `presentAssistantMessage`，且一回合可能有多个 text 块，
+	 * 在展示点清空会让同回合的第二个块拿不到兜底文案（误记为「缺块」）。
+	 */
+	private lastInjectionTemplate: string | undefined
+	/** 【F13】本轮决策的规则/力度/风格，随 `intervention_decision` / `intervention_copy` 事件落库 */
+	private lastInjectionMeta: { ruleId: BehaviorRuleId; severity: InterventionSeverity; style: InterventionStyle } | undefined
+	/** 【F13】最近 K=5 条**已展示**的干预文案，回传给任务书要求「换一种说法」（M13'） */
+	private recentInterventionCopies: string[] = []
+	/** 【F13】最近 2 轮学生输入（主题锚定启发式用；只写 advisory，绝不影响是否展示/是否干预） */
+	private recentStudentTexts: string[] = []
 	/** 【F7】上次注入周切换通知时的教学周；undefined = 本任务尚未注入过 */
 	private lastInjectedWeek: number | undefined
 
@@ -926,6 +945,18 @@ export class Task {
 	}
 
 	/**
+	 * 【F13】记住最近 2 轮学生输入，供干预文案的「主题锚定」启发式使用。
+	 * 只影响一条 advisory（`topic_unanchored`），**绝不**影响是否干预、是否展示。
+	 */
+	private rememberStudentText(text: string | undefined): void {
+		const trimmed = (text ?? "").trim()
+		if (!trimmed) {
+			return
+		}
+		this.recentStudentTexts = [...this.recentStudentTexts, trimmed].slice(-2)
+	}
+
+	/**
 	 * 获取学生日志持久化器（懒加载）
 	 */
 	private getStudentLogPersister(): StudentLogPersister {
@@ -933,6 +964,71 @@ export class Task {
 			this.studentLogPersister = new StudentLogPersister(this.cwd)
 		}
 		return this.studentLogPersister
+	}
+
+	/**
+	 * 【F13】落一条干预结构事件（`intervention_decision` / `intervention_copy`）。
+	 *
+	 * 与 `persistStudentInteractionLog()` 共用**同一个** `StudentLogPersister`（同一份 JSONL），
+	 * 但**不**喂 `BehaviorMonitor` —— 这两类事件只用于审计与 M9' 对账，不参与行为规则判定。
+	 *
+	 * ⚠️ `turnIndex` 会消耗持久化器的计数器（JSONL 里因此可能跳过索引）：这是**有意**的，
+	 * 每条落库记录都应拿到唯一且递增的索引；行为规则不读 `turnIndex`（自行维护计数器）。
+	 */
+	private async persistInterventionEvent(
+		fields: Pick<
+			StudentInteractionLog,
+			| "eventType"
+			| "interventionRuleId"
+			| "interventionSeverity"
+			| "interventionStyle"
+			| "copyVoice"
+			| "copyDecision"
+			| "copyReasons"
+			| "copyAdvisories"
+		>,
+		rawContent: string,
+	): Promise<void> {
+		try {
+			const persister = this.getStudentLogPersister()
+			const text = rawContent ?? ""
+			const log: StudentInteractionLog = {
+				ts: new Date().toISOString(),
+				taskId: this.taskId,
+				role: "assistant",
+				category: taskClassifier.classify(text),
+				contentLength: text.length,
+				hasCode: false,
+				languageHint: "unknown",
+				imageCount: 0,
+				fileCount: 0,
+				turnIndex: persister.getNextTurnIndex(this.taskId),
+				rawContent: text.length <= 2000 ? text : text.slice(0, 2000),
+				...fields,
+			}
+			await persister.persist(log)
+		} catch (error) {
+			// 记账失败绝不得影响对话流
+			Logger.error("Failed to persist intervention event", error as Error)
+		}
+	}
+
+	/** 【F13】落一条 `intervention_decision`（M9' 的 `D`） */
+	private persistInterventionDecisionEvent(decision: InterventionDecision): void {
+		void this.persistInterventionEvent(
+			{
+				eventType: "intervention_decision",
+				interventionRuleId: decision.ruleId,
+				interventionSeverity: decision.severity,
+				interventionStyle: decision.style,
+			},
+			decision.templateText,
+		)
+	}
+
+	/** 【F13】落一条 `intervention_copy`（M9' 的 `C` / `T` / `N`） */
+	private persistInterventionCopyEvent(event: InterventionCopyEvent, shownText: string | undefined): void {
+		void this.persistInterventionEvent(event, shownText ?? "")
 	}
 
 	/**
@@ -1013,6 +1109,9 @@ export class Task {
 			// 使用 ContentAnalyzer 进行内容分析
 			const analysis = contentAnalyzer.analyze(task)
 
+			// 【F13】记住最近 2 轮学生输入（供干预文案的「主题锚定」启发式使用：只写 advisory）
+			this.rememberStudentText(task)
+
 			// 获取当前任务的轮次索引
 			const turnIndex = persister.getNextTurnIndex(this.taskId)
 
@@ -1061,6 +1160,9 @@ export class Task {
 
 			// 使用 ContentAnalyzer 进行内容分析
 			const analysis = contentAnalyzer.analyze(text)
+
+			// 【F13】记住最近 2 轮学生输入（供干预文案的「主题锚定」启发式使用：只写 advisory）
+			this.rememberStudentText(text)
 
 			// 获取当前任务的轮次索引（自增）
 			const turnIndex = persister.getNextTurnIndex(this.taskId)
@@ -2306,6 +2408,8 @@ export class Task {
 			"\n\n【教学约束】\n" +
 			"- 你的回复中不得出现任何思考过程、思维链、推理步骤或内部想法的文字。\n" +
 			"- 不要以我在思考、首先、其次等表述来复述推理过程。\n" +
+			// 【F13】防自发仿写：M9' 的 N（`hint_without_injection`）就是这条约束是否被遵守的度量。
+			"- 只有在收到 <teaching_intervention> 注入时才使用教学提示语格式；不要自发模仿该格式。\n" +
 			"- 直接、简洁地给出最终答案与必要的解释即可。"
 
 		// 【方案 C-2 / F3】概念问答模式：禁止给出完整可运行代码，只给关键步骤片段。
@@ -2627,6 +2731,40 @@ export class Task {
 				// 【教学】剔除“工具调用标记被当正文吐出来”的残渣（实测证据见 assistantTextSanitizer 注释）。
 				// 清洗后若为空串，webview 侧的 text 空值过滤会自然丢弃这条消息，无需在此额外判空。
 				content = stripLeakedToolCallMarkup(content)
+
+				// ===== 【F13】回执块的解析与剥离（**只发生在这里**：展示路径）=====
+				// 持久化走的是另一个变量 `assistantTextOnly`（见 attemptApiRequest →
+				// addToApiConversationHistory），因此本处剥离**不会**影响 apiConversationHistory，
+				// M9' 的 C（回执块数）仍可数（F13 硬要求 2）。
+				if (block.partial) {
+					// 流式中间态：回执块通常还没闭合（extractInterventionCopy 按契约恒等返回），
+					// 但开标签已经会被渲染出来 ⇒ 丢弃开标签及其后全部内容，只预览前缀。
+					// `say(…, partial=false)` 是**整条替换**语义，最终文案由那一次呈现。
+					content = dropUnclosedInterventionCopy(content)
+				} else {
+					const { found, rest } = extractInterventionCopy(content)
+					content = rest
+
+					// ⚠️ 记账**必须**门控在 `!partial`：presentAssistantMessage 在流式期间会被反复调用，
+					// 不门控则每帧都会落一条干预事件 ⇒ M9' 的三条守恒式全部失效。
+					const shown = resolveInterventionCopyForDisplay({
+						found,
+						body: content,
+						lastInjectionTemplate: this.lastInjectionTemplate,
+						recentTexts: this.recentStudentTexts.join("\n"),
+						interventionRuleId: this.lastInjectionMeta?.ruleId,
+						interventionSeverity: this.lastInjectionMeta?.severity,
+						interventionStyle: this.lastInjectionMeta?.style,
+					})
+					if (shown.text) {
+						content = content ? `${shown.text}\n\n---\n\n${content}` : shown.text
+						// 【M13'】记住已展示的文案，下一轮任务书据此要求「换一种说法」
+						this.recentInterventionCopies = [...this.recentInterventionCopies, shown.text].slice(-5)
+					}
+					if (shown.event) {
+						this.persistInterventionCopyEvent(shown.event, shown.text)
+					}
+				}
 
 				await this.say("text", content, undefined, undefined, block.partial)
 				break
@@ -2955,27 +3093,54 @@ export class Task {
 			// 【F6】每回合入口先重置：干预只在“本回合”有效（注入点是 attemptApiRequest，
 			// 而重试会重新进入该生成器 ⇒ 那时仍需拿到值，所以不能在注入时就清）。
 			// 放在 try 内、check 之前，是为了连“上一回合抛错留下残留值”这种情况也一并清掉。
+			// 【F13】模板兜底文案与决策元数据同生命周期（一轮即失效）。
 			this.pendingInterventionText = undefined
+			this.lastInjectionTemplate = undefined
+			this.lastInjectionMeta = undefined
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()
-				const interventionText = interventionManager.checkAndGenerateIntervention(monitor, this.taskState.apiRequestCount)
+				// 【F13】改用结构化决策入口：除注入文本外还要拿到模板文案与规则/力度/风格，
+				// 否则 `intervention_decision` 事件无从落库（F13 硬要求 1），M9' 的 D/T/N 全部不可数。
+				const decision = interventionManager.checkAndGenerateInterventionDecision(
+					monitor,
+					this.taskState.apiRequestCount,
+					this.recentInterventionCopies,
+				)
+				const interventionText = decision?.injectionText
 
 				// ★ 阻断态优先检查（独立于 interventionText）
-				// checkAndGenerateIntervention 在阻断冷却期间仍返回提醒消息
+				// checkAndGenerateInterventionDecision 在阻断冷却期间仍返回提醒消息
 				// 此处确保即使用户连续发送消息，每次都被拦截
 				if (interventionManager.isBlockingActive()) {
 					const blockingSeconds = Math.ceil((interventionManager.getBlockingEndsAt() - Date.now()) / 1000)
 					const minutes = Math.floor(blockingSeconds / 60)
 					const seconds = blockingSeconds % 60
 					const timeDisplay = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
+					const blockingText =
+						interventionText ||
+						`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】\n\n系统处于阻断模式，代码生成与工具执行功能暂不可用。请利用这段时间独立编写代码。`
 
 					// 向用户展示阻断消息（含剩余时间提醒）
-					await this.say(
-						"text",
-						interventionText ||
-							`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】\n\n系统处于阻断模式，代码生成与工具执行功能暂不可用。请利用这段时间独立编写代码。`,
-					)
+					await this.say("text", blockingText)
+
+					// 【F13】阻断文案是**代码模板**（不走模型叙述层），但它同样是「学生可见的一条干预文案」。
+					// 与决策事件成对记账，M9' ①（`V = C + T`）与 ②（`D ≥ C + T`）在阻断回合才成立。
+					if (decision) {
+						this.persistInterventionDecisionEvent(decision)
+						this.persistInterventionCopyEvent(
+							{
+								eventType: "intervention_copy",
+								copyDecision: "copy_rejected",
+								copyReasons: ["blocking_template"],
+								copyVoice: "template",
+								interventionRuleId: decision.ruleId,
+								interventionSeverity: decision.severity,
+								interventionStyle: decision.style,
+							},
+							blockingText,
+						)
+					}
 
 					Logger.info(
 						`[TeachingIntervention][${this.taskId}] BLOCKING ENFORCED: ` +
@@ -2989,8 +3154,19 @@ export class Task {
 				// 普通干预：【F6】只作为**本轮** system prompt 后缀，不进对话历史
 				// （写进 userContent 会被 addToApiConversationHistory 持久化，而模型上下文只来自该历史，
 				//   于是"干预靠模型转述"这一机制会导致模型持续仿写 —— 见 spec §7.2 的 0 次命中证据）
-				if (interventionText) {
-					this.pendingInterventionText = interventionText
+				if (decision) {
+					this.pendingInterventionText = decision.injectionText
+					// 【F13】模型没按契约产出回执块（或被校验拒绝）时用它兜底：字段与 pendingInterventionText
+					// 同生命周期，只在回合入口重置（展示点提前清空会让同回合后续 text 块误记为「缺块」）。
+					this.lastInjectionTemplate = decision.templateText
+					this.lastInjectionMeta = {
+						ruleId: decision.ruleId,
+						severity: decision.severity,
+						style: decision.style,
+					}
+					// 【F13 硬要求 1】每次「判定要干预」都必须落一条可分析记录：F6 之后干预文本不再进
+					// apiConversationHistory，这是「干预发生了几次」（M9' 的 D）的**唯一**持久痕迹。
+					this.persistInterventionDecisionEvent(decision)
 					Logger.info(
 						`[TeachingIntervention][${this.taskId}] hint intervention queued for system prompt (not persisted) at apiRequestCount=${this.taskState.apiRequestCount}`,
 					)

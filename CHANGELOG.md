@@ -17,6 +17,17 @@
   周数变化时重写 `--week` 参数并触发重载。
 - **检索可用性探测**：激活时探测并随后每 2s 轮询 `wiki` server 的连接状态、回写 `LLMWikiService`，
   注入内容据此决定是否声明"检索当前不可用"。
+- **干预文案改由模型在契约下叙述**（F13）：注入给模型的不再是"请把上面这段提示呈现一遍"式的自由改写
+  软指引，而是一份**文案写作任务书**（三要素：观察 / 锚定当前主题 / 留白 + 硬约束 + 回执格式）。
+  模型把文案写在 `<teaching_intervention_copy>` 回执块里，由代码做**四条确定性校验**
+  （≤120 字且 emoji 不计 / 无代码块 / 留下问句或行动邀请 / 不含"系统·检测·自动"）：
+  不过则**降级为预置模板**（干预一次都不丢），主题锚定这一**启发性**校验只记账、不影响是否展示。
+  回执块在**展示层**剥离（`say("text")` 与 `attempt_completion` 两条路径），学生看不到 XML 残渣，
+  但块本身**保留在** `apiConversationHistory` 的助手消息里 —— 供教师端对账。
+  新增 `intervention_decision`（决策数 `D`）与 `intervention_copy`（`copy_accepted` / `copy_rejected` /
+  `hint_without_injection`，对应 `C` / `T` / `N`）两个结构化事件，落 `<cwd>/.cline-logs/student_interactions.log`，
+  使 M9' 的三条守恒式（`V = C + T`、`D ≥ C + T`、`C + T + N ≥ D`）可机器对账。
+  另把最近 K=5 条已用文案随任务书回传，要求模型「换一种说法」（抑制同句逐字重复）。
 
 ### Changed
 

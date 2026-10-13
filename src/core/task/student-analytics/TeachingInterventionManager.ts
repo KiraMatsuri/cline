@@ -25,6 +25,7 @@ import type {
 	InterventionManagerOptions,
 	InterventionMessage,
 	InterventionRecord,
+	InterventionSeverity,
 	InterventionStyle,
 } from "./types"
 
@@ -42,6 +43,24 @@ export const DEFAULT_OPTIONS: Readonly<Required<InterventionManagerOptions>> = O
 	// 【方案 D 止血】180_000 → 60_000。阻隔 3 分钟对"概念问答误触发"场景过重。
 	blockingCooldownMs: 60_000,
 })
+
+/**
+ * 【F13】一次干预决策的全部可审计信息（决策层归代码，叙述层归模型）。
+ *
+ * 为什么不能只返回注入文本（string）：F6 之后干预文本不再进 `apiConversationHistory`，
+ * 如果没有这份结构化交付物，index.ts 就无从知道「本轮到底干预了没、用哪条规则、什么力度」，
+ * M9' 的 `D`（决策数）将彻底不可数（F13 硬要求 1）。
+ */
+export interface InterventionDecision {
+	/** 注入 system prompt 的任务书文本（旧 `checkAndGenerateIntervention` 的返回值） */
+	injectionText: string
+	/** 模板文案（**降级兜底**用；同时是任务书里的「力度锚点」样例） */
+	templateText: string
+	ruleId: BehaviorRuleId
+	severity: InterventionSeverity
+	style: InterventionStyle
+	interventionType: InterventionMessage["interventionType"]
+}
 
 export class TeachingInterventionManager {
 	private readonly taskId: string
@@ -98,6 +117,25 @@ export class TeachingInterventionManager {
 	 * @returns 需要注入的干预文本（null 表示不干预）
 	 */
 	public checkAndGenerateIntervention(monitor: BehaviorMonitor | undefined, turnIndex: number): string | null {
+		return this.checkAndGenerateInterventionDecision(monitor, turnIndex)?.injectionText ?? null
+	}
+
+	/**
+	 * 【F13】结构化版本的干预决策（`checkAndGenerateIntervention` 的实现体）。
+	 *
+	 * 兼容入口 `checkAndGenerateIntervention(): string | null` 的签名与行为**逐字不变**
+	 * （6 个测试文件依赖它），只是本方法的一层委托 —— 这样既有测试无需任何改动。
+	 *
+	 * @param monitor      当前任务的 BehaviorMonitor 实例
+	 * @param turnIndex    当前对话轮次索引
+	 * @param recentCopies 最近已展示过的文案（回传给任务书要求「换一种说法」，M13'）；缺省为空
+	 * @returns 决策对象（null 表示本轮不干预）
+	 */
+	public checkAndGenerateInterventionDecision(
+		monitor: BehaviorMonitor | undefined,
+		turnIndex: number,
+		recentCopies: readonly string[] = [],
+	): InterventionDecision | null {
 		if (!this.options.enabled || !monitor) {
 			return null
 		}
@@ -114,7 +152,9 @@ export class TeachingInterventionManager {
 				`[TeachingIntervention][${this.taskId}] blocking cooldown active (${remaining}s remaining), returning reminder`,
 			)
 			// 返回阻断提醒消息（含剩余时间），让 index.ts 能继续执行阻断逻辑
-			return this.getBlockingReminderMessage()
+			// 【F13】阻断冷却期的提醒同样是一次「代码判定要干预」：本轮学生会**实际看到**模板文案，
+			// 因此必须与展示侧的 `T`（模板兜底记账）成对出现，否则 M9' ② 会误报「该干预却没干预」。
+			return this.buildBlockingReminderDecision()
 		}
 
 		// 阻断冷却到期，重置阻断状态（实例 + 全局）
@@ -200,7 +240,7 @@ export class TeachingInterventionManager {
 
 		const priorityAlert = this.selectHighestPriorityAlert(eligibleAlerts)
 		intervention = generateInterventionMessage(priorityAlert, this.options.preferredStyle, this.options.globalCooldownMs)
-		injectionText = formatInterventionForInjection(intervention)
+		injectionText = formatInterventionForInjection(intervention, recentCopies)
 
 		if (this.options.logToOutputChannel) {
 			Logger.info(
@@ -211,7 +251,15 @@ export class TeachingInterventionManager {
 		// 记录干预
 		this.recordIntervention(intervention, turnIndex)
 
-		return injectionText
+		// 【F13】把决策的全部可审计信息一并交付（index.ts 据此落 intervention_decision 事件）
+		return {
+			injectionText,
+			templateText: intervention.content,
+			ruleId: intervention.ruleId,
+			severity: intervention.severity,
+			style: intervention.style,
+			interventionType: intervention.interventionType,
+		}
 	}
 
 	/**
@@ -221,7 +269,7 @@ export class TeachingInterventionManager {
 	 *   ① 阈值式入口（getRuleIdsAtBlockingThreshold）—— 不依赖提醒队列；
 	 *   ② alerts 侧回退入口 —— 保持原有行为。
 	 */
-	private triggerBlocking(monitor: BehaviorMonitor, alert: BehaviorAlert, turnIndex: number): string {
+	private triggerBlocking(monitor: BehaviorMonitor, alert: BehaviorAlert, turnIndex: number): InterventionDecision {
 		const intervention = generateBlockingInterventionMessage(alert, this.options.blockingCooldownMs)
 
 		// 标记阻断已触发
@@ -248,7 +296,15 @@ export class TeachingInterventionManager {
 		// 记录干预
 		this.recordIntervention(intervention, turnIndex)
 
-		return injectionText
+		// 【F13】阻断决策同样结构化交付（含兜底文案与规则/力度/风格）
+		return {
+			injectionText,
+			templateText: intervention.content,
+			ruleId: intervention.ruleId,
+			severity: intervention.severity,
+			style: intervention.style,
+			interventionType: intervention.interventionType,
+		}
 	}
 
 	/**
@@ -256,6 +312,24 @@ export class TeachingInterventionManager {
 	 */
 	private isBlockingCooldownExpired(): boolean {
 		return Date.now() >= this.getBlockingEndsAt()
+	}
+
+	/**
+	 * 【F13】阻断冷却期的提醒也是一次「判定要干预」：把提醒文案与元数据一起交付，
+	 * 供 index.ts 同时落 `intervention_decision`（D）与 `intervention_copy`（T）两条记账。
+	 * 元数据取最近一次阻断干预（实例优先，退到全局，跨会话仍可对账）。
+	 */
+	private buildBlockingReminderDecision(): InterventionDecision {
+		const reminder = this.getBlockingReminderMessage()
+		const last = this.lastBlockingIntervention ?? TeachingInterventionManager.globalLastBlockingIntervention
+		return {
+			injectionText: reminder,
+			templateText: last?.content ?? reminder,
+			ruleId: last?.ruleId ?? "consecutive_code_generation",
+			severity: "strong",
+			style: "blocking",
+			interventionType: "blocking",
+		}
 	}
 
 	/**
