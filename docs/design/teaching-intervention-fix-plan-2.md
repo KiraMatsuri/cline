@@ -790,6 +790,15 @@ description:
 
 - [ ] **Steps:** ① 先在 `wikiPrompt.test.ts` 改/加断言（A/B/C 三档各一条 + 索引含 week>currentWeek 的标题）→ 跑 `npm run test:unit -- --grep "wikiPrompt"` 确认红；② 落上面三处改动；③ 跑绿；④ `npm run test:unit` 与 `tsc --noEmit` 全绿；⑤ commit `fix(teaching): index all weeks and replace blanket refusal with a three-tier answer policy`。
 
+**✅ 落地记录（2026-10-13，`31f94dd3` + 修复波 `11b2b7eb` + 裁定波 `42446237`）**
+
+1. **本 Task 漏了一环（已在修复波补上）**：只删 `buildIndexGroups()` 的周数过滤是**空操作** —— 客户端只按 `fetchWikiForWeek(getCurrentWeek())` 拉取，而后端 `server.ts` 的 SQL 硬过滤 `applicable_week <= max_week`（且校验 1~18）。⇒ 修复：拉取改用 `INDEX_FETCH_MAX_WEEK = 18`，**返回值仍过滤 `<= currentWeek`**（"能取用"边界由 MCP `--week` + 后端 SQL 强制）。
+2. **本文若写"整文件重写策略段"，实际只需替换认知边界约束块**；A/B/C 三档、工具描述、`knowledge` 段均已落地。
+3. **`MAX_INDEX_CHARS` 仍是 2400，但截断策略已改为「分级截断」**（裁定 b，`42446237`）：
+   - 进度内（`week <= 当前周`）列标题；超前周只列 `- 第 N 周：（M 个主题）`；
+   - 超预算时**优先把详细行降级为简略行，而不是 `break`** —— 旧实现按周升序 `break`，被砍掉的正是"当前周之后"的周次，**恰好与 F4 目标相反**；
+   - 实测：18 周×8 条长标题 = 2775 字符且 18 周全在；400 条长标题 = 2865 字符且占位串仍出现。
+
 ### Task 5（F5）：分类口径粘性化
 
 **Files:** Modify `src/core/task/student-analytics/BehaviorMonitor.ts`（`ingest` 的 `currentTaskCategory` 赋值）、`src/core/task/student-analytics/TaskClassifier.ts`（`countMatches` 词边界）；Test `__tests__/categoryStickiness.test.ts`（新建）、扩 `rulePolicy.test.ts`。
