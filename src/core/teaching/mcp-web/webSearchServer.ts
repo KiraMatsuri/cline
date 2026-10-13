@@ -94,10 +94,11 @@ function formatResults(results: Array<{ title: string; snippet: string; url: str
 }
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
-	const name = req.params.name
 	const args = (req.params.arguments ?? {}) as Record<string, unknown>
 
 	try {
+		// 读取放在 try 内：params 形状异常时也走结构化错误返回，绝不抛出
+		const name = req.params.name
 		if (name !== "web_search") {
 			return text(JSON.stringify(buildWebSearchError("bad_response", `unknown_tool: ${name}`)))
 		}

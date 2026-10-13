@@ -28,12 +28,16 @@ describe("getRulePolicy（方案 C-1）", () => {
 		expect(p.canEscalateToBlocking).to.equal(false)
 	})
 
-	it("★ 代码类任务下所有规则都启用且可升级", () => {
+	it("★ 代码类任务下所有规则都启用；仅 AI 依赖不可升级为阻断（F9 回归修复）", () => {
 		for (const category of ["code_generation", "debugging", "refactoring", "testing"] as TaskCategory[]) {
 			for (const rule of ALL_RULES) {
 				const p = getRulePolicy(rule, category)
 				expect(p.enabled, `${category}/${rule}`).to.equal(true)
-				expect(p.canEscalateToBlocking, `${category}/${rule}`).to.equal(true)
+				// 【F9 回归修复 2026-10-13】high_recent_ai_dependency 永不可升级：其度量单位是
+				// “连续无学生发言的助手回合数”，Cline 一次提问即产生 6~11 个助手回合，
+				// 若允许升级则“一次提问就把学生阻断 60 秒”。其余三条仍可升级。
+				const expectedEscalation = rule !== "high_recent_ai_dependency"
+				expect(p.canEscalateToBlocking, `${category}/${rule}`).to.equal(expectedEscalation)
 			}
 		}
 	})
@@ -60,8 +64,10 @@ describe("getRulePolicy（方案 C-1）", () => {
 	it("★【F9】概念问答下 high_recent_ai_dependency 连提示都停用", () => {
 		expect(getRulePolicy("high_recent_ai_dependency", "explanation").enabled).to.equal(false)
 		expect(getRulePolicy("high_recent_ai_dependency", "algorithm").enabled).to.equal(false)
-		// 非概念分类不受影响
+		// 非概念分类不受影响（仍出温和提示），但**任何分类下都不可升级为阻断**
 		expect(getRulePolicy("high_recent_ai_dependency", "code_generation").enabled).to.equal(true)
 		expect(getRulePolicy("high_recent_ai_dependency", undefined).enabled).to.equal(true)
+		expect(getRulePolicy("high_recent_ai_dependency", "code_generation").canEscalateToBlocking).to.equal(false)
+		expect(getRulePolicy("high_recent_ai_dependency", undefined).canEscalateToBlocking).to.equal(false)
 	})
 })

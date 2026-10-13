@@ -30,12 +30,29 @@ const CODE_ORIENTED_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>
 ])
 
 /**
+ * 【F9 回归修复 2026-10-13】**永不允许升级为阻断**的规则。
+ *
+ * 理由：`high_recent_ai_dependency` 的度量单位是"连续无学生发言的助手回合数"，
+ * 而 Cline 的多工具循环下**一次学生提问就会产生 6~11 个助手回合** ⇒ 阈值 6 在一轮内即被满足，
+ * 连续 3 轮就达到阻断阈值（3）。也就是说：**一次提问就可能让学生被阻断 60 秒** ——
+ * 这正是本轮修订（F1/F2/F3）要消灭的失效模式。
+ * ⇒ 该规则的定位是**温和提示**：计数保留（可审计），但**永不可升级为阻断**。
+ */
+const NEVER_BLOCKING_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["high_recent_ai_dependency"])
+
+/**
  * 判定某条规则在给定任务分类下的策略。
  *
  * 保守原则：分类缺失/未知/other/language_request 时**全部启用且可升级** ——
  * 宁可保留原有干预能力，也不要因为分类器没命中而让干预静默失效。
  */
 export function getRulePolicy(ruleId: BehaviorRuleId, category: TaskCategory | undefined): RulePolicy {
+	if (NEVER_BLOCKING_RULES.has(ruleId)) {
+		// 概念问答下连提示都不发（M2'/M3' 的通过条件）；其余分类保留温和提示，但不可阻断。
+		const enabled = !category || !CONCEPTUAL_CATEGORIES.has(category)
+		return { enabled, canEscalateToBlocking: false }
+	}
+
 	if (!category || !CONCEPTUAL_CATEGORIES.has(category)) {
 		return { enabled: true, canEscalateToBlocking: true }
 	}
@@ -45,13 +62,8 @@ export function getRulePolicy(ruleId: BehaviorRuleId, category: TaskCategory | u
 		return { enabled: false, canEscalateToBlocking: false }
 	}
 
-	// 【F9】AI 依赖在概念问答下**连提示都不发**：该场景下学生的意图就是"听讲解"，
-	// 此时"AI 参与度高"是必然的、不构成风险信号（M2' 要求零干预）。
-	if (ruleId === "high_recent_ai_dependency") {
-		return { enabled: false, canEscalateToBlocking: false }
-	}
-
-	// 其余规则（AI 依赖 / 只采纳不消化）仍保留提示，但不允许升级为阻断 ——
+	// 其余规则（只采纳不消化）仍保留提示，但不允许升级为阻断 ——
 	// 因为在这类任务里它们的分母（user turn_message 数）天然极小，比例指标不可靠。
+	// （AI 依赖已由上方 NEVER_BLOCKING_RULES 提前 return，不再落到这里。）
 	return { enabled: true, canEscalateToBlocking: false }
 }

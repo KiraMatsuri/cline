@@ -126,7 +126,7 @@ export class LLMWikiService {
 	/** 启动配置监听（应在插件 activate 阶段调用） */
 	public listenConfigChanges(): void {
 		if (this._configWatcher) return
-		this._refreshConfig()
+		void this._refreshConfig()
 		this._configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
 			if (
 				e.affectsConfiguration("clineTeaching.serverUrl") ||
@@ -135,14 +135,14 @@ export class LLMWikiService {
 				e.affectsConfiguration("clineTeaching.currentTextbookId") ||
 				e.affectsConfiguration("teaching.apiBase")
 			) {
-				this._refreshConfig()
+				void this._refreshConfig()
 				Logger.log(`[LLMWikiService] 配置变更已同步: week=${this._currentWeek}, serverUrl=${this._serverUrl}`)
 			}
 		})
 	}
 
 	/** 从 VS Code 配置同步 serverUrl / currentWeek / llmEnableTools */
-	private _refreshConfig(): void {
+	private async _refreshConfig(): Promise<void> {
 		const ct = vscode.workspace.getConfiguration("clineTeaching")
 		const legacy = vscode.workspace.getConfiguration("teaching")
 
@@ -151,6 +151,9 @@ export class LLMWikiService {
 
 		const newWeek = ct.get<number>("currentWeek") ?? 1
 		this._currentWeek = clampWeek(newWeek)
+
+		// 【F7】直接改配置也要同步周状态文件，否则 MCP 进程热读到的仍是旧周（通知与检索不一致）
+		void writeWeekState(await weekStateFilePath(), this._currentWeek).catch(() => {})
 
 		// 【v2.0】同步 currentTextbookId
 		const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""

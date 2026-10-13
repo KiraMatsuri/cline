@@ -147,7 +147,31 @@ export class BehaviorMonitor {
 		})
 
 		this.updateRealtimeStreaks(event)
+
+		// 【F9】AI 独占输出的绝对量：任何"学生侧"事件都归零（含 code_edit / task_start），
+		//        助手回合 +1。原先只覆盖 turn_message ⇒ "边改代码边不发言"的学生计数仍会爬升。
+		if (this.isStudentSideEvent(event)) {
+			this.assistantTurnsWithoutUser = 0
+		} else if (event.eventType === "turn_message" && event.role === "assistant") {
+			this.assistantTurnsWithoutUser++
+		}
+
 		this.evaluateRules(event)
+	}
+
+	/** 【F9】该事件是否表示"学生本人有动作"（发言 / 开题 / 亲手编辑代码） */
+	private isStudentSideEvent(event: StudentInteractionLog): boolean {
+		if (event.eventType === "task_start") {
+			return true
+		}
+		if (event.eventType === "turn_message") {
+			return event.role !== "assistant"
+		}
+		// 【F2】只有"人"的编辑才算学生动手；缺省 editor（旧日志）按人工处理
+		if (event.eventType === "code_edit") {
+			return event.editor !== "ai"
+		}
+		return false
 	}
 
 	private updateRealtimeStreaks(event: StudentInteractionLog): void {
@@ -173,14 +197,6 @@ export class BehaviorMonitor {
 
 		if (event.eventType === "turn_message") {
 			this.turnsSinceLastEdit++
-
-			if (event.role === "assistant") {
-				// 【F9】AI 独占输出的绝对量
-				this.assistantTurnsWithoutUser++
-			} else {
-				// 学生一发言即归零（这才是"依赖"消失的信号）
-				this.assistantTurnsWithoutUser = 0
-			}
 
 			if (event.role === "assistant") {
 				// 【v2.13 方案 A】streak 只认 **fenced 代码块**，不再认"文本里出现过代码/反引号/工具标记"。

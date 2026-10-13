@@ -1,6 +1,6 @@
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
-import { ev } from "./__fixtures__/events"
+import { editEv, ev } from "./__fixtures__/events"
 
 describe("F9 · ai_dependency 绝对回合数指标", () => {
 	it("★ 阈值边界：连续 5 个助手回合不触发，第 6 个触发", () => {
@@ -46,5 +46,40 @@ describe("F9 · ai_dependency 绝对回合数指标", () => {
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 		m.reset()
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
+	})
+
+	it("★【回归修复】ai_dependency 计数可达但**永不能阻断**（一次提问 6+ 助手回合不得把学生阻断）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		// 非概念任务：连造 12 个助手回合（远超阈值 6）
+		m.ingest(ev({ eventType: "task_start", role: "user", category: "code_generation" }))
+		for (let i = 0; i < 12; i++) m.ingest(ev({ role: "assistant" }))
+		// 计数仍然累计（可审计）
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.be.greaterThan(0)
+		// 但**不得**进入阻断候选，也不得判定为可阻断
+		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
+		expect(m.getRuleIdsAtBlockingThreshold()).to.not.include("high_recent_ai_dependency")
+	})
+
+	it("★【回归修复】其他三条规则的阻断能力未被削弱（对照）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m.ingest(ev({}))
+		m.ingest(ev({}))
+		m.ingest(ev({}))
+		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+	})
+
+	it("★【修复】学生编辑代码（code_edit）也把计数归零", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 5; i++) m.ingest(ev({ role: "assistant" }))
+		m.ingest(editEv({ editor: "user" })) // 学生亲手改代码
+		m.ingest(ev({ role: "assistant" }))
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
+	})
+
+	it("★【修复】AI 落盘（editor: ai）**不**归零（那不是学生动手）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 6; i++) m.ingest(ev({ role: "assistant" }))
+		m.ingest(editEv({ editor: "ai" }))
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 	})
 })
