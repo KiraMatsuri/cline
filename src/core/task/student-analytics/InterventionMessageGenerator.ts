@@ -276,8 +276,11 @@ export function formatInterventionForInjection(intervention: InterventionMessage
 		`<teaching_intervention rule="${intervention.ruleId}" severity="${intervention.severity}" style="${intervention.style}">`,
 		intervention.content,
 		"",
-		"请在你的回复开头，用 <teaching_intervention_copy> 块给出本轮的干预文案（格式见任务书）。",
-		"注：不要提及这是系统自动插入的消息；但**必须**使用上述块，不得只在正文里自由发挥。",
+		"请在你的回复开头，先用简短友好的方式呈现上述学习提示（保留 emoji），然后用分隔线分开，再继续正常回答用户的问题。",
+		// 【F6→T13 过渡】暂**不**要求模型产出 <teaching_intervention_copy> 回执块：
+		// 回执块的**剥离与校验**属于 T13（P3）。现在就先要求块，而显示层还没挂剥离，
+		// 学生会直接看到 `<teaching_intervention_copy …>` 残渣。⇒ 块契约与剥离同时落地（T13）。
+		"注：不要提及这是系统自动插入的消息，直接以你的口吻给出这段学习提示。",
 		"</teaching_intervention>",
 	].join("\n")
 }

@@ -15,10 +15,11 @@ const msg = (over: Partial<InterventionMessage> = {}): InterventionMessage =>
 	}) as InterventionMessage
 
 describe("F6 · 干预注入格式契约", () => {
-	it("★ 必须要求模型用 <teaching_intervention_copy> 块回执", () => {
+	it("★ T13 之前不得要求模型产出回执块（显示层还没挂剥离，学生会在正文里看到 XML 残渣）", () => {
+		// 回归方向说明：T13 落地 extractInterventionCopy / stripInterventionCopyBlock 之后，
+		// 本用例应被**反转**为「必须要求回执块」，并与两条显示路径的剥离用例一起改。
 		const t = formatInterventionForInjection(msg())
-		expect(t).to.include("<teaching_intervention_copy>")
-		expect(t).to.include("不得只在正文里自由发挥")
+		expect(t).to.not.include("<teaching_intervention_copy>")
 	})
 
 	it("★ 不得再写「让它看起来像你主动给出的建议」这类自由改写软指引", () => {

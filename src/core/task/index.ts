@@ -9,15 +9,15 @@ import { EnvironmentContextTracker } from "@core/context/context-tracking/Enviro
 import { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
 import { ModelContextTracker } from "@core/context/context-tracking/ModelContextTracker"
 import {
-    getGlobalClineRules,
-    getLocalClineRules,
-    refreshClineRulesToggles,
+	getGlobalClineRules,
+	getLocalClineRules,
+	refreshClineRulesToggles,
 } from "@core/context/instructions/user-instructions/cline-rules"
 import {
-    getLocalAgentsRules,
-    getLocalCursorRules,
-    getLocalWindsurfRules,
-    refreshExternalRulesToggles,
+	getLocalAgentsRules,
+	getLocalCursorRules,
+	getLocalWindsurfRules,
+	refreshExternalRulesToggles,
 } from "@core/context/instructions/user-instructions/external-rules"
 import { sendPartialMessageEvent } from "@core/controller/ui/subscribeToPartialMessage"
 import { getHooksEnabledSafe } from "@core/hooks/hooks-utils"
@@ -29,11 +29,11 @@ import { summarizeTask } from "@core/prompts/contextManagement"
 import { formatResponse } from "@core/prompts/responses"
 import { parseSlashCommands } from "@core/slash-commands"
 import {
-    ensureRulesDirectoryExists,
-    ensureTaskDirectoryExists,
-    GlobalFileNames,
-    getSavedApiConversationHistory,
-    getSavedClineMessages,
+	ensureRulesDirectoryExists,
+	ensureTaskDirectoryExists,
+	GlobalFileNames,
+	getSavedApiConversationHistory,
+	getSavedClineMessages,
 } from "@core/storage/disk"
 import { releaseTaskLock } from "@core/task/TaskLockUtils"
 import { isMultiRootEnabled } from "@core/workspace/multi-root-utils"
@@ -81,23 +81,23 @@ import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
 import {
-    CommandExecutor,
-    CommandExecutorCallbacks,
-    FullCommandExecutorConfig,
-    StandaloneTerminalManager,
+	CommandExecutor,
+	CommandExecutorCallbacks,
+	FullCommandExecutorConfig,
+	StandaloneTerminalManager,
 } from "@/integrations/terminal"
 import { ClineError, ClineErrorType, ErrorService } from "@/services/error"
 import { telemetryService } from "@/services/telemetry"
 import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
 import {
-    ClineAssistantContent,
-    ClineContent,
-    ClineImageContentBlock,
-    ClineMessageModelInfo,
-    ClineStorageMessage,
-    ClineTextContentBlock,
-    ClineToolResponseContent,
-    ClineUserContent,
+	ClineAssistantContent,
+	ClineContent,
+	ClineImageContentBlock,
+	ClineMessageModelInfo,
+	ClineStorageMessage,
+	ClineTextContentBlock,
+	ClineToolResponseContent,
+	ClineUserContent,
 } from "@/shared/messages"
 import { ApiFormat } from "@/shared/proto/cline/models"
 import { ShowMessageType } from "@/shared/proto/index.host"
@@ -114,15 +114,15 @@ import { FocusChainManager } from "./focus-chain"
 import { MessageStateHandler } from "./message-state"
 import { StreamResponseHandler } from "./StreamResponseHandler"
 import {
-    AdoptionTracker,
-    BehaviorMonitor,
-    CodeEditTracker,
-    contentAnalyzer,
-    type StudentInteractionLog,
-    StudentLogPersister,
-    type SuggestionType,
-    TeachingInterventionManager,
-    taskClassifier,
+	AdoptionTracker,
+	BehaviorMonitor,
+	CodeEditTracker,
+	contentAnalyzer,
+	type StudentInteractionLog,
+	StudentLogPersister,
+	type SuggestionType,
+	TeachingInterventionManager,
+	taskClassifier,
 } from "./student-analytics"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
@@ -2318,11 +2318,14 @@ export class Task {
 		}
 
 		// 【F6】把本轮的干预文本追加到 system prompt（本轮一次性；绝不写入 apiConversationHistory）
+		// ⚠️ 这里**不**清空 pendingInterventionText：attemptApiRequest 在首 chunk 失败后会被重试
+		// （见本函数末尾的 `yield* this.attemptApiRequest(previousApiReqIndex)`），若在首次注入时就清空，
+		// 重试的那次请求会既不在 system prompt 也不在历史里携带干预 ⇒ 该次干预被静默吞掉。
+		// 因此改为“每个回合（recursivelyMakeClineRequests 入口）先重置、注入时保留”，重试仍能拿到。
 		{
 			const injected = appendEphemeralIntervention(systemPromptFinal, this.pendingInterventionText)
 			systemPromptFinal = injected.systemPrompt
 			if (injected.applied) {
-				this.pendingInterventionText = undefined
 				Logger.log(`[TeachingIntervention][${this.taskId}] ephemeral intervention injected into system prompt`)
 			}
 		}
@@ -2943,6 +2946,10 @@ export class Task {
 		// 在构建 API 请求之前，检查 BehaviorMonitor 是否触发了风险警报
 		// 阻断式干预: 完全跳过 API 请求，直接展示阻断消息并阻止后续输入
 		try {
+			// 【F6】每回合入口先重置：干预只在“本回合”有效（注入点是 attemptApiRequest，
+			// 而重试会重新进入该生成器 ⇒ 那时仍需拿到值，所以不能在注入时就清）。
+			// 放在 try 内、check 之前，是为了连“上一回合抛错留下残留值”这种情况也一并清掉。
+			this.pendingInterventionText = undefined
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()
