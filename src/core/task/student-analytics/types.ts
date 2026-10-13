@@ -51,6 +51,10 @@ export type SuggestionType =
 
 /**
  * AI 建议采纳状态
+ *
+ * ⚠️ `rejected` 当前**不可达**（F11-② 起：`AdoptionTracker.onUserMessage` 要求"同一主题"才推断，
+ * 换题一律返回 `unknown`，原先产出 `rejected` 的"换题且无编辑"分支已被提前 return 覆盖）。
+ * **保留**该联合成员是因为历史 JSONL 里已存在该值，删除会破坏既有日志解析。
  */
 export type AdoptionStatus =
 	| "adopted" // 已采纳（在 AI 回复后有相关代码编辑或文件保存）

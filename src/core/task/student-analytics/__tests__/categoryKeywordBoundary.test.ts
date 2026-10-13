@@ -61,4 +61,23 @@ describe("F5/F11 · 关键词词边界（ASCII 不得子串误命中）", () => 
 		expect(cls("debugger 怎么用")).to.equal("other")
 		expect(cls("fixes 一下")).to.equal("other")
 	})
+
+	it("★【F11】完整反例集：go / ts / c 出现在无关文本里不得命中", () => {
+		// 与上面的 `algorithm` / `going`（`go`）与 `json`（`js`）并列，补齐 spec 点名的其余反例；
+		// `json` 已由上面的用例覆盖，此处不重复。
+		expect(cls("good")).to.equal("other") // `go` 不得命中 `good`
+		expect(cls("tsetse")).to.equal("other") // `ts` 不得命中 `tsetse`
+		expect(cls("tsunami 来了")).to.equal("other") // `ts` 不得命中 `tsunami`
+		// 关键词表里没有裸 `c`（只有 `c++` / `c#` / `c语言` / `csharp`）⇒ `c`、`c.` 不得被当成语言请求
+		expect(cls("c.")).to.equal("other")
+		expect(cls("a c b")).to.equal("other")
+	})
+
+	it("★【F11】已知缺口登记：未收录的屈折形不命中（锁定当前行为，不修；见账本 §16.4 T5-漏配 / §17.2）", () => {
+		// 裁定为「先锁现状 + 补关键词」：词边界是**有意**的整词匹配，本轮不引入词形还原/词干化。
+		// 下面这些派生形仍未收录 ⇒ 显式断言其当前（不命中）行为，避免后人误当回归去"修"。
+		expect(cls("tested 一下")).to.equal("other") // `test` 在表里，`tested` 不在
+		expect(cls("implemented 一个功能")).to.equal("other") // `implement` 在表里，`implemented` 不在
+		expect(cls("crashed 了")).to.equal("other") // `crash` / `crashes` 在表里，`crashed` 不在
+	})
 })

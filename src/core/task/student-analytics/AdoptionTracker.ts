@@ -2,11 +2,14 @@
  * AI 建议采纳推断器
  * Adoption Tracker - Infers whether students adopted AI suggestions
  *
- * 推断规则（弱判断版本 v1）：
+ * 推断规则（弱判断版本 v1，F11-② 后）：
+ * 0. 与上一条建议**不同主题** → unknown（换题后行为无法归因，不再记 adopted）
  * 1. AI 回复后 60s 内有代码编辑/文件保存 → adopted
- * 2. AI 回复后用户继续追问同一主题 → continued
- * 3. AI 回复后用户追问不同主题或开启新任务 → rejected
+ * 2. AI 以 attempt_completion 收尾且学生仍在同一主题 → adopted
+ * 3. AI 回复后用户继续追问同一主题 → continued
  * 4. 超时或无后续行为 → unknown
+ *
+ * ⚠️ `AdoptionStatus` 的 `rejected` 成员当前不可达（见 types.ts 的 JSDoc），保留只为兼容历史日志。
  */
 
 import type { AdoptionStatus, SuggestionType } from "./types"
@@ -127,28 +130,26 @@ export class AdoptionTracker {
 	 * 核心推断逻辑：结合用户后续消息和行为来判断
 	 */
 	private inferAdoption(pending: PendingAssistantTurn, isSameTopic: boolean): AdoptionStatus {
-		// 规则 1：AI 建议包含代码，且用户在建议后编辑/保存了代码 → adopted
+		// 【F11-②】采纳的前提是"学生还在原来的题目上"。换了话题 ⇒ 本轮行为**无法归因**于上一条建议，
+		// 一律 unknown。
+		// 修复前：规则 1（完全不看 topic）、规则 2（completion 无条件）与兜底
+		// （"有编辑但换了话题 ⇒ adopted"）三处都会在换题后记 adopted ⇒ `adopted` 近乎恒真。
+		if (!isSameTopic) {
+			return "unknown"
+		}
+
+		// 规则 1：同主题下 AI 给了代码、学生随后编辑/保存 → adopted
 		if (pending.hasCode && (pending.hasCodeEdit || pending.hasFileSave)) {
 			return "adopted"
 		}
 
-		// 规则 2：AI 建议是 completion（attempt_completion），且用户没有继续追问 → adopted
+		// 规则 2：同主题下 AI 以 attempt_completion 收尾 → adopted
 		if (pending.suggestionType === "completion") {
 			return "adopted"
 		}
 
-		// 规则 3：用户继续同一主题追问 → continued
-		if (isSameTopic) {
-			return "continued"
-		}
-
-		// 规则 4：用户换了话题但没有编辑行为 → rejected
-		if (!pending.hasCodeEdit && !pending.hasFileSave) {
-			return "rejected"
-		}
-
-		// 兜底：有编辑但换了话题 → adopted（大概率参考了 AI 建议后去做别的）
-		return "adopted"
+		// 规则 3：同主题继续追问 → continued
+		return "continued"
 	}
 
 	/**

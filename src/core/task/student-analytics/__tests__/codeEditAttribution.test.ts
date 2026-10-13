@@ -5,6 +5,9 @@
  * 旧实现遇 code_edit 即清零 assistantCodeStreak，而 AI 每次落盘都会产生 code_edit，
  * 于是 streak 在 0/1 之间震荡，consecutive_code_generation（阈值 3）永远达不到。
  */
+
+import * as fs from "node:fs"
+import * as path from "node:path"
 import { FileContextTracker } from "@core/context/context-tracking/FileContextTracker"
 import * as diskModule from "@core/storage/disk"
 import { expect } from "chai"
@@ -15,7 +18,7 @@ import * as vscode from "vscode"
 import type { Controller } from "@/core/controller"
 import { setVscodeHostProviderMock } from "@/test/host-provider-test-utils"
 import { BehaviorMonitor } from "../BehaviorMonitor"
-import { resolveEditEditor } from "../CodeEditTracker"
+import { resolveEditEditor, resolveEditRole } from "../CodeEditTracker"
 import { editEv as ev } from "./__fixtures__/events"
 
 const asstCode = () => ev({ eventType: "turn_message", role: "assistant", hasCodeBlock: true })
@@ -66,6 +69,24 @@ describe("F2 · code_edit 编辑者归属", () => {
 		m.ingest(ev({})) // 无 editor
 		m.ingest(asstCode())
 		expect(ruleIds(m)).to.not.include("consecutive_code_generation")
+	})
+})
+
+describe("F11-③ · 编辑日志的 role 归属", () => {
+	it("① resolveEditRole('ai') → 'assistant'", () => {
+		expect(resolveEditRole("ai")).to.equal("assistant")
+	})
+
+	it("② resolveEditRole('user') → 'user'", () => {
+		expect(resolveEditRole("user")).to.equal("user")
+	})
+
+	it("③ 结构守卫：两个日志构造点不再硬编码 role，且均改用 resolveEditRole(editor)", () => {
+		// ⚠️ 这是对**源码结构**的探测（变更探测器），不是端到端验证 ——
+		// 真正的归属验证靠 M8' 人工核对日志（两处日志字面量无法在单测里直接跑，CodeEditTracker 依赖 vscode）。
+		const src = fs.readFileSync(path.join(__dirname, "..", "CodeEditTracker.ts"), "utf-8")
+		expect(src).to.not.include('role: "user"')
+		expect(src.match(/resolveEditRole\(editor\)/g)?.length ?? 0).to.equal(2)
 	})
 })
 

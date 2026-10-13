@@ -5,6 +5,8 @@
  * 这里作为唯一来源；`ev()` 用「助手代码回合」默认值（多数规则的分母/单位都基于它），
  * `editEv()` 用「code_edit」默认值。
  */
+
+import { resolveEditRole } from "../../CodeEditTracker"
 import type { StudentInteractionLog } from "../../types"
 
 export const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog => ({
@@ -23,6 +25,16 @@ export const ev = (over: Partial<StudentInteractionLog>): StudentInteractionLog 
 	...over,
 })
 
-/** code_edit 事件：`editor` 缺省即"按人工处理"（与生产侧的向后兼容语义一致）；code_edit 本身不携带代码块 */
+/**
+ * code_edit 事件：`editor` 缺省即"按人工处理"（与生产侧的向后兼容语义一致）；code_edit 本身不携带代码块。
+ * 【F11-③】`role` 由 `editor` 推导（与生产侧 `resolveEditRole` 同口径）：缺省 editor ⇒ `role: "user"`。
+ */
 export const editEv = (over: Partial<StudentInteractionLog>): StudentInteractionLog =>
-	ev({ eventType: "code_edit", role: "user", category: "other", hasCode: false, hasCodeBlock: false, ...over })
+	ev({
+		eventType: "code_edit",
+		category: "other",
+		hasCode: false,
+		hasCodeBlock: false,
+		role: resolveEditRole(over.editor ?? "user"),
+		...over,
+	})

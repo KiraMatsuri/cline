@@ -19,7 +19,7 @@ import type { AdoptionTracker } from "./AdoptionTracker"
 import type { BehaviorMonitor } from "./BehaviorMonitor"
 import { contentAnalyzer } from "./ContentAnalyzer"
 import type { StudentLogPersister } from "./StudentLogPersister"
-import type { StudentInteractionLog } from "./types"
+import type { MessageRole, StudentInteractionLog } from "./types"
 
 /** 防抖间隔（毫秒） */
 const DEBOUNCE_MS = 2_000
@@ -45,6 +45,15 @@ export function resolveEditEditor(relPath: string, tracker: FileContextTrackerLi
 	} catch {
 		return "user" // 归属判定失败不得影响日志主流程
 	}
+}
+
+/**
+ * 【F11-③】AI 落盘的编辑在日志里必须标 `assistant`，否则会污染教师端的
+ * `user_edit_count` 与"学生动手情况"看板（AI 的劳动被记成学生的）。
+ * 与 `editor` 字段**配套**使用：`editor` 是原始归属，`role` 是它的日志口径投影。
+ */
+export function resolveEditRole(editor: "user" | "ai"): MessageRole {
+	return editor === "ai" ? "assistant" : "user"
 }
 
 /** 应忽略的目录/文件名模式 */
@@ -192,12 +201,14 @@ export class CodeEditTracker implements vscode.Disposable {
 		// 记录 file_save 日志
 		const relativePath = await asRelativePath(filePath)
 		const languageHint = contentAnalyzer.inferLanguage(document.getText().substring(0, 500))
+		// 【F11-③】`role` 与 `editor` 同源（不得两处各算一次）
+		const editor = resolveEditEditor(relativePath, this.fileContextTracker)
 
 		const log: StudentInteractionLog = {
 			ts: new Date().toISOString(),
 			taskId: this.activeTaskId,
 			eventType: "file_save",
-			role: "user",
+			role: resolveEditRole(editor),
 			category: "other",
 			contentLength: document.getText().length,
 			hasCode: true,
@@ -207,7 +218,7 @@ export class CodeEditTracker implements vscode.Disposable {
 			turnIndex: -1, // file_save 不占轮次
 			filePath: relativePath,
 			// 【F2】归属信息供后续任务（F11）与教师端口径使用；file_save 不参与 streak 状态
-			editor: resolveEditEditor(relativePath, this.fileContextTracker),
+			editor,
 		}
 
 		void this.persister.persist(log)
@@ -227,12 +238,14 @@ export class CodeEditTracker implements vscode.Disposable {
 		const relativePath = await asRelativePath(filePath)
 		const ext = path.extname(filePath).toLowerCase()
 		const languageHint = this.inferLanguageFromExtension(ext)
+		// 【F11-③】`role` 与 `editor` 同源（不得两处各算一次）
+		const editor = resolveEditEditor(relativePath, this.fileContextTracker)
 
 		const log: StudentInteractionLog = {
 			ts: new Date().toISOString(),
 			taskId: this.activeTaskId,
 			eventType: "code_edit",
-			role: "user",
+			role: resolveEditRole(editor),
 			category: "other",
 			contentLength: Math.abs(pending.totalDelta),
 			hasCode: true,
@@ -242,7 +255,7 @@ export class CodeEditTracker implements vscode.Disposable {
 			turnIndex: -1, // code_edit 不占轮次
 			filePath: relativePath,
 			changeDelta: pending.totalDelta,
-			editor: resolveEditEditor(relativePath, this.fileContextTracker),
+			editor,
 		}
 
 		void this.persister.persist(log)

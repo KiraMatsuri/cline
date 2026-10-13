@@ -56,6 +56,12 @@
 - **内部重构（无行为变更，可能影响二次开发的 import 路径）**：新增 `src/shared/markdown/codeBlocks.ts`
   统一定义 fenced 代码块边界（`ContentAnalyzer` 与 `conceptModeConstraint` 共用，不再各持一份正则）；
   `src/core/teaching/assistantTextSanitizer.ts` 迁移为 `src/shared/markdown/toolCallMarkup.ts`。
+- **学生行为日志的归属与采纳口径修正（F11-②/③）**：`code_edit` / `file_save` 日志的 `role` 原先**硬编码为
+  `user`**，连 AI 落盘也记成学生动手 —— 现由 `editor` 同源推导（`resolveEditRole`），AI 落盘记为
+  `role: assistant`。**教师端 `user_edit_count` 与"学生动手情况"看板随之变化**（此前 AI 的劳动被记在学生头上，
+  属有意的口径修正）；**历史数据与新数据口径不一致**。同时采纳推断加上"同一主题"前提：换题不再记 `adopted`
+  （原先 `adopted` 近乎恒真、采纳率失去区分度），`AdoptionStatus.rejected` 因此变为不可达
+  （保留该类型成员以兼容历史日志）。
 
 ### Fixed
 
