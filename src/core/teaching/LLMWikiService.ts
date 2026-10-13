@@ -152,8 +152,13 @@ export class LLMWikiService {
 		const newWeek = ct.get<number>("currentWeek") ?? 1
 		this._currentWeek = clampWeek(newWeek)
 
-		// 【F7】直接改配置也要同步周状态文件，否则 MCP 进程热读到的仍是旧周（通知与检索不一致）
-		void writeWeekState(await weekStateFilePath(), this._currentWeek).catch(() => {})
+		// 【F7】直接改配置也要同步周状态文件，否则 MCP 进程热读到的仍是旧周（通知与检索不一致）。
+		// 【P2 复审修复】必须把 **路径解析** 也包进 catch：`weekStateFilePath()` 抛错时若只 `void` 掉 Promise，
+		// 会变成 unhandled rejection（Node 15+ 直接终止进程）。改用 .then/.catch 链后本方法不再有 await，
+		// 因此仍是纯同步执行 —— 调用方读到的 `_currentWeek` 语义与改造前逐字一致。
+		void weekStateFilePath()
+			.then((p) => writeWeekState(p, this._currentWeek))
+			.catch(() => {})
 
 		// 【v2.0】同步 currentTextbookId
 		const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""
