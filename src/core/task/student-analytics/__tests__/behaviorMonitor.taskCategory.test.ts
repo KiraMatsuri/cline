@@ -49,13 +49,13 @@ describe("BehaviorMonitor — 按学生意图分流（方案 C-1）", () => {
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("consecutive_code_generation")
 	})
 
-	it("★ 概念问答下 high_recent_ai_dependency 仍出提示，但不得升级为阻断", () => {
+	it("★【F9】概念问答下 high_recent_ai_dependency 连提示都不发", () => {
 		const m = new BehaviorMonitor("c3", { cooldownMs: 0, escalationBlockingThreshold: 1 })
 		m.ingest(taskStart("c3", "explanation"))
 		for (let i = 1; i <= 8; i++) {
 			m.ingest(ev("c3", "assistant", i, "explanation"))
 		}
-		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("high_recent_ai_dependency")
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
 		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 

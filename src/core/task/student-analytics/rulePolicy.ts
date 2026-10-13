@@ -45,6 +45,12 @@ export function getRulePolicy(ruleId: BehaviorRuleId, category: TaskCategory | u
 		return { enabled: false, canEscalateToBlocking: false }
 	}
 
+	// 【F9】AI 依赖在概念问答下**连提示都不发**：该场景下学生的意图就是"听讲解"，
+	// 此时"AI 参与度高"是必然的、不构成风险信号（M2' 要求零干预）。
+	if (ruleId === "high_recent_ai_dependency") {
+		return { enabled: false, canEscalateToBlocking: false }
+	}
+
 	// 其余规则（AI 依赖 / 只采纳不消化）仍保留提示，但不允许升级为阻断 ——
 	// 因为在这类任务里它们的分母（user turn_message 数）天然极小，比例指标不可靠。
 	return { enabled: true, canEscalateToBlocking: false }

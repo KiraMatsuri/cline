@@ -82,8 +82,11 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 	})
 
 	it("★ 边界：有警报但未达升级阈值，且队列被消费后 ⇒ 不注入（返回 null，不得凭空产出文本）", () => {
-		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		// 8 个纯文字助手回合：no_edit_streak 在第 8 轮首次命中（提醒入队，计数 1 < 3，不阻断）
+		// 【F9 校准】阻断阈值由 3 抬到 4：同一条「8 个纯文字助手回合」序列现在还会推进
+		// ai_dependency 计数（连续第 6/7/8 个助手回合 → 3），若阈值仍为 3 会误升级为阻断，
+		// 使本用例不再是「有警报但未达阈值」。抬到 4 后两条规则（no_edit_streak=1、ai_dependency=3）均未达阈值。
+		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 4 })
+		// 8 个纯文字助手回合：no_edit_streak 在第 8 轮首次命中（提醒入队，计数 1 < 4，不阻断）
 		for (let i = 0; i < 8; i++) {
 			m6.ingest(ev({ hasCodeBlock: false }))
 		}

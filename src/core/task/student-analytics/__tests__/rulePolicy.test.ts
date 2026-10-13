@@ -22,9 +22,9 @@ describe("getRulePolicy（方案 C-1）", () => {
 		}
 	})
 
-	it("★ 概念问答下 AI 依赖规则仍启用，但不得升级为阻断", () => {
+	it("★【F9】概念问答下 AI 依赖规则连提示也停用，且不得升级为阻断", () => {
 		const p = getRulePolicy("high_recent_ai_dependency", "explanation")
-		expect(p.enabled).to.equal(true)
+		expect(p.enabled).to.equal(false)
 		expect(p.canEscalateToBlocking).to.equal(false)
 	})
 
@@ -55,5 +55,13 @@ describe("getRulePolicy（方案 C-1）", () => {
 			enabled: true,
 			canEscalateToBlocking: true,
 		})
+	})
+
+	it("★【F9】概念问答下 high_recent_ai_dependency 连提示都停用", () => {
+		expect(getRulePolicy("high_recent_ai_dependency", "explanation").enabled).to.equal(false)
+		expect(getRulePolicy("high_recent_ai_dependency", "algorithm").enabled).to.equal(false)
+		// 非概念分类不受影响
+		expect(getRulePolicy("high_recent_ai_dependency", "code_generation").enabled).to.equal(true)
+		expect(getRulePolicy("high_recent_ai_dependency", undefined).enabled).to.equal(true)
 	})
 })

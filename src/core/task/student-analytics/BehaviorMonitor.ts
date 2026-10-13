@@ -38,6 +38,8 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	minTurnsForDependency: 6,
 	// 【方案 D 止血】0.7 → 0.85。原阈值在 Cline 多工具循环下几乎必然被突破
 	// （实测 3/4 个任务里用户 turn_message 数为 0，比例恒 100%）。
+	// 【F9】在线规则已改为按绝对回合数判定，不再读取本阈值；保留字段与默认值仅为向后兼容
+	// （离线统计等其它模块仍可能引用）。
 	aiDependencyThreshold: 0.85,
 	// 【方案 D 止血】5 → 8。该计数器对每个 turn_message 都 +1（助手回合也算），
 	// 一次提问就能贡献 7~11，原值 5 等价于"问一句话就触发"。
@@ -69,6 +71,9 @@ export class BehaviorMonitor {
 
 	private assistantCodeStreak = 0
 	private turnsSinceLastEdit = 0
+
+	/** 【F9】连续「助手回合且过程中学生没有发言」的计数 —— 比例指标在 Cline 多工具循环下恒真，改用绝对量 */
+	private assistantTurnsWithoutUser = 0
 
 	/** 【方案 C-1】最近一次**学生**事件的意图分类（用于规则分流） */
 	private currentTaskCategory: TaskCategory | undefined
@@ -170,6 +175,14 @@ export class BehaviorMonitor {
 			this.turnsSinceLastEdit++
 
 			if (event.role === "assistant") {
+				// 【F9】AI 独占输出的绝对量
+				this.assistantTurnsWithoutUser++
+			} else {
+				// 学生一发言即归零（这才是"依赖"消失的信号）
+				this.assistantTurnsWithoutUser = 0
+			}
+
+			if (event.role === "assistant") {
 				// 【v2.13 方案 A】streak 只认 **fenced 代码块**，不再认"文本里出现过代码/反引号/工具标记"。
 				// 实测：DSML 工具标记与行内代码（如 `wiki_backend_unreachable`）都会被旧判定算成代码，
 				// 把一个纯概念问答任务在几个回合内推到触发阈值。
@@ -209,7 +222,7 @@ export class BehaviorMonitor {
 			this.checkHighAdoptionLowSelfModificationRule(event)
 		}
 		if (policy("high_recent_ai_dependency")) {
-			this.checkHighRecentAiDependencyRule()
+			this.checkHighRecentAiDependencyRule(event)
 		}
 	}
 
@@ -332,40 +345,32 @@ export class BehaviorMonitor {
 		}
 	}
 
-	private checkHighRecentAiDependencyRule(): void {
-		const turns = this.recentEvents.filter((e) => e.eventType === "turn_message")
-		if (turns.length < this.options.minTurnsForDependency) {
+	/**
+	 * 【F9】改为**绝对回合数**：连续「助手回合且学生未发言」达到阈值即命中。
+	 * 比例指标（assistantTurns / totalTurns）在 Cline 形态下分母极小、恒 >0.85，实测 0.857 ⇒ 恒真，压不住。
+	 * 计数与提醒冷却解耦（与另两条规则同口径）：命中即 bump，冷却只挡提醒。
+	 */
+	private checkHighRecentAiDependencyRule(event: StudentInteractionLog): void {
+		if (event.eventType !== "turn_message") {
+			return
+		}
+		if (this.assistantTurnsWithoutUser < this.options.minTurnsForDependency) {
 			if (this.options.debug) {
 				Logger.info(
-					`[BehaviorMonitor][debug] aiDependency rule skipped: turns=${turns.length} < min=${this.options.minTurnsForDependency}`,
+					`[BehaviorMonitor][debug] aiDependency rule skipped: assistantTurnsWithoutUser=${this.assistantTurnsWithoutUser} < min=${this.options.minTurnsForDependency}`,
 				)
 			}
 			return
 		}
 
-		const assistantTurns = turns.filter((e) => e.role === "assistant").length
-		const userTurns = turns.filter((e) => e.role === "user").length
-		const totalTurns = assistantTurns + userTurns
-		if (totalTurns === 0) {
-			return
-		}
+		this.bumpEscalation("high_recent_ai_dependency")
 
-		const aiDependency = assistantTurns / totalTurns
-
-		if (this.options.debug) {
-			Logger.info(
-				`[BehaviorMonitor][debug] aiDependency rule: assistant=${assistantTurns}, user=${userTurns}, ratio=${(aiDependency * 100).toFixed(0)}%(threshold=${(this.options.aiDependencyThreshold * 100).toFixed(0)}%)`,
-			)
-		}
-
-		if (aiDependency > this.options.aiDependencyThreshold) {
-			this.notify(
-				"high_recent_ai_dependency",
-				`最近 ${turns.length} 条交互中 AI 参与占比较高（${(aiDependency * 100).toFixed(0)}%），建议先写思路或伪代码再请求完整答案。`,
-				aiDependency,
-				this.options.aiDependencyThreshold,
-			)
-		}
+		this.notify(
+			"high_recent_ai_dependency",
+			`最近连续 ${this.assistantTurnsWithoutUser} 个助手回合里你都没有参与，建议先写思路或伪代码再请求完整答案。`,
+			this.assistantTurnsWithoutUser,
+			this.options.minTurnsForDependency,
+		)
 	}
 
 	private notify(ruleId: BehaviorRuleId, message: string, metricValue: number = 0, threshold: number = 0): void {
@@ -487,6 +492,7 @@ export class BehaviorMonitor {
 		this.pendingAlerts = []
 		this.assistantCodeStreak = 0
 		this.turnsSinceLastEdit = 0
+		this.assistantTurnsWithoutUser = 0
 		this.escalationCounter = {}
 		this.blockingTriggered = false
 		this.currentTaskCategory = undefined
