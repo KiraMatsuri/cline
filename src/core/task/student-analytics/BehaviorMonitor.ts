@@ -7,6 +7,7 @@
 
 import { Logger } from "@/shared/services/Logger"
 import { type ConceptModeState, INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "./ConceptModeGate"
+import { isCompleteImplDemand } from "./demandDetect"
 import { getRulePolicy } from "./rulePolicy"
 import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog, TaskCategory } from "./types"
 
@@ -43,7 +44,10 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	aiDependencyThreshold: 0.85,
 	// 【方案 D 止血】5 → 8。该计数器对每个 turn_message 都 +1（助手回合也算），
 	// 一次提问就能贡献 7~11，原值 5 等价于"问一句话就触发"。
-	noEditTurnStreakThreshold: 8,
+	// 【P5-A】8 → 3 ★ 单位已改为「学生请求」（见 updateRealtimeStreaks）：
+	// 8 现在意为"连续 8 次提问没动手"，与「及时干预」相悖；3 即"连续 3 次提问没动手 → 提醒"，
+	// 对齐 M4'（第 3 次索要完整实现即阻断）与 M6'（新一轮索要计入升级计数）的口径。
+	noEditTurnStreakThreshold: 3,
 	consecutiveAssistantCodeThreshold: 3,
 	adoptionRateThreshold: 0.7,
 	selfModificationThreshold: 0.25,
@@ -70,7 +74,19 @@ export class BehaviorMonitor {
 	private pendingAlerts: BehaviorAlert[] = []
 
 	private assistantCodeStreak = 0
+	/**
+	 * 【P5-A】连续「**学生请求**」且期间没有代码编辑的计数（单位 = 学生回合，**不是**助手回合）。
+	 * 实测（M4'）：一次提问会产生 6~12 个助手回合（每次工具调用一个回合），
+	 * 按回合计数会让**一次长检索请求**就把阈值推满并连记 3 次违规 ⇒ 一次提问即被阻断。
+	 * 单位改为「学生请求」后，一次请求最多推进 1 格。
+	 */
 	private turnsSinceLastEdit = 0
+	/** 【P5-A】本学生请求内已计过违规的规则：保证同一请求内每条规则至多升级一次 */
+	private bumpedRulesThisRequest = new Set<BehaviorRuleId>()
+	/** 【P5-A】本任务内的学生请求数（含开题）；用于「一次提问内的多回合不算 AI 依赖」 */
+	private studentRequestCount = 0
+	/** 【P5/T16】当前请求是否在索要「完整实现」（`demandDetect.isCompleteImplDemand` 的结果） */
+	private currentRequestIsDemand = false
 
 	/** 【F9】连续「助手回合且过程中学生没有发言」的计数 —— 比例指标在 Cline 多工具循环下恒真，改用绝对量 */
 	private assistantTurnsWithoutUser = 0
@@ -136,7 +152,15 @@ export class BehaviorMonitor {
 				this.currentTaskCategory = event.category
 			}
 		}
-
+		// 【P5-A】请求边界（违规单位 = 一个**学生请求**）：
+		//   - 清空「本请求已计数」集合 ⇒ 同一条规则在一次请求内至多升级一次；
+		//   - 记录请求数（供「一次提问内的多回合不算 AI 依赖」使用）；
+		//   - 重新判定本轮是否在索要完整实现（供 T16 的 complete_impl_demand 规则）。
+		if (isStudentIntent) {
+			this.bumpedRulesThisRequest.clear()
+			this.studentRequestCount++
+			this.currentRequestIsDemand = isCompleteImplDemand(event.rawContent)
+		}
 		// 【F3】概念护栏的任务级粘性：索要完整代码**不退出**。
 		// ⚠️ 分类只在「学生侧」事件上读（isStudentIntent）：实测 adoption_infer 事件也带 category
 		//    （如 language_request），若不加这个门，助手侧事件会误触发 CODE_WORK 退出。
@@ -196,8 +220,6 @@ export class BehaviorMonitor {
 		}
 
 		if (event.eventType === "turn_message") {
-			this.turnsSinceLastEdit++
-
 			if (event.role === "assistant") {
 				// 【v2.13 方案 A】streak 只认 **fenced 代码块**，不再认"文本里出现过代码/反引号/工具标记"。
 				// 实测：DSML 工具标记与行内代码（如 `wiki_backend_unreachable`）都会被旧判定算成代码，
@@ -209,6 +231,15 @@ export class BehaviorMonitor {
 				}
 				// hasCode=false 时不再清零 assistantCodeStreak
 				// 只有在 code_edit 事件时才重置，避免 AI 发送非代码消息（如 execute_command / read_file / 提示文本）意外打断计数
+			} else {
+				// 【P5-A】★ 只有**学生回合**推进"连续未编辑"计数（一次请求 = 一格）。
+				// 实测反例：一次提问产生 12 个助手回合 ⇒ 旧口径直接记成 12 格并连记 3 次违规。
+				this.turnsSinceLastEdit++
+			}
+			// 【P5-A】退化口径：从未见过学生回合时（离线重放 / 单测 / 异常数据）仍按回合计数 ——
+			// 宁可多计也不静默失效（与 rulePolicy「分类缺失时全部启用」同一保守原则）。
+			if (event.role === "assistant" && this.studentRequestCount === 0) {
+				this.turnsSinceLastEdit++
 			}
 
 			if (this.options.debug) {
@@ -240,6 +271,9 @@ export class BehaviorMonitor {
 		if (policy("high_recent_ai_dependency")) {
 			this.checkHighRecentAiDependencyRule(event)
 		}
+		if (policy("complete_impl_demand")) {
+			this.checkCompleteImplDemandRule(event)
+		}
 	}
 
 	/**
@@ -259,8 +293,9 @@ export class BehaviorMonitor {
 	private checkConsecutiveCodeGenerationRule(event: StudentInteractionLog): void {
 		// 【F1】★ 计数与提醒冷却/阈值解耦：命中的回合当即计一次，不受 cooldownMs 影响；
 		// 下面的 streak 阈值只在决定「是否发提醒」时生效。
+		// 【P5-A】但计数**单位是学生请求**：同一请求内至多升级一次（一次提问可能含 2 个代码回合）。
 		if (this.isAssistantCodeTurn(event)) {
-			this.bumpEscalation("consecutive_code_generation")
+			this.bumpOncePerRequest("consecutive_code_generation")
 		}
 
 		if (this.assistantCodeStreak < this.options.consecutiveAssistantCodeThreshold) {
@@ -285,7 +320,8 @@ export class BehaviorMonitor {
 		}
 
 		if (event.eventType === "turn_message") {
-			this.bumpEscalation("no_edit_streak")
+			// 【P5-A】单位 = 学生请求（计数只由学生回合推进 + 本请求内至多一次）
+			this.bumpOncePerRequest("no_edit_streak")
 		}
 
 		this.notify(
@@ -297,6 +333,32 @@ export class BehaviorMonitor {
 	}
 
 	/**
+	 * 【P5/T16】直接索要「完整实现」。
+	 *
+	 * 单位 = **学生请求**（`bumpOncePerRequest`）⇒ 第 3 次索要即达阻断阈值，与 M4'/M6' 口径一致。
+	 * 本规则不依赖 `assistantCodeStreak` / `turnsSinceLastEdit`，因此概念型任务里也能生效。
+	 */
+	private checkCompleteImplDemandRule(event: StudentInteractionLog): void {
+		// 只在**学生侧入口事件**（开题 / 学生回合）上推进：`code_edit`、`adoption_infer` 等伴生事件
+		// 不该被当成"又一次索要完整实现"（计数单位是学生请求，由其入口事件触发；与 dedupe 共同保证 ≤1/请求）。
+		if (event.eventType !== "turn_message" && event.eventType !== "task_start") {
+			return
+		}
+		if (!this.currentRequestIsDemand) {
+			return
+		}
+
+		const count = this.bumpOncePerRequest("complete_impl_demand")
+
+		this.notify(
+			"complete_impl_demand",
+			`这是本任务第 ${count} 次直接索要完整实现。先自己写一版（哪怕只有循环骨架），再让 AI 对照，学得最快。`,
+			count,
+			this.options.escalationBlockingThreshold,
+		)
+	}
+
+	/**
 	 * 【F1】累加某规则的升级计数并返回新值。
 	 * 与 notify() 解耦：提醒受 cooldownMs 节流，计数不受任何冷却影响。
 	 */
@@ -304,6 +366,21 @@ export class BehaviorMonitor {
 		const n = (this.escalationCounter[ruleId] ?? 0) + 1
 		this.escalationCounter[ruleId] = n
 		return n
+	}
+
+	/**
+	 * 【P5-A】违规单位 = **一个学生请求**：同一请求内同一条规则至多升级一次。
+	 * 防止"一次长请求内连记数次违规"（实测 M4' 一次提问即达阻断阈值）。
+	 */
+	private bumpOncePerRequest(ruleId: BehaviorRuleId): number {
+		// 【P5-A】退化口径（从未见过学生回合）：不做每请求去重，按回合计数
+		if (this.studentRequestCount > 0) {
+			if (this.bumpedRulesThisRequest.has(ruleId)) {
+				return this.getEscalationCount(ruleId)
+			}
+			this.bumpedRulesThisRequest.add(ruleId)
+		}
+		return this.bumpEscalation(ruleId)
 	}
 
 	private checkHighAdoptionLowSelfModificationRule(event: StudentInteractionLog): void {
@@ -349,7 +426,7 @@ export class BehaviorMonitor {
 			// 归因：F1 把自增从 notify()（受 120s 冷却节流）移出后，此处若不同步补上，
 			// 该规则的升级计数将**恒为 0** —— 命中只产生提醒，永远升不了级。
 			if (this.isAssistantCodeTurn(event)) {
-				this.bumpEscalation("high_adoption_low_self_modification")
+				this.bumpOncePerRequest("high_adoption_low_self_modification")
 			}
 
 			this.notify(
@@ -370,6 +447,18 @@ export class BehaviorMonitor {
 		if (event.eventType !== "turn_message") {
 			return
 		}
+		// 【P5-A/T19-b】★ 一次提问内的多回合是 agent 循环的正常形态（实测 6~12 回合，每次工具调用
+		// 一个回合），**不构成**"AI 依赖"。因此必须已有 ≥ 2 次学生请求才评估本规则，
+		// 否则 M1'（只问一句「第一周学了什么」）会被误报为依赖。
+		// 退化口径：从未见过学生回合时（单测/离线重放）不做此限制。
+		if (this.studentRequestCount > 0 && this.studentRequestCount < 2) {
+			if (this.options.debug) {
+				Logger.info(
+					`[BehaviorMonitor][debug] aiDependency rule skipped: studentRequestCount=${this.studentRequestCount} < 2`,
+				)
+			}
+			return
+		}
 		if (this.assistantTurnsWithoutUser < this.options.minTurnsForDependency) {
 			if (this.options.debug) {
 				Logger.info(
@@ -379,7 +468,7 @@ export class BehaviorMonitor {
 			return
 		}
 
-		this.bumpEscalation("high_recent_ai_dependency")
+		this.bumpOncePerRequest("high_recent_ai_dependency")
 
 		this.notify(
 			"high_recent_ai_dependency",
@@ -451,7 +540,15 @@ export class BehaviorMonitor {
 	public getConceptModeState(): ConceptModeState {
 		return { ...this.conceptModeState }
 	}
+	/** 【P5-A】本任务内的学生请求数（供 index.ts 判"一轮内多回合"与记账去重） */
+	public getStudentRequestCount(): number {
+		return this.studentRequestCount
+	}
 
+	/** 【P5/T16】当前请求是否在索要「完整实现」（index.ts 据此注入"本轮不得给出完整实现"约束） */
+	public isCurrentRequestDemand(): boolean {
+		return this.currentRequestIsDemand
+	}
 	/**
 	 * 获取同规则累计触发次数
 	 */
@@ -508,6 +605,9 @@ export class BehaviorMonitor {
 		this.pendingAlerts = []
 		this.assistantCodeStreak = 0
 		this.turnsSinceLastEdit = 0
+		this.bumpedRulesThisRequest = new Set<BehaviorRuleId>()
+		this.studentRequestCount = 0
+		this.currentRequestIsDemand = false
 		this.assistantTurnsWithoutUser = 0
 		this.escalationCounter = {}
 		this.blockingTriggered = false

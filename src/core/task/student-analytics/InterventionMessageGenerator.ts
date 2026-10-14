@@ -147,6 +147,29 @@ export const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeveri
 			},
 		],
 	},
+	/** 【P5/T16】直接索要「完整实现」—— 概念型任务里也能计数与升级的那一条 */
+	complete_impl_demand: {
+		gentle: [
+			{
+				style: "hint",
+				template:
+					"💡 提醒：这是第 {streak} 次直接要完整实现了 —— 先自己写一版（哪怕只是循环骨架），再让 AI 对照，学得最快。",
+			},
+		],
+		moderate: [
+			{
+				style: "question",
+				template: "🤔 换个方式：完整实现先放一放。你能说出“第一步该做什么”吗？说对了我就接着往下拆（同样只给关键步骤）。",
+			},
+		],
+		strong: [
+			{
+				style: "challenge",
+				template:
+					"🎯 这一步你自己先写：把函数名、输入、输出和循环能写多少写多少（不完整也算）。写完后贴出来，我只看你那几行。",
+			},
+		],
+	},
 }
 
 /**

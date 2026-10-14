@@ -31,6 +31,13 @@
 
 ### Changed
 
+- **教学干预计数单位：助手回合 → 学生请求**（对治 M4' 的根因）。`noEditTurnStreakThreshold` 8 → **3**，
+  语义随之变为「连续 3 次提问没动手 ⇒ 提醒」；同一学生请求内每条规则**至多升级一次**；
+  `high_recent_ai_dependency` 另加「已有 ≥ 2 次学生请求才评估」的前置 —— 一次提问内的 6~12 个助手回合
+  是 agent 工具循环的正常形态，**不构成** AI 依赖。**退化口径**：从未观测到学生回合时（离线重放 /
+  异常数据）仍按回合计数，与 `rulePolicy`「分类缺失时全部启用」同一保守原则：宁可多计也不静默失效。
+  副作用（有意）：`no_edit_streak` 自身达到阻断阈值需「第 5 次提问」；
+  「第 3 次索要完整实现即阻断」由 `complete_impl_demand` 承担。
 - **注入内容变更**：system prompt 从"认知边界约束 + 资料全文"改为"**认知边界约束 + 资料索引 + 检索状态**"，
   上下文从 16k 降至 1k 量级（真实数据 week=18 / 77 chunk：13,889 → 2,329 字符，−83.2%）。
   **认知边界约束段为必需项** —— 检索边界拦不住模型凭通用知识超纲作答。
@@ -76,6 +83,29 @@
 
 ### Fixed
 
+- **一次提问即被阻断 60 秒（教学干预误触发 · 实测 M4'）**：`no_edit_streak` 的计数单位是**回合**，
+  而 Cline 的工具循环下「一次提问 = 6~12 个助手回合」（实测：学生只发 1 条消息、10 次 `use_mcp_tool`
+  ⇒ 12 回合）⇒ 阈值 3 在一轮之内即被推满并连记 3 次违规。现改为按**学生请求**计数
+  （见 `### Changed` 的计数单位条）：同请求最多推进 1 格。
+- **概念型任务里「直接把完整代码给我」零干预（实测 M6'）**：`rulePolicy` 在 `explanation` / `algorithm`
+  下停用代码类规则 ⇒ 这类索要**没有任何可计数、可升级的规则**，只剩一句提示词约束，模型一次就给完整实现。
+  新增规则 `complete_impl_demand`（只看学生原文、不受分类门控，每次索要记一次 ⇒ 第 3 次达阻断阈值）、
+  其 gentle/moderate/strong 三档文案，以及仅在本轮索要时注入的 `buildDemandRefusalConstraint()` 强化约束。
+- **F12 漏掉一类真实方言形态（S5）**：`attribute` 引号未闭合（名字与值粘在一起）时不满足成对引号的
+  标签正则 ⇒ `server_name` 丢失 ⇒「without value for required parameter 'server_name'. Retrying...」
+  白耗回合（又反过来喂给上面那条阻断误触发）。新增畸形开标签的前置兜底：只丢弃名字之后到 `>` 的内容，
+  **仅当名字在已知工具/参数表内**才改写（仍不臆造）。
+- **同一轮干预被重复记账（M9' ① 不成立）**：冷却期内出现 9 对 `D`/`T`，却只对应 1 条学生消息。
+  记账入口现按 `apiRequestCount : 学生请求数 : 种类` 去重；学生在冷却期又发消息仍会正常记一条。
+- **注入的干预提示可能整轮未送达（M9' ③ 不成立）**：模型连续多回合只做工具调用、没有正文时，
+  一次性注入的提示被消费而学生从未看到。未送达的干预现**顺延到下一轮重投**（上限 2 次），
+  顺延回合不再重新决策（避免同一件事被记成两次 `intervention_decision`）。
+- **恢复会话后干预状态全部归零**：`behaviorMonitor` / `interventionManager` 原是 `Task` 实例字段，
+  恢复会话会新建实例 ⇒ streak / 升级计数 / 概念护栏粘性一起丢失（实测 `turnIndex` 多次从 0 重启）。
+  现按 `taskId` 缓存复用（LRU 20 + 30 分钟 TTL）。
+- **学生消息的 ingest 与提示词组装存在竞态**：`persistTurnLevelLog()` 先 `await` 落盘再 ingest，
+  而它由 `say("user_feedback")` 以 fire-and-forget 触发 ⇒ 提示词可能读到上一轮的旧状态
+  （概念护栏、意图分类、「是否在索要完整实现」都受影响）。现改为**先算后写**。
 - **`npm run test:unit` 在本仓库根本无法运行**：`mocha` / `ts-node` / `source-map-support` 未声明为依赖
   （`Error: spawn mocha ENOENT`）；且 `src/` 下 846 个被 gitignore 的旧构建 `.js` 产物与真实源文件并排，
   遮蔽 `.ts` 后命中其中的别名导入（`Cannot find package '@core/workspace'`）。现补为 `devDependencies`，

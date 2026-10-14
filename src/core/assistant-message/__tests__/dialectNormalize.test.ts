@@ -61,6 +61,20 @@ const S4 = [
 	`</${M} calls>`,
 ].join("\n")
 
+/**
+ * 【P5/T18】S5 = 实测 M1 方言回合：属性引号**未闭合**，名字与值粘在一起：
+ * `‹｜｜DSML｜｜ parameter name="server_name›wiki‹/server_name›`
+ * 后果：`server_name` 丢失 ⇒ UI 报 "without value for required parameter 'server_name'". Retrying...
+ */
+const S5 = [
+	`<${M} calls>`,
+	`<${M} invoke name="use_mcp_tool">`,
+	`<${M} parameter name="server_name>wiki<` + `/${M} parameter>`,
+	`<${M} parameter name="tool_name">list_wiki_weeks</${M} parameter>`,
+	`</${M} invoke>`,
+	`</${M} calls>`,
+].join("\n")
+
 /** 取出解析结果里的工具调用（断言判别力用，避免"真空通过"） */
 interface ParsedToolUse {
 	type: "tool_use"
@@ -137,6 +151,32 @@ describe("F12 · 方言归一化", () => {
 		expect(call).to.not.equal(undefined)
 		expect(call?.params.tool_name).to.equal("read_wiki_chunk")
 		expect(call?.params.arguments).to.equal(`{"chunk_id": "textbook_python/6__chunk3"}`)
+	})
+
+	it("★【P5/T18】实测样本 S5（属性引号未闭合）：兑底后 server_name 不丢，工具可完整解析", () => {
+		// 反向对照：不归一化时整段产不出任何工具调用（旧行为即如此 ⇒ 参数缺失 ⇒ 重试多耗回合）
+		expect(toolUses(S5), "未归一化时不应解析出工具调用").to.have.length(0)
+
+		const out = normalizeAssistantDialect(S5)
+		expect(out).to.include("<server_name>wiki</server_name>")
+		expect(out).to.not.include(P)
+		const call = toolUses(out).find((t) => t.name === "use_mcp_tool")
+		expect(call, "S5 归一化后必须解析出 use_mcp_tool").to.not.equal(undefined)
+		expect(call?.params.server_name).to.equal("wiki")
+		expect(call?.params.tool_name).to.equal("list_wiki_weeks")
+	})
+
+	it("★【P5/T18】仍不臆造：未知名字的畸形标签不得被改写成标签；成对引号的正常标签产出不变", () => {
+		const unknown = `<${M} calls>\n<${M} parameter name="foo_bar>xxx</${M} parameter>\n</${M} calls>`
+		const outUnknown = normalizeAssistantDialect(unknown)
+		expect(outUnknown).to.not.include("<foo_bar>")
+		expect(outUnknown).to.include("foo_bar") // 原样保留（宁可留下残渣，也不凭空造参数）
+
+		// 成对引号（即正常形态）走前置兑底式时，产出与标准路径**逐字相同**
+		const normal = `<${M} calls>\n<${M} parameter name="server_name">wiki</${M} parameter>\n</${M} calls>`
+		const outNormal = normalizeAssistantDialect(normal)
+		expect(outNormal).to.include("<server_name>wiki</server_name>")
+		expect(outNormal).to.not.include(M)
 	})
 
 	it("★ 不得凭空造出工具调用：只有包裹层 / 无名外壳时 → 不产出标签", () => {

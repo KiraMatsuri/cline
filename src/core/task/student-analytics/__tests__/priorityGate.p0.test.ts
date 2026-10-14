@@ -65,7 +65,8 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 		m3.ingest(ev({}))
 		m3.ingest(ev({}))
 		expect(m3.getEscalationCount("consecutive_code_generation")).to.equal(3)
-		expect(m3.getPendingAlerts().length).to.equal(1)
+		// 【P5-A】阈值 8→3 后同一串事件也会命中 no_edit_streak；按 ruleId 精确断言本规则的提醒条数
+		expect(m3.getPendingAlerts().filter((a) => a.ruleId === "consecutive_code_generation").length).to.equal(1)
 	})
 
 	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空（阻断不依赖 pendingAlerts）", () => {
@@ -86,8 +87,9 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 		// 那 8 个纯文字助手回合会把 ai_dependency 推到 3，但该规则现已被 rulePolicy 标为**永不可升级**，
 		// 故阈值 3 不再造成误阻断，本用例仍是「有警报（no_edit_streak=1）但未达阈值」。
 		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		// 8 个纯文字助手回合：no_edit_streak 在第 8 轮首次命中（提醒入队，计数 1 < 3，不阻断）
-		for (let i = 0; i < 8; i++) {
+		// 【P5-A】单位改为「学生请求」且阈值 8→3：3 个纯文字回合（退化口径下按回合计数）
+		// ⇒ no_edit_streak 恰好记 1 次（< 3，不阻断）；旧注释里的"8 轮"已废弃。
+		for (let i = 0; i < 3; i++) {
 			m6.ingest(ev({ hasCodeBlock: false }))
 		}
 		expect(m6.getEscalationCount("no_edit_streak")).to.equal(1)

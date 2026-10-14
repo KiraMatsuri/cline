@@ -1,0 +1,143 @@
+/**
+ * G5 · P5 优先级综合测试（L2 层）—— 计数单位 / 状态存续 / 记账去重 / 送达保护
+ *
+ * 覆盖 plan-2 §0 的四类检查：正常路径 / 边界条件 / 回归 / 核心流程可跑通。
+ * 对应实测（§11）里 **两个反例** 与 **两个记账偏差**：
+ *   - M1'（单次提问 ⇒ 应有零干预）
+ *   - M4'（一次 12 回合的请求 ⇒ 不得阻断；第 3 次索要完整实现才阻断）
+ *   - M7' 的同一轮重复记账（T17）
+ *   - M9' ③ 注入未送达（T19）
+ *
+ * ⚠️ **诚实声明**：③④ 是**结构守卫（变更探测器）**，不是端到端验证 ——
+ * 它们只证明"接线挂着、顺序对、键里有该字段"，真实运行行为需要手工复现
+ * （`Task` 实例化、webview 展示、文件系统写入都无法在单测里完成）。
+ * ①② 是真正的行为断言（纯内存链路：BehaviorMonitor → TeachingInterventionManager）。
+ */
+
+import * as fs from "node:fs"
+import * as path from "node:path"
+import { expect } from "chai"
+import { after, beforeEach } from "mocha"
+import { BehaviorMonitor } from "../BehaviorMonitor"
+import { TeachingInterventionManager } from "../TeachingInterventionManager"
+import type { StudentInteractionLog, TaskCategory } from "../types"
+import { ev } from "./__fixtures__/events"
+
+/** 阻断状态是跨会话全局静态（v2.7 防绕过），生产代码无清除入口 ⇒ 测试侧必须复位（同 G0） */
+const managerStaticState = TeachingInterventionManager as unknown as {
+	globalBlockingEndsAt: number
+	globalLastBlockingIntervention: unknown
+}
+const savedBlockingEndsAt = managerStaticState.globalBlockingEndsAt
+const savedLastBlockingIntervention = managerStaticState.globalLastBlockingIntervention
+
+const stu = (
+	raw: string,
+	eventType: "task_start" | "turn_message" = "turn_message",
+	category: TaskCategory = "explanation",
+): StudentInteractionLog => ev({ eventType, role: "user", category, hasCode: false, hasCodeBlock: false, rawContent: raw })
+
+/** 只有工具调用、没有正文的助手回合（M1'/M4' 实测形态） */
+const toolOnlyTurn = (): StudentInteractionLog => ev({ hasCode: false, hasCodeBlock: false, suggestionType: "other" })
+
+/** 助手代码回合（DSML/工具调用 + 正文代码块） */
+const codeTurn = (): StudentInteractionLog => ev({})
+
+const taskSrc = fs.readFileSync(path.join(__dirname, "..", "..", "index.ts"), "utf-8")
+
+describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达）", () => {
+	beforeEach(() => {
+		managerStaticState.globalBlockingEndsAt = 0
+		managerStaticState.globalLastBlockingIntervention = null
+	})
+
+	it("【G5-①】M1' 零干预：单次提问 + 8 个「只有工具调用」的助手回合 ⇒ 既无警报也无注入文本", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m.ingest(stu("第一周学了什么", "task_start"))
+		for (let i = 0; i < 8; i++) {
+			m.ingest(toolOnlyTurn())
+		}
+
+		expect(m.getStudentRequestCount()).to.equal(1)
+		expect(m.getPendingAlerts()).to.have.length(0) // 实测里落下了 2 条 decision，即此处不再发生
+		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
+
+		const mgr = new TeachingInterventionManager("t1")
+		expect(mgr.checkAndGenerateIntervention(m, 8)).to.equal(null)
+		expect(mgr.isBlockingActive()).to.equal(false)
+	})
+
+	it("【G5-②】M4' 回归：一次 12 回合的请求不阻断；第 3 次索要完整实现才阻断（端到端）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+
+		// 第 1 次请求：索要 + 12 个助手代码回合（实测 M4' 的形态）
+		m.ingest(stu("帮我写一个完整的冒泡排序程序", "task_start", "code_generation"))
+		for (let i = 0; i < 12; i++) {
+			m.ingest(codeTurn())
+		}
+		const first = mgr.checkAndGenerateIntervention(m, 1)
+		expect(mgr.isBlockingActive(), "一次请求不得触发阻断（旧口径在此处即阻断）").to.equal(false)
+		expect(first ?? "").to.not.include("阻断模式")
+
+		// 第 2 次请求：仍然只提醒
+		m.ingest(stu("把完整代码给我", "turn_message", "code_generation"))
+		m.ingest(codeTurn())
+		expect(mgr.checkAndGenerateIntervention(m, 2) ?? "").to.not.include("阻断模式")
+
+		// 第 3 次请求：达阈 ⇒ 阻断文本 + 阻断态
+		m.ingest(stu("不要解释了，直接给我代码", "turn_message", "code_generation"))
+		m.ingest(codeTurn())
+		expect(m.getRuleIdsAtBlockingThreshold()).to.include("complete_impl_demand")
+		const third = mgr.checkAndGenerateIntervention(m, 3)
+		expect(third).to.be.a("string").and.to.include("阻断模式")
+		expect(mgr.isBlockingActive()).to.equal(true)
+	})
+
+	it("【G5-③】结构守卫（**变更探测器**）：T15 状态存续 / T17 记账去重 / T19 送达保护的接线", () => {
+		// T19-a：未送达的干预顺延重投，且有上限
+		expect(taskSrc).to.include("const INTERVENTION_REDELIVERY_LIMIT = 2")
+		expect(taskSrc).to.include("interventionRedeliveryLeft")
+		expect(taskSrc).to.include("!this.interventionCopyDeliveredThisTurn")
+		expect(taskSrc).to.include("const needDecision = !carryOverHint || interventionManager.isBlockingActive()")
+
+		// T15：按 taskId 跨实例复用（LRU + TTL），两个入口都要接上
+		expect(taskSrc).to.include("Task.takeCachedState(Task.monitorCache, this.taskId)")
+		expect(taskSrc).to.include("Task.putCachedState(Task.monitorCache, this.taskId, this.behaviorMonitor)")
+		expect(taskSrc).to.include("Task.takeCachedState(Task.managerCache, this.taskId)")
+		expect(taskSrc).to.include("Task.putCachedState(Task.managerCache, this.taskId, this.interventionManager)")
+		expect(taskSrc).to.include("TASK_STATE_LIMIT")
+		expect(taskSrc).to.include("TASK_STATE_TTL_MS")
+
+		// T15-b：学生回合"先算后写"—— monitorBehavior 必须在 await persister.persist 之前
+		const fnStart = taskSrc.indexOf("private async persistTurnLevelLog")
+		expect(fnStart, "index.ts 必须仍有 persistTurnLevelLog").to.be.greaterThan(-1)
+		const fnEnd = taskSrc.indexOf("\n\tprivate ", fnStart + 1)
+		const fnBody = taskSrc.slice(fnStart, fnEnd > 0 ? fnEnd : undefined)
+		const ingestAt = fnBody.indexOf("this.monitorBehavior(log)")
+		const persistAt = fnBody.indexOf("await persister.persist(log)")
+		expect(ingestAt, "必须先 ingest").to.be.greaterThan(-1)
+		expect(persistAt, "必须仍有落盘").to.be.greaterThan(-1)
+		expect(ingestAt, "ingest 必须在落盘之前（否则提示词读到上一轮的旧状态）").to.be.lessThan(persistAt)
+
+		// T17：记账去重键 = apiRequestCount : 学生请求数 : 种类
+		expect(taskSrc).to.include('if (!this.interventionAccountKey("decision"))')
+		expect(taskSrc).to.include('if (!this.interventionAccountKey("copy"))')
+		expect(/apiRequestCount\}:\$\{studentRequests\}:\$\{kind\}/.test(taskSrc)).to.equal(true)
+	})
+
+	it("【G5-④】结构守卫（**变更探测器**）：T16 强化约束只在本轮索要时注入", () => {
+		expect(taskSrc).to.include("if (demandMonitor?.isCurrentRequestDemand()) {")
+		expect(taskSrc).to.include("systemPromptFinal = systemPromptFinal + buildDemandRefusalConstraint()")
+		// 概念护栏与"索要"约束是**两条独立注入**（索要不是概念问答的子集：M6' 里分类会被翻转）
+		expect(taskSrc).to.include("systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()")
+		// 只读监测：注入路径不得反过来写 monitor 状态
+		expect(taskSrc).to.not.include("setCurrentRequestDemand(")
+	})
+})
+
+// 【测试卫生】跑完后还原全局阻断状态（同 G0），避免污染同进程内其它 spec
+after(() => {
+	managerStaticState.globalBlockingEndsAt = savedBlockingEndsAt
+	managerStaticState.globalLastBlockingIntervention = savedLastBlockingIntervention
+})

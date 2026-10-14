@@ -40,7 +40,10 @@ describe("场景 2 — 真实依赖必须仍然干预", () => {
 	it("★ 连续无编辑（真在写代码的任务）→ 触发 no_edit_streak", () => {
 		const m = new BehaviorMonitor("s3", { cooldownMs: 0 })
 		m.ingest({ ...ev("s3", "user", 0, "debugging"), eventType: "task_start" })
-		for (let i = 1; i <= 8; i++) {
+		// 【P5-A】单位 = 学生请求：连续 3 次**提问**都没动手 ⇒ 命中。
+		// （旧写法连造 8 个**助手回合**：那其实是"一次提问内的 8 个回合"，新口径下不再算作 8 轮）
+		for (let i = 1; i <= 3; i++) {
+			m.ingest(ev("s3", "user", i, "debugging", { hasCode: false, hasCodeBlock: false }))
 			m.ingest(ev("s3", "assistant", i, "debugging"))
 		}
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("no_edit_streak")
@@ -63,6 +66,10 @@ describe("场景 3 — 阻断仍可升级，且时长与文案一致", () => {
 		let blockingText: string | null = null
 		let turn = 1
 		for (let round = 0; round < 20 && blockingText === null; round++) {
+			// 【P5-A】违规单位 = **一个学生请求**：每轮先发一条学生提问，再产生一个助手代码回合。
+			// （旧写法在一个 task_start 之后连造助手回合 —— 那只是一次提问内的多回合，
+			//   新口径下同一条规则在一次请求内至多记 1 次，永远升不到 6。）
+			m.ingest(ev("s4", "user", turn++, "code_generation", { hasCode: false, hasCodeBlock: false }))
 			m.ingest(ev("s4", "assistant", turn++, "code_generation", { hasCode: true, hasCodeBlock: true }))
 			const text = mgr.checkAndGenerateIntervention(m, turn)
 			if (text && text.includes('interventionType="blocking"')) {

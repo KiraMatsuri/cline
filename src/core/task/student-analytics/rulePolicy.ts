@@ -41,6 +41,14 @@ const CODE_ORIENTED_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>
 const NEVER_BLOCKING_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["high_recent_ai_dependency"])
 
 /**
+ * 【P5/T16】**任何分类下都启用且可升级**的规则。
+ *
+ * 目前只有「直接索要完整实现」：它描述的是**学生意图**，与任务分类无关 ——
+ * 而概念型任务恰恰是它最需要生效的场景（M6'/M11' 的通过条件）。
+ */
+const ALWAYS_ESCALATING_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["complete_impl_demand"])
+
+/**
  * 判定某条规则在给定任务分类下的策略。
  *
  * 保守原则：分类缺失/未知/other/language_request 时**全部启用且可升级** ——
@@ -51,6 +59,10 @@ export function getRulePolicy(ruleId: BehaviorRuleId, category: TaskCategory | u
 		// 概念问答下连提示都不发（M2'/M3' 的通过条件）；其余分类保留温和提示，但不可阻断。
 		const enabled = !category || !CONCEPTUAL_CATEGORIES.has(category)
 		return { enabled, canEscalateToBlocking: false }
+	}
+
+	if (ALWAYS_ESCALATING_RULES.has(ruleId)) {
+		return { enabled: true, canEscalateToBlocking: true }
 	}
 
 	if (!category || !CONCEPTUAL_CATEGORIES.has(category)) {

@@ -76,7 +76,11 @@ import { getSystemPrompt } from "@/core/prompts/system-prompt"
 import { appendEphemeralIntervention } from "@/core/task/student-analytics/ephemeralIntervention"
 import { nextHasDeliveredKeyCode } from "@/core/task/student-analytics/keyCodeDelivery"
 import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
-import { buildConceptModeConstraint, detectConceptModeViolation } from "@/core/teaching/conceptModeConstraint"
+import {
+	buildConceptModeConstraint,
+	buildDemandRefusalConstraint,
+	detectConceptModeViolation,
+} from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { nextWeekSwitch } from "@/core/teaching/weekSwitchNotice"
@@ -139,6 +143,9 @@ import { detectAvailableCliTools, extractProviderDomainFromUrl, updateApiReqMsg 
 import { buildUserFeedbackContent } from "./utils/buildUserFeedbackContent"
 
 export type ToolResponse = ClineToolResponseContent
+
+/** 【P5/T19】一次干预注入最多顺延重投 2 次（送达或超限即清空）—— 见回合入口的送达保护 */
+const INTERVENTION_REDELIVERY_LIMIT = 2
 
 type TaskParams = {
 	controller: Controller
@@ -934,6 +941,11 @@ export class Task {
 	private interventionCopyDeliveredThisTurn = false
 	/** 【F13】最近 2 轮学生输入（主题锚定启发式用；只写 advisory，绝不影响是否展示/是否干预） */
 	private recentStudentTexts: string[] = []
+	/** 【P5/T19】未送达的干预可顺延重投的剩余次数（见回合入口的送达保护） */
+	private interventionRedeliveryLeft = INTERVENTION_REDELIVERY_LIMIT
+	/** 【P5/T17】记账去重：上一次已记账的键（同一轮 + 同一学生请求只记一次） */
+	private lastDecisionAccountKey: string | undefined
+	private lastCopyAccountKey: string | undefined
 	/** 【F7】上次注入周切换通知时的教学周；undefined = 本任务尚未注入过 */
 	private lastInjectedWeek: number | undefined
 
@@ -949,6 +961,48 @@ export class Task {
 	 */
 	public static getCodeEditTracker(): CodeEditTracker | undefined {
 		return Task.codeEditTracker
+	}
+
+	/**
+	 * 【P5/T15】按 taskId 缓存的行为监测器 / 干预管理器（**跨 Task 实例**复用）。
+	 *
+	 * 为什么必须缓存：恢复一个已结束的会话会**新建 Task 实例**（实测日志里同一 taskId 的
+	 * `turnIndex` 多次从 0 重启）。干预状态（streak、升级计数、概念护栅粘性、冷却）若只挂在实例上，
+	 * 就会在每次"继续对话"时被清空 ⇒ 学生只要分几次追问，护栅就永远不生效（实测 M6'）。
+	 *
+	 * 淘汰：LRU（上限 20 个任务）+ 空闲过期（30 分钟视为新的学习段，
+	 * 避免学生隔天回来被上一段累计的违规直接阻断）。
+	 */
+	private static monitorCache = new Map<string, { value: BehaviorMonitor; touchedAt: number }>()
+	private static managerCache = new Map<string, { value: TeachingInterventionManager; touchedAt: number }>()
+	private static readonly TASK_STATE_LIMIT = 20
+	private static readonly TASK_STATE_TTL_MS = 30 * 60 * 1000
+
+	/** 【P5/T15】取缓存的 Task 级状态（过期即丢弃，命中则刷新 LRU 顺序） */
+	private static takeCachedState<T>(cache: Map<string, { value: T; touchedAt: number }>, taskId: string): T | undefined {
+		const hit = cache.get(taskId)
+		if (!hit) {
+			return undefined
+		}
+		cache.delete(taskId)
+		if (Date.now() - hit.touchedAt > Task.TASK_STATE_TTL_MS) {
+			return undefined
+		}
+		cache.set(taskId, hit)
+		return hit.value
+	}
+
+	/** 【P5/T15】写入 Task 级状态缓存（LRU 上限） */
+	private static putCachedState<T>(cache: Map<string, { value: T; touchedAt: number }>, taskId: string, value: T): void {
+		cache.delete(taskId)
+		cache.set(taskId, { value, touchedAt: Date.now() })
+		while (cache.size > Task.TASK_STATE_LIMIT) {
+			const oldest = cache.keys().next().value
+			if (oldest === undefined) {
+				break
+			}
+			cache.delete(oldest)
+		}
 	}
 
 	/**
@@ -1022,6 +1076,9 @@ export class Task {
 
 	/** 【F13】落一条 `intervention_decision`（M9' 的 `D`） */
 	private persistInterventionDecisionEvent(decision: InterventionDecision): void {
+		if (!this.interventionAccountKey("decision")) {
+			return // 【P5/T17】同轮重复记账：跳过
+		}
 		void this.persistInterventionEvent(
 			{
 				eventType: "intervention_decision",
@@ -1035,7 +1092,37 @@ export class Task {
 
 	/** 【F13】落一条 `intervention_copy`（M9' 的 `C` / `T` / `N`） */
 	private persistInterventionCopyEvent(event: InterventionCopyEvent, shownText: string | undefined): void {
+		if (!this.interventionAccountKey("copy")) {
+			return // 【P5/T17】同轮重复记账：跳过
+		}
 		void this.persistInterventionEvent(event, shownText ?? "")
+	}
+
+	/**
+	 * 【P5/T17】记账去重。
+	 *
+	 * 实测（M4'）：冷却期内**同一轮被记 3 次** D/T（9 对记账只对应 1 条学生消息），
+	 * 使 M9' ① `V = C + T` 右侧虚高、左侧偏小，被误报为"文案泄漏"。
+	 * 去重键 = `apiRequestCount : 学生请求数 : 种类`：
+	 *   - 同一轮内重复进入生成器 ⇒ 同一个键 ⇒ 只记一次；
+	 *   - 学生在冷却期又发了一条消息 ⇒ 学生请求数变化 ⇒ 仍会正常记一条（提醒确实又展示了一次）。
+	 *
+	 * @returns 键（允许记账）或 undefined（本次跳过）
+	 */
+	private interventionAccountKey(kind: "decision" | "copy"): string | undefined {
+		const studentRequests = this.getBehaviorMonitor()?.getStudentRequestCount() ?? 0
+		const key = `${this.taskState.apiRequestCount}:${studentRequests}:${kind}`
+		const last = kind === "decision" ? this.lastDecisionAccountKey : this.lastCopyAccountKey
+		if (last === key) {
+			Logger.info(`[TeachingIntervention][${this.taskId}] skip duplicate ${kind} accounting (key=${key})`)
+			return undefined
+		}
+		if (kind === "decision") {
+			this.lastDecisionAccountKey = key
+		} else {
+			this.lastCopyAccountKey = key
+		}
+		return key
 	}
 
 	/**
@@ -1049,8 +1136,11 @@ export class Task {
 		}
 
 		if (!this.behaviorMonitor) {
-			this.behaviorMonitor = new BehaviorMonitor(this.taskId)
-			Logger.info(`[BehaviorMonitor] created for taskId=${this.taskId}`)
+			// 【P5/T15】优先复用同一 taskId 的历史状态（恢复会话会重建 Task 实例）
+			const cached = Task.takeCachedState(Task.monitorCache, this.taskId)
+			this.behaviorMonitor = cached ?? new BehaviorMonitor(this.taskId)
+			Task.putCachedState(Task.monitorCache, this.taskId, this.behaviorMonitor)
+			Logger.info(`[BehaviorMonitor] ${cached ? "reused" : "created"} for taskId=${this.taskId}`)
 		}
 
 		return this.behaviorMonitor
@@ -1067,8 +1157,11 @@ export class Task {
 		}
 
 		if (!this.interventionManager) {
-			this.interventionManager = new TeachingInterventionManager(this.taskId)
-			Logger.info(`[TeachingIntervention] created for taskId=${this.taskId}`)
+			// 【P5/T15】同 BehaviorMonitor：按 taskId 跨实例复用（升级计数/冷却/历史都在它体内）
+			const cached = Task.takeCachedState(Task.managerCache, this.taskId)
+			this.interventionManager = cached ?? new TeachingInterventionManager(this.taskId)
+			Task.putCachedState(Task.managerCache, this.taskId, this.interventionManager)
+			Logger.info(`[TeachingIntervention] ${cached ? "reused" : "created"} for taskId=${this.taskId}`)
 		}
 
 		return this.interventionManager
@@ -1192,8 +1285,13 @@ export class Task {
 			}
 
 			// 持久化日志
-			await persister.persist(log)
+			// 【P5/T15】★ 先算后写：`monitorBehavior()` 必须在**系统提示词组装之前**同步完成。
+			// 本函数由 `say("user_feedback")` 以 `void` 方式触发（fire-and-forget），
+			// 而调用点是 `await persister.persist(...)` 之后 —— 实测 M6' 表明这会让本回合的学生意图、
+			// 概念护栏状态、"是否在索要完整实现"全部来不及生效（提示词读到的是上一轮的旧状态）。
+			// 改为：同步 ingest（内存镜像）→ 再异步落盘（写失败不影响已计入的行为）。
 			this.monitorBehavior(log)
+			await persister.persist(log)
 			Logger.info(`[StudentTurnLog] taskId=${this.taskId}, turnIndex=${turnIndex}, content=${text?.substring(0, 100)}`)
 		} catch (error) {
 			// 日志写入失败时只记录错误，不影响原有功能
@@ -2430,6 +2528,16 @@ export class Task {
 				systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()
 				Logger.log(`[Task] 概念问答模式约束已注入 (sticky, demands=${conceptState.completeImplDemands})`)
 			}
+			// 【P5/T16】本轮学生在**直接索要完整实现** ⇒ 追加"本轮不得给出完整实现"的强化约束。
+			// 实测（M6'）：学生一次索要，模型就直接给出完整实现且全程零干预；
+			// 概念护栅里那句"持续索要也不要放弃约束"被当成了背景噪声。
+			const demandMonitor = this.getBehaviorMonitor()
+			if (demandMonitor?.isCurrentRequestDemand()) {
+				systemPromptFinal = systemPromptFinal + buildDemandRefusalConstraint()
+				Logger.log(
+					`[Task] 完整实现索要约束已注入 (escalation=${demandMonitor.getEscalationCount("complete_impl_demand")})`,
+				)
+			}
 		} catch (e) {
 			Logger.warn("[Task] 概念问答模式约束注入失败，跳过:", e)
 		}
@@ -3103,21 +3211,43 @@ export class Task {
 			// 【F6】每回合入口先重置：干预只在“本回合”有效（注入点是 attemptApiRequest，
 			// 而重试会重新进入该生成器 ⇒ 那时仍需拿到值，所以不能在注入时就清）。
 			// 放在 try 内、check 之前，是为了连“上一回合抛错留下残留值”这种情况也一并清掉。
-			// 【F13】模板兜底文案与决策元数据同生命周期（一轮即失效）。
-			this.pendingInterventionText = undefined
-			this.lastInjectionTemplate = undefined
-			this.lastInjectionMeta = undefined
+			//
+			// 【P5/T19】送达保护：上一轮的注入若**整轮没有被任何 text 块展示**（模型只调工具、没有正文），
+			// 那条提示就被一次性消费掉了 —— 学生什么都没看到，而记账里已经算过一次干预。
+			// 实测（M1/M4）：模型连续 10+ 个回合只做工具调用 ⇒ 两条提示全部没送达，M9' ③ 因此不成立。
+			// 处理：把同一条干预**顺延到本轮重投**（最多 INTERVENTION_REDELIVERY_LIMIT 次），
+			// 且顺延回合**不**重新决策 —— 否则同一件事会被记成两次 `intervention_decision`。
+			const carryOverHint =
+				this.pendingInterventionText !== undefined &&
+				!this.interventionCopyDeliveredThisTurn &&
+				this.interventionRedeliveryLeft > 0
 			this.interventionCopyDeliveredThisTurn = false
+			if (carryOverHint) {
+				this.interventionRedeliveryLeft--
+				Logger.info(
+					`[TeachingIntervention][${this.taskId}] re-delivering undelivered hint (remaining=${this.interventionRedeliveryLeft})`,
+				)
+			} else {
+				this.pendingInterventionText = undefined
+				this.lastInjectionTemplate = undefined
+				this.lastInjectionMeta = undefined
+				this.interventionRedeliveryLeft = INTERVENTION_REDELIVERY_LIMIT
+			}
+
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()
 				// 【F13】改用结构化决策入口：除注入文本外还要拿到模板文案与规则/力度/风格，
 				// 否则 `intervention_decision` 事件无从落库（F13 硬要求 1），M9' 的 D/T/N 全部不可数。
-				const decision = interventionManager.checkAndGenerateInterventionDecision(
-					monitor,
-					this.taskState.apiRequestCount,
-					this.recentInterventionCopies,
-				)
+				// 【P5/T19】顺延重投的回合跳过决策；但阻断态例外 —— 提醒必须带新的倒计时。
+				const needDecision = !carryOverHint || interventionManager.isBlockingActive()
+				const decision = needDecision
+					? interventionManager.checkAndGenerateInterventionDecision(
+							monitor,
+							this.taskState.apiRequestCount,
+							this.recentInterventionCopies,
+						)
+					: null
 				const interventionText = decision?.injectionText
 
 				// ★ 阻断态优先检查（独立于 interventionText）

@@ -32,7 +32,9 @@ describe("F1 · 升级阈值可达性", () => {
 		m.ingest(ev({}))
 		m.ingest(ev({}))
 		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(3)
-		expect(m.getPendingAlerts().length).to.equal(1) // 提醒仍受 120s 冷却限制
+		// 【P5-A】阈值 8→3 后，同一串事件会连带命中 no_edit_streak ⇒ 按 ruleId 精确断言
+		// （本用例关心的是"同一规则在冷却期内仍逐轮计数"，不是"全局只有一条提醒"）
+		expect(m.getPendingAlerts().filter((a) => a.ruleId === "consecutive_code_generation").length).to.equal(1)
 	})
 
 	it("非 turn_message 事件不计数", () => {

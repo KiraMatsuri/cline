@@ -237,6 +237,15 @@ export type BehaviorRuleId =
 	| "no_edit_streak"
 	| "high_adoption_low_self_modification"
 	| "high_recent_ai_dependency"
+	/**
+	 * 【P5/T16】**直接索要「完整实现」**。
+	 *
+	 * 为什么单独一条：实测（M6'/M11'）表明，学生在**概念型任务**里直接索要完整代码时，
+	 * `rulePolicy` 会把代码类规则整体停用 ⇒ 这个行为**没有任何可计数、可升级的规则**，
+	 * 只剩一句提示词约束（模型一给就是完整实现且永不触发干预）。
+	 * 本规则是**唯一在任何分类下都启用且可升级**的规则（单位 = 学生请求）。
+	 */
+	| "complete_impl_demand"
 
 /**
  * 干预严重等级

@@ -68,7 +68,8 @@ describe("G2 · 优先级综合（可跑通 + 边界）", () => {
 		m3.ingest(ev({}))
 		m3.ingest(ev({}))
 		expect(m3.getEscalationCount("consecutive_code_generation")).to.equal(3)
-		expect(m3.getPendingAlerts().length).to.equal(1)
+		// 【P5-A】阈值 8→3 后同一串事件也会命中 no_edit_streak；按 ruleId 精确断言本规则的提醒条数
+		expect(m3.getPendingAlerts().filter((a) => a.ruleId === "consecutive_code_generation").length).to.equal(1)
 	})
 
 	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空（阻断不依赖 pendingAlerts）", () => {

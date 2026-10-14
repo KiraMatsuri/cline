@@ -38,6 +38,20 @@ const PARAM_NAMES: ReadonlySet<string> = new Set<string>(toolParamNames)
  */
 const TAG_RE = new RegExp(`<\\/?\\s*(?:${DSML_MARK}\\s*)?([A-Za-z][\\w-]*)((?:\\s+[A-Za-z_][\\w-]*\\s*=\\s*"[^"]*")*)\\s*>`, "g")
 
+/**
+ * 【P5/T18】畸形开标签：属性**引号未闭合**、名字与值粘在一起（真实样本 S5）。
+ *
+ * 实测样本：`‹｜｜DSML｜｜ parameter name="server_name›wiki‹/server_name›`。
+ * `TAG_RE` 要求成对引号 ⇒ 该标签整体不匹配 ⇒ 解析器只能命中后面的
+ * `‹tool_name›` / `‹arguments›`，于是 `use_mcp_tool` **缺 `server_name`**；
+ * 现场表现：`Cline tried to use use_mcp_tool without value for required parameter 'server_name'. Retrying...`。
+ *
+ * 处理：把 `name="NAME` 之后直到 `›` 的全部内容丢掉，只留规范开标签 `‹NAME›`（值由后续文本继续携带）。
+ * 约束：仍**不臆造** —— 只有名字在已知工具/参数表里时才改写。
+ * 注：成对引号的正常标签也会匹配本式，但产出与标准路径**逐字相同**，故可以安全前置。
+ */
+const MALFORMED_OPEN_RE = new RegExp(`<${DSML_MARK}\\s*(?:invoke|parameter)\\s+name="([A-Za-z_][\\w-]*)[^>]*>`, "g")
+
 interface OpenElement {
 	name: string
 	/** 开标签是否出现在**含 DSML 标记的行**里（这类元素才允许被 DSML 闭合标记出栈） */
@@ -65,7 +79,18 @@ export function normalizeAssistantDialect(raw: string): string {
 		.map((line): string | null => {
 			const lineHasMark = line.includes(DSML_MARK)
 
-			const rebuilt = line.replace(TAG_RE, (full: string, name: string, attrs: string) => {
+			// 【P5/T18】先修畸形开标签（属性引号未闭合），否则成对引号的 TAG_RE 根本匹配不到它
+			const pre = lineHasMark
+				? line.replace(MALFORMED_OPEN_RE, (full: string, name: string) => {
+						if (!TOOL_NAMES.has(name) && !PARAM_NAMES.has(name)) {
+							return full // 未知名字：不改写（不臆造工具调用）
+						}
+						touched = true
+						return `<${name}>`
+					})
+				: line
+
+			const rebuilt = pre.replace(TAG_RE, (full: string, name: string, attrs: string) => {
 				const isDsml = full.includes(DSML_MARK)
 				const isClosing = /^<\s*\//.test(full)
 				const attrName = /name\s*=\s*"([^"]*)"/.exec(attrs)?.[1]
@@ -108,7 +133,9 @@ export function normalizeAssistantDialect(raw: string): string {
 						touched = true
 						return `<${attrName}>`
 					}
-					return "" // 无名外壳：丢弃，绝不臆造工具调用（也是真实改写 ⇒ 置 touched）
+					// 无名外壳：丢弃，绝不臆造工具调用（同为真实改写 ⇒ 必须置 touched）
+					touched = true
+					return ""
 				}
 
 				if (TOOL_NAMES.has(name) || PARAM_NAMES.has(name)) {
@@ -123,7 +150,6 @@ export function normalizeAssistantDialect(raw: string): string {
 				}
 				return full
 			})
-
 			// 整行只剩方言语法（外层壳 / 孤立闭合标记）⇒ 整行移除，不在正文里留空行
 			return lineHasMark && rebuilt.trim() === "" ? null : rebuilt
 		})

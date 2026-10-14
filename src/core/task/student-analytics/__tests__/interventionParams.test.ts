@@ -25,8 +25,10 @@ describe("干预参数基线（方案 D 止血）", () => {
 		expect(MONITOR_DEFAULTS.minTurnsForDependency).to.equal(6)
 	})
 
-	it("无编辑连续阈值 8（原 5）", () => {
-		expect(MONITOR_DEFAULTS.noEditTurnStreakThreshold).to.equal(8)
+	it("无编辑连续阈值 3（【P5-A】单位改为「学生请求」后由 8 降到 3）", () => {
+		// 原值 8 是「回合」口径下的 8 轮；单位改为学生请求后，8 次提问才提醒太迟，
+		// 改为 3（连续 3 次提问没动手）→ 对齐 M4'/M6' 的阻断口径。
+		expect(MONITOR_DEFAULTS.noEditTurnStreakThreshold).to.equal(3)
 	})
 })
 

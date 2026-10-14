@@ -48,14 +48,18 @@ describe("F9 · ai_dependency 绝对回合数指标", () => {
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
 	})
 
-	it("★【回归修复】ai_dependency 计数可达但**永不能阻断**（一次提问 6+ 助手回合不得把学生阻断）", () => {
+	it("★【P5-A/T19-b】一次提问内的多回合**不再**计入 ai_dependency（M1' 的通过条件）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		// 非概念任务：连造 12 个助手回合（远超阈值 6）
+		// 一次提问（task_start）+ 12 个助手回合：实测 M1' 就是这种形态（一提问即误报"AI 独占"）
 		m.ingest(ev({ eventType: "task_start", role: "user", category: "code_generation" }))
 		for (let i = 0; i < 12; i++) m.ingest(ev({ role: "assistant" }))
-		// 计数仍然累计（可审计）
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
+		// 学生第二次发言后（>=2 次请求）规则仍正常计数 —— 它没被关掉，只是不再把"一次长提问"当依赖
+		m.ingest(ev({ role: "user", category: "code_generation" }))
+		for (let i = 0; i < 6; i++) m.ingest(ev({ role: "assistant" }))
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.be.greaterThan(0)
-		// 但**不得**进入阻断候选，也不得判定为可阻断
+		// 但**永不得**进入阻断候选
 		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 		expect(m.getRuleIdsAtBlockingThreshold()).to.not.include("high_recent_ai_dependency")
 	})

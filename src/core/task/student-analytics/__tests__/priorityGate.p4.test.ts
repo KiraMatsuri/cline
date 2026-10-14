@@ -106,7 +106,8 @@ describe("G4 · 优先级综合（方言归一化端到端）", () => {
 	it("【G4-④】结构守卫（**变更探测器**）：接线挂着，且**持久化副本不经归一化**", () => {
 		const taskSrc = fs.readFileSync(path.join(__dirname, "..", "..", "index.ts"), "utf-8")
 		// 归一化只作用于 parseAssistantMessageV2 的输入
-		expect(taskSrc).to.include("parseAssistantMessageV2(normalizeAssistantDialect(assistantMessage))")
+		// ⚠️ 用正则允许换行/空白：预提交钩子（biome）会把超长行折行，写死的拼接串会变成假阴性。
+		expect(/parseAssistantMessageV2\(\s*normalizeAssistantDialect\(assistantMessage\)\s*,?\s*\)/.test(taskSrc)).to.equal(true)
 		expect(taskSrc).to.include("normalizeAssistantDialect(assistantMessage)") // 传入的是完整原文
 		// 写进 apiConversationHistory 的那份（assistantTextOnly）**不得**被归一化 —— 历史保留模型原文
 		expect(taskSrc).to.include("assistantTextOnly += chunk.text")
