@@ -101,7 +101,9 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 		expect(taskSrc).to.include("!this.interventionCopyDeliveredThisTurn")
 		// 【P6/T1】`needDecision` 门控已删除：顺延重投的回合也必须跑决策（否则计数达阈也不会阻断）
 		expect(taskSrc).to.not.include("const needDecision = !carryOverHint")
-		expect(taskSrc).to.include("const appliesDecision = !carryOverHint ||")
+		// 【P6/T2】内联的 `appliesDecision` 已抽成纯函数 `planInterventionTurn`（回合级编排可运行时单测）
+		expect(taskSrc).to.not.include("const appliesDecision = ")
+		expect(taskSrc).to.include("const plan = planInterventionTurn({")
 
 		// T15：按 taskId 跨实例复用（LRU + TTL），两个入口都要接上
 		expect(taskSrc).to.include("Task.takeCachedState(Task.monitorCache, this.taskId)")

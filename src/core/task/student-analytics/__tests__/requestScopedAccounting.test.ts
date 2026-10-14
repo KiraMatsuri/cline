@@ -24,7 +24,7 @@ describe("【P6/T1】记账键与顺延重投的结构不变量", () => {
 
 	it("★ 接线：index.ts 用纯函数构造键；且不再含逐次重试都会变的 apiRequestCount", () => {
 		expect(taskSrc).to.include("buildInterventionAccountKey(this.taskId, studentRequests, kind)")
-		expect(taskSrc).to.not.include("apiRequestCount}:${studentRequests}")
+		expect(/apiRequestCount\}:\$\{studentRequests\}/.test(taskSrc)).to.equal(false)
 	})
 
 	it("★ 顺延重投的回合不得跳过阻断检查（needDecision 门控必须消失）", () => {

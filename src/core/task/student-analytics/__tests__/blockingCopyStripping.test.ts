@@ -42,6 +42,31 @@ describe("【P6/T3】阻断文案脱敏", () => {
 		expect(toStudentVisibleBlockingText(`\n${plain}\n`)).to.equal(plain)
 	})
 
+	it("★ 真实冷却期提醒（带包裹、无内部标记）：只去包裹，正文逐字保留", () => {
+		const real = [
+			'<teaching_intervention rule="ai_coding_rounds" severity="strong" style="blocking" interventionType="blocking">',
+			"⏳ 【阻断冷却中 — 剩余 0 分 51 秒】",
+			"",
+			"系统仍处于阻断模式。",
+			"</teaching_intervention>",
+		].join("\n")
+		expect(toStudentVisibleBlockingText(real)).to.equal("⏳ 【阻断冷却中 — 剩余 0 分 51 秒】\n\n系统仍处于阻断模式。")
+	})
+
+	it("★ 不得误删回执块行（teaching_intervention_copy 不是注入包裹）", () => {
+		const withCopy = [
+			'<teaching_intervention rule="x" severity="gentle">',
+			"提示正文",
+			"</teaching_intervention>",
+			'<teaching_intervention_copy rule="x" severity="gentle">',
+			"回执文案",
+			"</teaching_intervention_copy>",
+		].join("\n")
+		const out = toStudentVisibleBlockingText(withCopy)
+		expect(out).to.include("<teaching_intervention_copy")
+		expect(out).to.include("回执文案")
+	})
+
 	it("★ 幂等：重复调用结果不变", () => {
 		const once = toStudentVisibleBlockingText(INJECTION)
 		expect(toStudentVisibleBlockingText(once)).to.equal(once)

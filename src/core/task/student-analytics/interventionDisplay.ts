@@ -170,8 +170,11 @@ export function resolveInterventionCopyForDisplay(input: ResolveCopyInput): Reso
 	return { text: undefined, event: undefined }
 }
 
-/** 注入包裹标签（开/闭各一行；只在这两行是独立行时删除） */
-const INJECTION_WRAPPER_RE = /^\s*<\/?teaching_intervention[^>]*>\s*$/i
+/**
+ * 注入包裹标签（开/闭各一行；只在这两行是独立行时删除）。
+ * ⚠️ 标签名后必须跟**空白或 `>`**：否则 `‹teaching_intervention_copy …›`（回执块）会被一并当成包裹误删。
+ */
+const INJECTION_WRAPPER_RE = /^\s*<\/?teaching_intervention(?:\s[^>]*)?>\s*$/i
 /** 注入文本里"说给模型听"的那一段的起点（对学生无意义，且是内部实现细节） */
 const INTERNAL_INSTRUCTION_MARKER = "请在你的回复中严格执行以下要求"
 
@@ -185,7 +188,7 @@ const INTERNAL_INSTRUCTION_MARKER = "请在你的回复中严格执行以下要�
  * 规则：删包裹行 → 截断内部指令段 → 去首尾空白。**幂等**（重复调用结果不变）。
  */
 export function toStudentVisibleBlockingText(injectionText: string): string {
-	const lines = (injectionText ?? "").split("\n")
+	const lines = injectionText.split("\n")
 	const kept: string[] = []
 	for (const line of lines) {
 		if (INJECTION_WRAPPER_RE.test(line)) {

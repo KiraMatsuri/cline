@@ -136,7 +136,12 @@ import {
 	taskClassifier,
 } from "./student-analytics"
 import { buildInterventionAccountKey } from "./student-analytics/interventionAccounting"
-import { type InterventionCopyEvent, resolveInterventionCopyForDisplay } from "./student-analytics/interventionDisplay"
+import {
+	type InterventionCopyEvent,
+	resolveInterventionCopyForDisplay,
+	toStudentVisibleBlockingText,
+} from "./student-analytics/interventionDisplay"
+import { planInterventionTurn } from "./student-analytics/interventionTurnPlan"
 import type { InterventionDecision } from "./student-analytics/TeachingInterventionManager"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
@@ -940,6 +945,12 @@ export class Task {
 	 * 兜底模板会被重复投递并把 `T` 多记一次 ⇒ M9' ② `D ≥ C + T` 按构造失败（P3 复审 C1）。
 	 */
 	private interventionCopyDeliveredThisTurn = false
+	/**
+	 * 【P6/T2】阻断提示的幂等键 = 学生请求序号。
+	 * 阻断回合会被 Cline 的 mistake 重试机制重新进入生成器（同一学生消息 3 次），
+	 * 键相同 ⇒ 只展示一次、只记一次账。
+	 */
+	private blockingNoticeRequestKey?: string
 	/** 【F13】最近 2 轮学生输入（主题锚定启发式用；只写 advisory，绝不影响是否展示/是否干预） */
 	private recentStudentTexts: string[] = []
 	/** 【P5/T19】未送达的干预可顺延重投的剩余次数（见回合入口的送达保护） */
@@ -3237,10 +3248,16 @@ export class Task {
 					this.taskState.apiRequestCount,
 					this.recentInterventionCopies,
 				)
-				// 顺延回合遇到"普通提醒"时保留上一轮那条待投递的文案（不重复决策、不重复记账）；
-				// 但**阻断**必须无条件生效（它带新的倒计时）。
-				const appliesDecision = !carryOverHint || (decision !== null && decision.interventionType === "blocking")
-				const interventionText = appliesDecision ? decision?.injectionText : undefined
+				// 【P6/T2】★ 回合级编排抽成纯函数（行为矩阵可运行时单测，不再只靠"读源码字符串"断言）：
+				// 携带重投 / 阻断例外 / 是否覆盖待投递文案 三条规则一次算清。
+				// ⚠️ 它取代 Task 1 遗留的内联 `appliesDecision` —— 那个变量只门控 `interventionText`（只有阻断分支读它），
+				// 普通分支仍是裸 `if (decision)` ⇒ 顺延回合照样覆盖待投递文案（`overwritePending` 修的就是这一点）。
+				const plan = planInterventionTurn({
+					carryOverHint,
+					hasDecision: decision !== null,
+					isBlocking: decision !== null && decision.interventionType === "blocking",
+				})
+				const interventionText = plan.inject ? decision?.injectionText : undefined
 
 				// ★ 阻断态优先检查（独立于 interventionText）
 				// checkAndGenerateInterventionDecision 在阻断冷却期间仍返回提醒消息
@@ -3250,29 +3267,36 @@ export class Task {
 					const minutes = Math.floor(blockingSeconds / 60)
 					const seconds = blockingSeconds % 60
 					const timeDisplay = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
-					const blockingText =
+					const rawBlockingText =
 						interventionText ||
 						`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】\n\n系统处于阻断模式，代码生成与工具执行功能暂不可用。请利用这段时间独立编写代码。`
+					// 【P6/T3】展示前脱敏：去掉注入包裹标签与内部指令段（学生不该看到 XML 与"请严格执行…"）
+					const blockingText = toStudentVisibleBlockingText(rawBlockingText)
 
-					// 向用户展示阻断消息（含剩余时间提醒）
-					await this.say("text", blockingText)
+					// 【P6/T2】幂等：同一条学生消息被 mistake 重试重新进入生成器时键不变 ⇒ 只展示一次、只记一次账。
+					const requestKey = `${this.taskId}:${monitor?.getStudentRequestCount() ?? 0}`
+					if (this.blockingNoticeRequestKey !== requestKey) {
+						this.blockingNoticeRequestKey = requestKey
+						// 向用户展示阻断消息（含剩余时间提醒）
+						await this.say("text", blockingText)
 
-					// 【F13】阻断文案是**代码模板**（不走模型叙述层），但它同样是「学生可见的一条干预文案」。
-					// 与决策事件成对记账，M9' ①（`V = C + T`）与 ②（`D ≥ C + T`）在阻断回合才成立。
-					if (decision) {
-						this.persistInterventionDecisionEvent(decision)
-						this.persistInterventionCopyEvent(
-							{
-								eventType: "intervention_copy",
-								copyDecision: "copy_rejected",
-								copyReasons: ["blocking_template"],
-								copyVoice: "template",
-								interventionRuleId: decision.ruleId,
-								interventionSeverity: decision.severity,
-								interventionStyle: decision.style,
-							},
-							blockingText,
-						)
+						// 【F13】阻断文案是**代码模板**（不走模型叙述层），但它同样是「学生可见的一条干预文案」。
+						// 与决策事件成对记账，M9' ①（`V = C + T`）与 ②（`D ≥ C + T`）在阻断回合才成立。
+						if (decision) {
+							this.persistInterventionDecisionEvent(decision)
+							this.persistInterventionCopyEvent(
+								{
+									eventType: "intervention_copy",
+									copyDecision: "copy_rejected",
+									copyReasons: ["blocking_template"],
+									copyVoice: "template",
+									interventionRuleId: decision.ruleId,
+									interventionSeverity: decision.severity,
+									interventionStyle: decision.style,
+								},
+								blockingText,
+							)
+						}
 					}
 
 					Logger.info(
@@ -3280,14 +3304,17 @@ export class Task {
 							`API request blocked, features disabled, remaining=${timeDisplay}`,
 					)
 
-					// 🔒 关键: 阻止 API 请求，返回 false 表示该轮对话未完成（等待用户继续输入）
-					return false
+					// 🔒 结束**本轮**并等待学生输入。⚠️ 不能用「返回 false」那种写法：那会被
+					// `initiateTaskLoop` 当成"模型没有调用工具"⇒ 计 mistake 并重试（同一学生消息实测 3 次）。
+					return true
 				}
 
 				// 普通干预：【F6】只作为**本轮** system prompt 后缀，不进对话历史
 				// （写进 userContent 会被 addToApiConversationHistory 持久化，而模型上下文只来自该历史，
 				//   于是"干预靠模型转述"这一机制会导致模型持续仿写 —— 见 spec §7.2 的 0 次命中证据）
-				if (decision) {
+				// 【P6/T2】顺延回合（`overwritePending: false`）**不得**覆盖待投递文案/兜底模板/元数据：
+				// 否则会出现"记的是新决策、学生看到的是旧文案"（Task 1 初审 Minor）。
+				if (decision && plan.overwritePending) {
 					this.pendingInterventionText = decision.injectionText
 					// 【F13】模型没按契约产出回执块（或被校验拒绝）时用它兜底：字段与 pendingInterventionText
 					// 同生命周期，只在回合入口重置（展示点提前清空会让同回合后续 text 块误记为「缺块」）。
