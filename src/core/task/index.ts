@@ -135,6 +135,7 @@ import {
 	TeachingInterventionManager,
 	taskClassifier,
 } from "./student-analytics"
+import { buildInterventionAccountKey } from "./student-analytics/interventionAccounting"
 import { type InterventionCopyEvent, resolveInterventionCopyForDisplay } from "./student-analytics/interventionDisplay"
 import type { InterventionDecision } from "./student-analytics/TeachingInterventionManager"
 import { TaskState } from "./TaskState"
@@ -1098,20 +1099,10 @@ export class Task {
 		void this.persistInterventionEvent(event, shownText ?? "")
 	}
 
-	/**
-	 * 【P5/T17】记账去重。
-	 *
-	 * 实测（M4'）：冷却期内**同一轮被记 3 次** D/T（9 对记账只对应 1 条学生消息），
-	 * 使 M9' ① `V = C + T` 右侧虚高、左侧偏小，被误报为"文案泄漏"。
-	 * 去重键 = `apiRequestCount : 学生请求数 : 种类`：
-	 *   - 同一轮内重复进入生成器 ⇒ 同一个键 ⇒ 只记一次；
-	 *   - 学生在冷却期又发了一条消息 ⇒ 学生请求数变化 ⇒ 仍会正常记一条（提醒确实又展示了一次）。
-	 *
-	 * @returns 键（允许记账）或 undefined（本次跳过）
-	 */
+	/** 【P5/T17 → P6/T1】记账去重（键的构造在 `buildInterventionAccountKey`，那里解释了为何不得含 apiRequestCount） */
 	private interventionAccountKey(kind: "decision" | "copy"): string | undefined {
 		const studentRequests = this.getBehaviorMonitor()?.getStudentRequestCount() ?? 0
-		const key = `${this.taskState.apiRequestCount}:${studentRequests}:${kind}`
+		const key = buildInterventionAccountKey(this.taskId, studentRequests, kind)
 		const last = kind === "decision" ? this.lastDecisionAccountKey : this.lastCopyAccountKey
 		if (last === key) {
 			Logger.info(`[TeachingIntervention][${this.taskId}] skip duplicate ${kind} accounting (key=${key})`)
@@ -3239,16 +3230,17 @@ export class Task {
 				const monitor = this.getBehaviorMonitor()
 				// 【F13】改用结构化决策入口：除注入文本外还要拿到模板文案与规则/力度/风格，
 				// 否则 `intervention_decision` 事件无从落库（F13 硬要求 1），M9' 的 D/T/N 全部不可数。
-				// 【P5/T19】顺延重投的回合跳过决策；但阻断态例外 —— 提醒必须带新的倒计时。
-				const needDecision = !carryOverHint || interventionManager.isBlockingActive()
-				const decision = needDecision
-					? interventionManager.checkAndGenerateInterventionDecision(
-							monitor,
-							this.taskState.apiRequestCount,
-							this.recentInterventionCopies,
-						)
-					: null
-				const interventionText = decision?.injectionText
+				// 【P6/T1】★ 决策**始终**执行：`carryOverHint` 只决定"是否用新一轮文案覆盖顺延的文案"，
+				// 绝不能跳过阻断检查与记账 —— 否则计数已达阈值也不会阻断（实测 4 次）。
+				const decision = interventionManager.checkAndGenerateInterventionDecision(
+					monitor,
+					this.taskState.apiRequestCount,
+					this.recentInterventionCopies,
+				)
+				// 顺延回合遇到"普通提醒"时保留上一轮那条待投递的文案（不重复决策、不重复记账）；
+				// 但**阻断**必须无条件生效（它带新的倒计时）。
+				const appliesDecision = !carryOverHint || (decision !== null && decision.interventionType === "blocking")
+				const interventionText = appliesDecision ? decision?.injectionText : undefined
 
 				// ★ 阻断态优先检查（独立于 interventionText）
 				// checkAndGenerateInterventionDecision 在阻断冷却期间仍返回提醒消息

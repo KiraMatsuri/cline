@@ -99,7 +99,9 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 		expect(taskSrc).to.include("const INTERVENTION_REDELIVERY_LIMIT = 2")
 		expect(taskSrc).to.include("interventionRedeliveryLeft")
 		expect(taskSrc).to.include("!this.interventionCopyDeliveredThisTurn")
-		expect(taskSrc).to.include("const needDecision = !carryOverHint || interventionManager.isBlockingActive()")
+		// 【P6/T1】`needDecision` 门控已删除：顺延重投的回合也必须跑决策（否则计数达阈也不会阻断）
+		expect(taskSrc).to.not.include("const needDecision = !carryOverHint")
+		expect(taskSrc).to.include("const appliesDecision = !carryOverHint ||")
 
 		// T15：按 taskId 跨实例复用（LRU + TTL），两个入口都要接上
 		expect(taskSrc).to.include("Task.takeCachedState(Task.monitorCache, this.taskId)")
@@ -120,10 +122,11 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 		expect(persistAt, "必须仍有落盘").to.be.greaterThan(-1)
 		expect(ingestAt, "ingest 必须在落盘之前（否则提示词读到上一轮的旧状态）").to.be.lessThan(persistAt)
 
-		// T17：记账去重键 = apiRequestCount : 学生请求数 : 种类
+		// T17：【P6/T1】记账去重键 = taskId : 学生请求数 : 种类（不得含 apiRequestCount —— 重试会变）
 		expect(taskSrc).to.include('if (!this.interventionAccountKey("decision"))')
 		expect(taskSrc).to.include('if (!this.interventionAccountKey("copy"))')
-		expect(/apiRequestCount\}:\$\{studentRequests\}:\$\{kind\}/.test(taskSrc)).to.equal(true)
+		expect(taskSrc).to.include("buildInterventionAccountKey(this.taskId, studentRequests, kind)")
+		expect(/apiRequestCount\}:\$\{studentRequests\}/.test(taskSrc)).to.equal(false)
 	})
 
 	it("【G5-④】结构守卫（**变更探测器**）：T16 强化约束只在本轮索要时注入", () => {
