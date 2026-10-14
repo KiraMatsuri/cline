@@ -3278,12 +3278,13 @@ export class Task {
 					const requestKey = String(monitor?.getStudentRequestCount() ?? 0)
 					const firstNoticeThisRequest = this.blockingNoticeRequestKey !== requestKey
 					if (firstNoticeThisRequest) {
-						// 【P6/T2】**以 ask 挂起**：既把通知交给学生，又把学生这条消息当场收下 ——
-						// `return true` 之后 loop 退出，没有 pending ask 时学生消息会丢。
-						await this.ask("followup", blockingText)
-						// 键在 ask 成功返回后消费：ask 抛错时该请求不至于"既不展示也不记账"
-						this.blockingNoticeRequestKey = requestKey
-
+						// 【F13】记账必须**先于** `ask` 完成：`ask` 一进入就把通知入列给学生看，
+						// 而学生可能中止/关窗、永不回复 ⇒ 若把 D/T 留在 `ask` 返回之后，
+						// 就会出现「展示了却没有 D/T」，使 M9' ①（`V = C + T`）误报为文案泄漏/模型仿写，
+						// 并违反 F13 硬要求 1（每次「判定要干预」都必须落一条可分析记录）。
+						// 重入安全由 `interventionAccountKey`（同一学生请求 + 同 kind 只落一次）兜住，
+						// 因此提前记账不会产生重复。
+						//
 						// 【F13】阻断文案是**代码模板**（不走模型叙述层），但它同样是「学生可见的一条干预文案」。
 						// 与决策事件成对记账，M9' ①（`V = C + T`）与 ②（`D ≥ C + T`）在阻断回合才成立。
 						if (decision) {
@@ -3301,6 +3302,13 @@ export class Task {
 								blockingText,
 							)
 						}
+
+						// 【P6/T2】**以 ask 挂起**：既把通知交给学生，又把学生这条消息当场收下 ——
+						// `return true` 之后 loop 退出，没有 pending ask 时学生消息会丢。
+						await this.ask("followup", blockingText)
+						// 键在 `ask` **返回后**才消费：say/ask 抛错时该请求下次仍会重试展示（键未置位），
+						// 而 D/T 已在上方落库 ⇒ 不产生「展示了却没有记账」的窗口。
+						this.blockingNoticeRequestKey = requestKey
 					}
 
 					Logger.info(

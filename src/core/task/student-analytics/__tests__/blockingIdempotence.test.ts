@@ -20,12 +20,14 @@ const taskSrc = fs.readFileSync(path.join(__dirname, "..", "..", "index.ts"), "u
 describe("【P6/T2】阻断回合幂等", () => {
 	it("★ 结构：阻断分支以 ask 挂起 + return true 结束，并有幂等键", () => {
 		expect(taskSrc).to.include("blockingNoticeRequestKey")
-		// 【P6/T2 fix】按**分支边界**取切片：旧版钉在 `Logger.info("BLOCKING ENFORCED")` 上向后 900 字符，
-		// 窗口有 ~500 字符落在普通提醒分支上 ⇒ 既审不到目标分支，又让“普通分支新增 return false”变成假失败。
+		// 【P6/T2 fix2】按**分支边界**取切片，切片严格限制在阻断分支内：
+		// 末端锚取阻断分支之后**紧跟**的普通提醒分支注释 `// 普通干预：`（不再取远在 catch 之后的 `// 【F7】`，
+		// 那会让否定断言面横跨普通分支与 catch ⇒ 普通分支新增 `return false` 就会造成假失败）。
 		const start = taskSrc.indexOf("if (interventionManager.isBlockingActive()) {")
 		expect(start, "阻断分支必须存在").to.be.greaterThan(-1)
-		const end = taskSrc.indexOf("// 【F7】", start)
-		const block = taskSrc.slice(start, end > start ? end : start + 2000)
+		const end = taskSrc.indexOf("// 普通干预：", start)
+		expect(end, "阻断分支之后必须紧跟普通提醒分支的注释锚点").to.be.greaterThan(start)
+		const block = taskSrc.slice(start, end)
 		expect(block).to.include('await this.ask("followup", blockingText)')
 		expect(block).to.include("return true")
 		expect(block).to.not.include("return false")
