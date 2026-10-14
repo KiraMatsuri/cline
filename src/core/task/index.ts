@@ -946,8 +946,8 @@ export class Task {
 	 */
 	private interventionCopyDeliveredThisTurn = false
 	/**
-	 * 【P6/T2】阻断提示的幂等键 = 学生请求序号。
-	 * 阻断回合会被 Cline 的 mistake 重试机制重新进入生成器（同一学生消息 3 次），
+	 * 【P6/T2】阻断提示的幂等键 = 学生请求序号（**不含** `apiRequestCount`，否则每次重试都会变）。
+	 * 阻断回合现在以 `ask` 挂起（见阻断分支），同一学生请求内即便生成器被再次进入（恢复/重入），
 	 * 键相同 ⇒ 只展示一次、只记一次账。
 	 */
 	private blockingNoticeRequestKey?: string
@@ -3273,12 +3273,16 @@ export class Task {
 					// 【P6/T3】展示前脱敏：去掉注入包裹标签与内部指令段（学生不该看到 XML 与"请严格执行…"）
 					const blockingText = toStudentVisibleBlockingText(rawBlockingText)
 
-					// 【P6/T2】幂等：同一条学生消息被 mistake 重试重新进入生成器时键不变 ⇒ 只展示一次、只记一次账。
-					const requestKey = `${this.taskId}:${monitor?.getStudentRequestCount() ?? 0}`
-					if (this.blockingNoticeRequestKey !== requestKey) {
+					// 【P6/T2】幂等键 = 学生请求序号：同一学生请求内重复进入生成器时键不变
+					// ⇒ 只展示一次、只记一次账。
+					const requestKey = String(monitor?.getStudentRequestCount() ?? 0)
+					const firstNoticeThisRequest = this.blockingNoticeRequestKey !== requestKey
+					if (firstNoticeThisRequest) {
+						// 【P6/T2】**以 ask 挂起**：既把通知交给学生，又把学生这条消息当场收下 ——
+						// `return true` 之后 loop 退出，没有 pending ask 时学生消息会丢。
+						await this.ask("followup", blockingText)
+						// 键在 ask 成功返回后消费：ask 抛错时该请求不至于"既不展示也不记账"
 						this.blockingNoticeRequestKey = requestKey
-						// 向用户展示阻断消息（含剩余时间提醒）
-						await this.say("text", blockingText)
 
 						// 【F13】阻断文案是**代码模板**（不走模型叙述层），但它同样是「学生可见的一条干预文案」。
 						// 与决策事件成对记账，M9' ①（`V = C + T`）与 ②（`D ≥ C + T`）在阻断回合才成立。
@@ -3304,8 +3308,7 @@ export class Task {
 							`API request blocked, features disabled, remaining=${timeDisplay}`,
 					)
 
-					// 🔒 结束**本轮**并等待学生输入。⚠️ 不能用「返回 false」那种写法：那会被
-					// `initiateTaskLoop` 当成"模型没有调用工具"⇒ 计 mistake 并重试（同一学生消息实测 3 次）。
+					// 结束本轮：通知已通过 ask 交付、学生消息已被收下。
 					return true
 				}
 
