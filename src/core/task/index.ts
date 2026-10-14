@@ -2,6 +2,7 @@ import { setTimeout as setTimeoutPromise } from "node:timers/promises"
 import { ApiHandler, ApiProviderInfo, buildApiHandler } from "@core/api"
 import { ApiStream } from "@core/api/transform/stream"
 import { AssistantMessageContent, parseAssistantMessageV2, ToolUse } from "@core/assistant-message"
+import { normalizeAssistantDialect } from "@core/assistant-message/dialectNormalize"
 import { ContextManager } from "@core/context/context-management/ContextManager"
 import { checkContextWindowExceededError } from "@core/context/context-management/context-error-handling"
 import { getContextWindowInfo } from "@core/context/context-management/context-window-utils"
@@ -3411,7 +3412,12 @@ export class Task {
 							// parse raw assistant message into content blocks
 							const prevLength = this.taskState.assistantMessageContent.length
 
-							this.taskState.assistantMessageContent = parseAssistantMessageV2(assistantMessage)
+							// 【F12】解析前先把 DSML 方言归一化为规范 XML（不含方言时为恒等变换，热路径几乎零成本）。
+							// ⚠️ 只改**解析输入**：`assistantTextOnly`（写进 apiConversationHistory 的那份）不经此函数，
+							// 因此历史里保留的仍是模型原文（与 F13 “回执块必须留在历史”同一原则）。
+							this.taskState.assistantMessageContent = parseAssistantMessageV2(
+								normalizeAssistantDialect(assistantMessage),
+							)
 
 							if (this.taskState.assistantMessageContent.length > prevLength) {
 								this.taskState.userMessageContentReady = false // new content we need to present, reset to false in case previous content set this to true
