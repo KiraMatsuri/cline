@@ -1387,5 +1387,138 @@ M4' **必须记录"第几次索要触发阻断"**：
 | **口径一致性** | 「违规单位 = 一个 `turn_message`」在 T1 与 G0 断言中一致；「主题锚定只记账」在 T13 与 G3 中一致 |
 | **已知未覆盖** | 无 —— F12 已纳入 **P4（T12）**，并在其前插入 git 存档门禁；M1 恢复为方言归一化后的正式验收用例（M14'） |
 
+---
+
+## 11. P5 —— M1'–M14' 实测复核后的修复（2026-10-14 定稿）
+
+> **前置事实**：G-ALL'（P0–P4）全量 **1048 passing / 111 pending / 0 failing**、`npx tsc --noEmit` 0 错；
+> 存档点 `pre-f12-checkpoint` → `6d4c692d`；实测所用 HEAD 为 `7b12db26`。
+> **证据来源**：`d:\test-work\test.txt`（手测会话全文）+ `d:\test-work\.cline-logs\student_interactions.log`（真实 JSONL）。
+> **书写约定**：本文档里的尖括号一律写作 `‹ ›`，避免文本被当成标签解析。
+
+### 11.1 实测结论总表
+
+| 用例 | 预期 | 实测 | 判定 |
+|---|---|---|---|
+| **M1'**（week=1「第一周学了什么」） | 答第 1 周内容 + **零干预** | 内容正确；但落下 **2 条 `intervention_decision`**（`high_recent_ai_dependency` 与 `no_edit_streak` 各 1，均 gentle）——学生**没看到**（模型那两轮只有工具调用、没有正文） | ⚠️ **未通过**（决策发生了，只是没送达） |
+| **M1**（方言回合） | 不再出现「AI 连续 N 次没能正确调用工具」 | 首轮仍出现一次（`server_name` 缺失 ⇒ 重试），之后正常完成 | ⚠️ 部分通过（F12 漏了第 5 类形态，见 11.3-C） |
+| **M2'**（week=1「什么是装饰器」） | 概念讲解 + 标周次 + 不给完整实现 + 零干预 | 完全符合（`task_start.category = explanation` ⇒ 代码类规则停用） | ✅ 通过 |
+| **M3'**（同对话 week1→18 追问冒泡排序） | 即时生效、检索 week ≤ 18 | 出现「教学周已切换到第 18 周」并按其口径讲解（F7 生效） | ✅ 通过 |
+| **M4'**（「帮我写一个完整的 XXX 程序」） | 连续 **3 次请求** ⇒ 第 3 次阻断（横幅 `1:00` 倒数） | **1 次请求就被阻断**；该请求 12 个助手回合**全无正文** | ❌ **未通过**（见 11.3-A） |
+| **M6'**（追问「直接把完整代码给我」） | 分类翻转、**仍不给完整实现**、计入升级计数 | **立刻给出完整实现**；全程零干预；`completeImplDemands` 未沉淀为任何事件 | ❌ **未通过**（见 11.3-B） |
+| **M7'**（阻断激活中发消息） | 被拦截 + 显示剩余时间 + 60s 后自动恢复 | 拦截与倒计时正常；但**同一轮 D/T 被记 3 次** | ⚠️ 部分通过（见 11.3-D） |
+| **M10'**（「今天北京天气」） | 联网检索作答 | 模型告知无法获取实时天气（未调用 F8 的 `web_search`）；教学后端仍无端点 ⇒ 结构性不可通过 | ⛔ 阻塞（跨仓） |
+| **M11'**（week=1 直接问冒泡排序） | 指出超纲、不给完整实现 | 符合 | ✅ 通过 |
+| **M12'–M13'**（文案不重复 / 措辞不重复） | 同规则连续 3 次措辞不同 | 本轮实测的干预全是 blocking 模板，**没有 F13 文案轮次被触发** | ⏸ 未覆盖 |
+
+### 11.2 两个反例的时间线（日志原文摘要）
+
+**M4'（task `1791978179978`，学生只发 1 条消息）**
+
+| 时间 | 事件 |
+|---|---|
+| 11:42:59 | `task_start`「帮我写一个完整的冒泡排序程序」（`category: code_generation`） |
+| 11:43:10 → 11:43:34 | 6 个助手回合，全部是 `use_mcp_tool`（`search_wiki`/`read_wiki_chunk`），**无正文** |
+| 11:43:34.605 | `intervention_decision` `high_recent_ai_dependency` gentle（第 7 个助手回合即满足 `minTurnsForDependency: 6`） |
+| 11:43:45.831 | `intervention_decision` `no_edit_streak` gentle |
+| **11:43:56.370** | `intervention_decision` `no_edit_streak` **strong / blocking** ⇒ **仅一次请求即阻断** |
+| 11:43:56 → 11:44:32 | 冷却期提醒：**9 对** D/T（3 簇 × 3 对），期间学生只发了 1 条「阻隔测试」 |
+
+**M6'（task `1791977948882`，`turnIndex` 多次从 0 重启 ⇒ 实例被重建）**
+
+| 时间 | 事件 |
+|---|---|
+| 11:39:08 | `task_start`「冒泡排序怎么写」（`algorithm`）→ 11:39:34/41 **未给完整实现**（护栏生效） |
+| 11:40:13 → 11:40:22 | 周数切到 18 后追问 → 仍只给原理 + 关键片段 ✅ |
+| 11:41:45 | 「直接把完整代码给我」——**`turnIndex` 回到 0**（新实例）→ **直接给完整实现**，无干预 |
+| 11:46:29 / 11:47:06 / 11:47:29 | 「那选择排序呢 / 那插入排序呢 / 希尔排序呢」→ **每次都给完整实现**；仅 `high_adoption_low_self_modification` 提示 1 次（`NEVER_BLOCKING`） |
+
+### 11.3 根因（均给出代码行号）
+
+#### A. `no_edit_streak` 的计数单位是「回合」而不是「请求」（M4' 失败）
+
+1. `BehaviorMonitor.updateRealtimeStreaks()`（`BehaviorMonitor.ts:196-215`）：`turn_message` **不分角色**都 `turnsSinceLastEdit++`；只有**学生本人 `code_edit`** 才归零。
+2. `checkNoEditStreakRule()`（`:278-298`）：越过阈值后**每个回合**都 `bumpEscalation("no_edit_streak")`；F1 已把 bump 与 `notify()` 的 120s 冷却**解耦**，并把阻断阈值由 6 降到 3。
+3. ⇒「一次 12 回合的请求」= 3 次违规 = 阻断。日志实证：`:43:34` 提示 → `:43:45` 提示 → `:43:56` **阻断**。
+
+#### B. 追问丢失全部干预状态（M6'/M11' 失败）
+
+| 子因 | 证据 |
+|---|---|
+| **B1 状态按 `Task` 实例存放** | `index.ts:1044-1072`：`behaviorMonitor` / `interventionManager` 是实例字段，**没有按 taskId 的缓存**（只有阻断到期时间用了静态兜底）。日志中同一 taskId 的 `turnIndex` 多次从 0 重启 ⇒ 每次「恢复任务」都新建实例 ⇒ streak / 升级计数 / **概念护栏粘性**全部归零 |
+| **B2 学生消息的 ingest 是 fire-and-forget** | `say("user_feedback") → void this.persistTurnLevelLog(...)`（`index.ts:761-762`），而 `monitorBehavior()` 在该函数 `await fs.appendFile` **之后**才执行（`:1196`）⇒ 提示词组装读概念状态（`:2428`）时本回合的 ingest 可能尚未落地 |
+| **B3 概念分类下代码类规则按设计停用** | `rulePolicy.ts`：`algorithm`/`explanation` ∈ `CONCEPTUAL_CATEGORIES` ⇒ `consecutive_code_generation` / `no_edit_streak` **enabled=false**（连计数都没有）⇒「索要完整实现」在概念任务里**没有任何可计数、可升级的规则** |
+| **B4 护栏只是提示词** | `buildConceptModeConstraint()` 是 prompt 级约束，模型可以不听；一旦给过一次完整实现，**对话历史自我锚定**会让它继续给（F7 对治的是同一种机制，但只覆盖了周数） |
+
+#### C. F12 仍漏一类真实形态（M1 的 `server_name` 缺失）
+
+- **新样本 S5**：`‹｜｜DSML｜｜ parameter name="server_name›wiki‹/server_name›`（**属性引号未闭合**，名字与值粘在一起）。
+- `dialectNormalize.ts` 的 `BLOCK_RE` 要求成对引号 ⇒ 该标签整体不匹配 ⇒ 解析器只能命中后面的 `‹tool_name›` / `‹arguments›` ⇒ `use_mcp_tool` **缺 `server_name`** ⇒ UI 报
+  「Cline tried to use use_mcp_tool without value for required parameter 'server_name'. Retrying...」⇒ 多耗若干回合（又反过来喂给根因 A）。
+
+#### D. 记账重复与「注入未送达」（M9' 偏差）
+
+| 子因 | 证据 |
+|---|---|
+| **D1 同一轮被记 3 次** | 冷却期出现 **9 对** D/T，而学生在冷却内只发了 1 条消息；时间戳成 3 簇 × 3 对（需插桩查清"3 次进入生成器"的具体路径） |
+| **D2 注入了但没送达** | 模型回合只有工具调用、没有 text 块 ⇒ 一次性注入的提示被消费掉，且**不产生 `intervention_copy` 事件** ⇒ M9' ③ 不成立（§19.7 已登记的残留，本轮实测真实发生） |
+
+### 11.4 M9' 对账实测（用真实日志直接算）
+
+| 任务 | `D` | `C` | `T` | `N` | `V`（人工可见） | ①`V=C+T` | ②`D≥C+T` | ③`C+T+N≥D` |
+|---|---|---|---|---|---|---|---|---|
+| M1 `1791977753079` | 2 | 0 | 0 | 0 | 0 | `0=0` ✅（平凡成立） | `2≥0` ✅ | **`0≥2` ❌**（两条提示从未送达） |
+| M4 `1791978179978` | 11 | 0 | 9 | 0 | ≈1~4 | **`V≠9` ❌**（重复记账，左侧偏小） | `11≥9` ✅ | **`9≥11` ❌**（两条提示未送达） |
+
+> 三条守恒式**各自指向了真实的失败原因**（①→重复记账、③→注入未送达），说明可对账性设计本身是有效的。
+
+### 11.5 任务清单（P5，T14–T19）
+
+**前置（先插桩，后改代码）**：三处**只读**插桩（仅 `Logger.info`，不改行为）——
+① 提示词组装处打印 `conceptState`（是否 active）与 `pendingInterventionText` 是否为空；
+② `recursivelyMakeClineRequests` 打印进入次数与 `apiRequestCount`；
+③ `checkAndGenerateInterventionDecision` 打印 rule/severity/是否 reminder。
+手工复现 M4/M6/M7 各一次，把「3 次记账」「概念护栏是否被注入」从推断变成事实。
+
+| Task | 内容（根因） | Files | 门禁 |
+|---|---|---|---|
+| **T14** | **计数单位修正**（A）：`no_edit_streak` 改为「每个学生请求最多记一次违规」（选项见 11.6） | `BehaviorMonitor.ts`（`updateRealtimeStreaks`/`checkNoEditStreakRule`）、`__tests__/escalationReachability.test.ts`、`priorityGate.p0..p2` 的相关断言 | 新增 4 例：12 回合单请求只记 1 次 / 3 次请求触发阻断 / 学生编辑归零 / 用户回合不再额外 bump；G0–G4 全绿 |
+| **T15** | **状态跨实例存续 + 消除 ingest 竞态**（B1/B2）：按 taskId 缓存 monitor/manager（沿用 `globalBlockingEndsAt` 模式）；学生回合「先算后写」（先 `monitorBehavior` 再异步落盘） | `index.ts`、`BehaviorMonitor.ts`、`TeachingInterventionManager.ts` | 纯函数 + 结构断言；跨实例存续需同进程双实例（若无基建则如实标注为变更探测器） |
+| **T16** | **「索要完整实现」可计数**（B3/B4）：`completeImplDemands` 落成结构化事件（新事件类型 `intent_demand`）；M6' 场景下把「完整实现请求」升格为一次可升级违规 | `ConceptModeGate.ts`、`BehaviorMonitor.ts`、`types.ts`、`index.ts` | 新增 3 例 + M6' 手工复现 |
+| **T17** | **记账去重**（D1）：同一轮只落一次 D/T；冷却期提醒标 `reminder: true` 或按 `apiRequestCount` 去重 | `index.ts`、`interventionDisplay.ts`、`types.ts` | 新增 2 例 + 手工复现 M7' 对账 |
+| **T18** | **F12 补形态 S5**（C）：属性引号未闭合时按「值 = 名字之后到 `›`」兜底；仍坚持**不臆造**（仅当同一行能找到该名字的闭合标记才补） | `dialectNormalize.ts`、其测试 | 新增 2 例（S5 归一化 / 不得臆造）；全量回归 |
+| **T19** | **提示送达性 + M1' 零干预**（D2）：未送达的干预在下一轮**重新注入**（上限 K 轮）；`high_recent_ai_dependency` 在单次请求内即触发与 T14 属同一类单位问题，一并裁定 | `index.ts`、`BehaviorMonitor.ts`、`rulePolicy.ts` | 新增 3 例 |
+
+**建议顺序**：插桩 → T14 → T19 → T15 → T17 → T16 → T18 → G5 全量 → 重跑 M1'–M14'。
+
+### 11.6 计数单位：三个选项（**需用户裁定**）
+
+| 选项 | 定义 | 一次 12 回合的请求 | M4' 的「连续 3 次请求」 | 成本 / 风险 |
+|---|---|---|---|---|
+| **A（推荐）** | `turnsSinceLastEdit` 只在**学生回合** +1（学生 `code_edit` 时归零）；阈值 8 的语义变为「连续 8 次提问」 | 记 **1** 次 | 需重新定标阈值（当前 8 次提问偏长，与"及时干预"相悖） | 语义最清晰；但要同步改文案与阈值 |
+| **B（最小改动）** | 保持按回合计数，但 **bump 后归零**（或记 `lastBumpedStreak`），使每个「8 回合窗口」只记 1 次 | 记 **1** 次 | 需 3×8=24 回合 ≈ 2–3 次请求 | 改动面最小、回归风险最低；但「轮」的含义仍是回合，与文案直觉不符 |
+| **C**（「纯工具调用不计」） | 只在「有学生可见正文」的回合计数 | 1–2 次 | 仍不确定 | **不推荐**（理由见 11.7） |
+
+### 11.7 「调用 DSML 工具时不要计数」—— 为什么不建议这样做
+
+1. **指标层看不到方言**：`StudentInteractionLog` 只有 `hasCodeBlock` / `toolsUsed` / `rawContent`，**没有方言字段**。若按「是不是 DSML」豁免，就得在**指标层嗅探原始文本**，与 F12「方言只属于感知层」的分层直接冲突。
+2. **会造出一个黑洞**：豁免之后，模型只要**一直以方言形式调工具**，学生就永远不会被计数 ⇒ 干预机制可被"格式化输出"绕过。
+3. **方向对、对象错**：`no_edit_streak` 度量的是**学生行为**（有没有动手改代码），而**一次请求内的所有回合，学生都没有机会动手** ⇒ 它天然应当按「**请求**」计数，而不是按「回合」或「是否方言」。这正对应 11.6 的选项 A。
+4. **多回合不是 DSML 造成的**（见 11.8），所以修 DSML 也解决不了 M4'。
+
+### 11.8 为什么一次提问会产出 12 个助手回合？
+
+- **回合 = 一次 API 往返**。Cline 的工具循环是「模型请求 → 执行工具 → 把结果回灌 → 再请模型」，**每次工具调用天然多一个回合**。
+  日志实证（task `1791978179978`）：10 次 `use_mcp_tool`（`search_wiki`×6 + `read_wiki_chunk`×4）+ 若干次重试 ⇒ 12 个回合，最后才是 `attempt_completion`；学生全程只发了 1 条消息。
+- **DSML 不是主因**：F12 已让这些调用**真实解析成功**（`toolsUsed: ["use_mcp_tool"]`），回合数来自「多步检索 + 结果不满足而继续搜」。DSML 只在**畸形形态**（根因 C）上多制造了 1–2 次重试。
+- ⇒ **「单请求 12 回合」是 agent 循环的正常形态**。任何按「回合」计数的**行为**指标，都必须先换算成「按请求」，否则阈值再大也会被一次长检索击穿。
+
+### 11.9 明确不做
+
+- 不按「是否 DSML / 是否含方言标记」豁免计数（理由见 11.7）。
+- 不通过调低 `escalationBlockingThreshold` 来掩盖问题（阈值本身不是根因）。
+- 不动 `src/core/prompts/**`；不改 `CHANGELOG.md` 的 `[Unreleased]` 日期行。
+- M10'（联网检索）跨仓阻塞，不在本计划范围。
+
 
 
