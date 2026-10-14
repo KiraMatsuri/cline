@@ -169,3 +169,32 @@ export function resolveInterventionCopyForDisplay(input: ResolveCopyInput): Reso
 	// ⑤ 普通正文：不附加、不落事件
 	return { text: undefined, event: undefined }
 }
+
+/** 注入包裹标签（开/闭各一行；只在这两行是独立行时删除） */
+const INJECTION_WRAPPER_RE = /^\s*<\/?teaching_intervention[^>]*>\s*$/i
+/** 注入文本里"说给模型听"的那一段的起点（对学生无意义，且是内部实现细节） */
+const INTERNAL_INSTRUCTION_MARKER = "请在你的回复中严格执行以下要求"
+
+/**
+ * 【P6/T3】把阻断注入文本转换为**学生可见文案**。
+ *
+ * 注入文本（`formatBlockingInterventionForInjection()` 的产物）是为**模型**准备的：
+ * 首尾是 `‹teaching_intervention …›` 审计包裹，末尾还有一段"请在你的回复中严格执行以下要求"。
+ * 实测（第二轮人工验收）：阻断分支直接 `say("text", injectionText)` ⇒ 学生看到原始 XML 与内部指令。
+ *
+ * 规则：删包裹行 → 截断内部指令段 → 去首尾空白。**幂等**（重复调用结果不变）。
+ */
+export function toStudentVisibleBlockingText(injectionText: string): string {
+	const lines = (injectionText ?? "").split("\n")
+	const kept: string[] = []
+	for (const line of lines) {
+		if (INJECTION_WRAPPER_RE.test(line)) {
+			continue
+		}
+		if (line.includes(INTERNAL_INSTRUCTION_MARKER)) {
+			break
+		}
+		kept.push(line)
+	}
+	return kept.join("\n").trim()
+}
