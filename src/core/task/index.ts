@@ -612,10 +612,9 @@ export class Task {
 			this.clearActiveHookExecution.bind(this),
 			this.getActiveHookExecution.bind(this),
 			this.runUserPromptSubmitHook.bind(this),
-			// 【P6/T4】工具层展示路径的干预处理钩子（剥离 + 模板兜底 + 记账），实现仍在 Task 上（状态都在这里）
-			{
-				applyInterventionDisplay: (text: string) => this.applyInterventionDisplay(text),
-			},
+			// 【P6/T4】工具层展示路径的干预处理钩子（剥离 + 模板兜底 + 记账），实现仍在 Task 上（状态都在这里）。
+			// 箭头函数保住 `this`（`ToolExecutor` 只持有这个函数引用，不关心它来自哪个实例，见 F5）。
+			(text: string) => this.applyInterventionDisplay(text),
 		)
 	}
 
@@ -1127,9 +1126,6 @@ export class Task {
 	 * ⚠️ 调用方**必须**只在 `!block.partial` 时调用：本方法会记账，而流式期间每个 chunk 都会调一次。
 	 */
 	private async applyInterventionDisplay(rawContent: string): Promise<string> {
-		if (rawContent === undefined || rawContent === null) {
-			return rawContent
-		}
 		const { found, rest } = extractInterventionCopy(rawContent)
 		const shown = resolveInterventionCopyForDisplay({
 			found,

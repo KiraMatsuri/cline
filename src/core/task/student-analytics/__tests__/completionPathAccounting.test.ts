@@ -4,10 +4,13 @@
  * `AttemptCompletionHandler`，它只剥离回执块，**不追加兜底模板、不记账**，
  * 于是"模型没写回执块 ⇒ 用模板兜底"这条链（interventionDisplay 分支 ③）根本没被调用。
  *
- * ⚠️ 结构断言（本文件前两个用例）是**变更探测器**，不是端到端验证；第 3 个用例是**真实调用**
- * `AttemptCompletionHandler.handlePartialBlock`（该路径只需 `uiHelpers.say` / `removeClosingTag`
- * / `getConfig`，无需完整 TaskConfig，故可真实执行）。`execute()` 的两处展示点需要完整
- * TaskConfig 测试基建（本仓库暂无），只能落在结构守卫里。
+ * ⚠️ 覆盖边界（review F1/F2 之后的契约）：
+ * - **partial 帧**（`handlePartialBlock`）只剥离，**不得**调用展示钩子 —— 钩子含兜底 + 记账 + 置位，
+ *   在流式中间帧调用会让兜底文案进不了学生最终保留的那条消息，并让记账名额被中间帧抢占。
+ *   本文件用**真实调用 + 间谍钩子**钉住这条边界（第 3 个用例）。
+ * - `execute()` 的两处（非 partial）展示点会真调钩子；它们需要完整 TaskConfig 测试基建
+ *   （本仓库暂无，且真实调用会触发 hook 发现 / telemetry / checkpoint 等副作用），
+ *   因此只能用**结构断言**（调用点恰好 2 处 + partial 段不含钩子）。
  */
 import * as fs from "node:fs"
 import * as path from "node:path"
@@ -24,21 +27,33 @@ const copyBlock = (copy: string): string =>
 	`<teaching_intervention_copy rule="no_edit_streak" severity="gentle">\n${copy}\n</teaching_intervention_copy>`
 
 describe("【P6/T4】attempt_completion 展示路径", () => {
-	it("★ 回调已声明并被 handler 的两处具体调用点使用", () => {
-		expect(cfg).to.include("applyInterventionDisplay?")
-		expect(handler).to.include("uiHelpers.getConfig().callbacks.applyInterventionDisplay?.(rest)") // partial 阶段
-		expect(handler).to.include("config.callbacks.applyInterventionDisplay?.(rest)") // 两处 completion_result 展示
+	it("★ 结构：钩子只在 execute() 的 2 处调用点出现，partial 路径一处都没有", () => {
+		expect(cfg).to.include("applyInterventionDisplay")
+		// 【F4】必填（唯一生产者 `ToolExecutor.asToolConfig()`，构造参数也是必填）：声明里没有 `?`
+		expect(cfg).to.not.include("applyInterventionDisplay?:")
+		// execute() 的两处 completion_result 展示点（计数断言，不做逐字空白匹配）
+		const hookCalls = (handler.match(/config\.callbacks\.applyInterventionDisplay\?\.\(rest\)/g) ?? []).length
+		expect(hookCalls, "execute() 的两处 completion_result 展示点").to.equal(2)
+		// partial 路径不得调用钩子
+		// （注释里会**提到**这个钩子的名字来解释契约，所以断言的是「调用形态」而不是裸子串）
+		const partialStart = handler.indexOf("async handlePartialBlock")
+		const partialEnd = handler.indexOf("async execute(", partialStart)
+		expect(partialStart, "handlePartialBlock 必须存在").to.be.greaterThan(-1)
+		expect(partialEnd, "execute 必须存在").to.be.greaterThan(partialStart)
+		const partialSrc = handler.slice(partialStart, partialEnd)
+		expect(partialSrc).to.not.include("callbacks.applyInterventionDisplay")
+		expect((partialSrc.match(/applyInterventionDisplay\?\.\(/g) ?? []).length, "partial 段的钩子调用数").to.equal(0)
 	})
 
-	it("★ Task 侧只实现一次（DRY）：文本块路径复用同一方法", () => {
+	it("★ 结构（DRY）：Task 侧只实现一次（文本块路径复用同一方法）", () => {
 		expect(taskSrc).to.include("private async applyInterventionDisplay(")
-		expect(taskSrc).to.include("this.applyInterventionDisplay(")
-		expect(taskSrc).to.include("applyInterventionDisplay: (text: string) => this.applyInterventionDisplay(text)")
+		expect(taskSrc).to.include("this.applyInterventionDisplay(content)")
+		expect(taskSrc).to.include("(text: string) => this.applyInterventionDisplay(text)")
 	})
 
-	it("★ 真实调用 partial 展示：正文交给回调，且回调返回值被用进学生可见文案", async () => {
+	it("★ 真实调用 partial 展示：不调展示钩子（不兜底/不记账/不置位），回执块仍被剥离", async () => {
 		const completionHandler = new AttemptCompletionHandler()
-		const hookInput: string[] = []
+		let hookCalls = 0
 		const said: Array<{ type: string; text?: string }> = []
 		const helpers = {
 			say: async (type: string, text?: string) => {
@@ -46,12 +61,12 @@ describe("【P6/T4】attempt_completion 展示路径", () => {
 				return undefined
 			},
 			removeClosingTag: (_block: unknown, _tag: string, text?: string) => text ?? "",
+			// 间谍钩子：partial 帧哪怕只调一次也说明 F1 的边界被改坏
+			// （兜底会进到一条随后被 `:117-127` 删掉的流式消息里；记账名额还会被中间帧抢占）。
 			getConfig: () => ({
 				callbacks: {
-					// 最小替身：复刻 Task 侧「兜底文案前置」的可见语义（真实实现见 Task.applyInterventionDisplay）。
-					// 断言点在**回调被调用且返回值生效** —— 旧代码根本不调回调 ⇒ 兜底文案永不出现。
 					applyInterventionDisplay: async (text: string) => {
-						hookInput.push(text)
+						hookCalls++
 						return `💡 模板兜底：先动手写一版。\n\n---\n\n${text}`
 					},
 				},
@@ -64,14 +79,13 @@ describe("【P6/T4】attempt_completion 展示路径", () => {
 			helpers,
 		)
 
-		// ① 回调被真实调用，且拿到的是**已剥离回执块**的正文（模型文案不进回调参数）
-		expect(hookInput).to.have.lengthOf(1)
-		expect(hookInput[0]).to.not.include("<teaching_intervention_copy")
-		expect(hookInput[0]).to.include("正文内容。")
-		// ② 回调的返回值进入学生可见文案（兜底模板这次真的发得出去）
+		// ① partial 帧不得调钩子（F1 的核心边界）
+		expect(hookCalls, "partial 帧不得调用展示钩子").to.equal(0)
+		// ② 剥离仍生效：既没有回执块标签，也没有模型写进块里的文案（承接 F13 spec 的既有断言）
 		expect(said).to.have.lengthOf(1)
 		expect(said[0].type).to.equal("completion_result")
-		expect(said[0].text).to.include("💡 模板兜底：先动手写一版。")
 		expect(said[0].text).to.not.include("<teaching_intervention_copy")
+		expect(said[0].text).to.not.include(copy)
+		expect(said[0].text).to.include("正文内容。")
 	})
 })

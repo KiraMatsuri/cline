@@ -91,9 +91,14 @@ export interface TaskCallbacks {
 	 * 由 `Task` 实现（状态都在它身上）；`attempt_completion` 等工具层展示路径必须复用，
 	 * 否则"模型没用回执块 ⇒ 模板兜底"这条链在 completion 路径上永不生效（实测两条 gentle 决策不可见）。
 	 *
-	 * 可选：未挂载时调用方必须按"不附加文案"处理（`?? rest`）。
+	 * ⚠️ 只允许在**非 partial** 的最终展示点调用：本方法会记账并置位"本回合已交付"，
+	 * 流式中间帧调用会让兜底文案进不了学生最终保留的那条消息、并让记账名额被中间帧抢占。
+	 *
+	 * **必填**（F4）：唯一生产者是 `ToolExecutor.asToolConfig()`，其构造参数也是必填 ⇒
+	 * 缺挂载时 `tsc` 直接报错，不会静默退化成"只剥离、兜底消失"。
+	 * 调用点仍保留 `?.` + `?? rest`：那是纵深防御，也是结构守卫的锚点。
 	 */
-	applyInterventionDisplay?: (assistantText: string) => Promise<string>
+	applyInterventionDisplay: (assistantText: string) => Promise<string>
 
 	ask: (
 		type: ClineAsk,

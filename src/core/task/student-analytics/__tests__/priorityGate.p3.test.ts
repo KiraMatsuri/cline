@@ -120,8 +120,7 @@ describe("G3 · 优先级综合（可跑通 + 边界）", () => {
 				return undefined
 			},
 			removeClosingTag: (_block: unknown, _tag: string, text?: string) => text ?? "",
-			// 【P6/T4】`handlePartialBlock` 现在会向 Task 侧要展示钩子；未挂载时按“不附加文案”处理（`?? rest`）
-			getConfig: () => ({ callbacks: {} }),
+			// 【F1】partial 帧不再向 Task 侧要展示钩子（钩子只在非 partial 的最终展示点调用）⇒ mock 无需 getConfig
 		} as unknown as Parameters<typeof handler.handlePartialBlock>[1]
 		const copy = "我刚刚给了实现。你先动手写第一版？"
 		await handler.handlePartialBlock(

@@ -10,7 +10,9 @@ import { AttemptCompletionHandler } from "../AttemptCompletionHandler"
  * ⚠️ **诚实声明**：本文件的第 2 个用例是**变更探测器**（读取源码文本做结构断言），
  * **不是**端到端验证 —— 它只能证明「代码里确实挂了剥离」，不能证明运行时行为了符合预期。
  * 第 1 个用例是**真实调用** `AttemptCompletionHandler.handlePartialBlock`（该路径只需
- * `uiHelpers.say` + `uiHelpers.removeClosingTag`，无需完整 TaskConfig，故可真实执行）；
+ * `uiHelpers.say` + `removeClosingTag`，无需完整 TaskConfig，故可真实执行），覆盖**未闭合**流式帧；
+ * 已闭合块的真实调用（剥离 + "partial 不调展示钩子"）在
+ * `student-analytics/__tests__/completionPathAccounting.test.ts`（review F3：同一行为只留一处真实调用）。
  * `execute()` 的两处调用的真实覆盖需要完整 TaskConfig 测试基建（本仓库暂无），
  * 因此那两处只能落在结构守卫里。
  */
@@ -18,7 +20,7 @@ const blockText = (copy: string): string =>
 	`<teaching_intervention_copy rule="no_edit_streak" severity="gentle">\n${copy}\n</teaching_intervention_copy>`
 
 describe("F13 · 展示路径剥离（AttemptCompletionHandler）", () => {
-	it("★ 真实调用 handlePartialBlock：completion_result 中不带回执块残渣", async () => {
+	it("★ 真实调用 handlePartialBlock（流式未闭合帧）：开标签及其后内容整体丢弃，只留前缀", async () => {
 		const handler = new AttemptCompletionHandler()
 		const said: Array<{ type: string; text?: string }> = []
 		const fakeHelpers = {
@@ -27,22 +29,28 @@ describe("F13 · 展示路径剥离（AttemptCompletionHandler）", () => {
 				return undefined
 			},
 			removeClosingTag: (_block: unknown, _tag: string, text?: string) => text ?? "",
-			// 【P6/T4】`handlePartialBlock` 现在会向 Task 侧要展示钩子；未挂载时按“不附加文案”处理（`?? rest`）
-			getConfig: () => ({ callbacks: {} }),
 		} as unknown as Parameters<typeof handler.handlePartialBlock>[1]
 
-		const copy = "我刚刚给了实现。你先动手写第一版？"
+		// 流式中间帧：回执块还没闭合 ⇒ `extractInterventionCopy()` 按契约 ④ 恒等返回，
+		// 由 `dropUnclosedInterventionCopy()` 丢掉开标签及其后全部内容；否则开标签会被 webview 直接渲染出来。
+		// 【F1】该路径**不得**调用展示钩子（钩子含兜底/记账/置位，只允许在非 partial 的最终展示点调用）
+		// ⇒ mock 里没有 `getConfig`。
 		await handler.handlePartialBlock(
-			{ name: "attempt_completion", partial: true, params: { result: `${blockText(copy)}\n\n---\n\n正文内容。` } } as never,
+			{
+				name: "attempt_completion",
+				partial: true,
+				params: {
+					result: `正在查看改动前的现状。\n<teaching_intervention_copy rule="no_edit_streak" severity="gentle">\n我刚刚`,
+				},
+			} as never,
 			fakeHelpers,
 		)
 
 		expect(said).to.have.lengthOf(1)
 		expect(said[0].type).to.equal("completion_result")
 		expect(said[0].text).to.not.include("<teaching_intervention_copy")
-		// 剥离只动回执块，正文一字不动
-		expect(said[0].text).to.include("正文内容。")
-		expect(said[0].text).to.not.include(copy)
+		// 只预览开标签之前的文本
+		expect(said[0].text).to.equal("正在查看改动前的现状。")
 	})
 
 	it("★ 结构守卫（**变更探测器，非端到端验证**）：两条展示路径都挂了解析与剥离", () => {

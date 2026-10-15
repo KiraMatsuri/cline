@@ -38,13 +38,14 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 			// no command, still outputting partial result
 			// 【F13】回执块只在此处（展示路径）剥离：写入 apiConversationHistory 的是另一个变量
 			// （`assistantTextOnly`），所以剥离不会影响历史里保留的回执块（F13 硬要求 2）。
+			// 【P6/T4】partial 帧**不得**调用 `applyInterventionDisplay()`：钩子含兜底/记账/置位，
+			// 只允许在非 partial 的最终展示点调用（文本块路径同样以 `if (block.partial)` 守卫）。
 			// partial 阶段块通常还没闭合，用 dropUnclosedInterventionCopy() 把开标签及其后内容整体丢弃，
 			// 避免学生看到 `<teaching_intervention_copy …>` 残渣。
 			const { rest } = extractInterventionCopy(result)
-			const shownText = (await uiHelpers.getConfig().callbacks.applyInterventionDisplay?.(rest)) ?? rest
 			await uiHelpers.say(
 				"completion_result",
-				uiHelpers.removeClosingTag(block, "result", dropUnclosedInterventionCopy(shownText)),
+				uiHelpers.removeClosingTag(block, "result", dropUnclosedInterventionCopy(rest)),
 				undefined,
 				undefined,
 				block.partial,
