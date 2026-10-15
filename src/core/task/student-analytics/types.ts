@@ -36,6 +36,8 @@ export type LogEventType =
 	// 这是「本轮判定要干预」的**唯一**持久痕迹。
 	| "intervention_decision"
 	| "intervention_copy" // 【F13】文案展示决策事件（M9' 的 `C` / `T` / `N`）
+	/** 【P6/T9】服从流程的结构化痕迹（asked / granted / denied）；**不**计入 M9' 的 `D` */
+	| "demand_compliance"
 
 /**
  * 消息角色
@@ -134,7 +136,13 @@ export interface StudentInteractionLog {
 	copyReasons?: string[]
 	/** 【F13】启发性建议（`topic_unanchored`）—— 只记账，不影响是否展示 */
 	copyAdvisories?: string[]
+	// ===== 【P6/T9】b+c 服从流程 =====
+	/** 【P6/T9】服从流程判定结果（仅 eventType=demand_compliance） */
+	demandCompliance?: "asked" | "granted" | "denied"
 }
+
+/** 【P6/T9】服从流程状态：未进入 / 已询问 / 已获准（本轮给出完整实现） */
+export type DemandComplianceState = "none" | "asked" | "granted"
 
 /**
  * 内容分析结果

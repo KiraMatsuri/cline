@@ -8,9 +8,10 @@
 import { Logger } from "@/shared/services/Logger"
 import { type ConceptModeState, INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "./ConceptModeGate"
 import { isCompleteImplDemand } from "./demandDetect"
+import { isInabilityStatement } from "./inabilityDetect"
 import { dependencyWeightForQueryType, type QueryType, toQueryType } from "./queryType"
 import { getRulePolicy } from "./rulePolicy"
-import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog, TaskCategory } from "./types"
+import type { BehaviorAlert, BehaviorRuleId, DemandComplianceState, StudentInteractionLog, TaskCategory } from "./types"
 
 export interface BehaviorMonitorOptions {
 	enabled?: boolean
@@ -104,6 +105,11 @@ export class BehaviorMonitor {
 	/** 【P5/T16】当前请求是否在索要「完整实现」（`demandDetect.isCompleteImplDemand` 的结果） */
 	private currentRequestIsDemand = false
 
+	/** 【P6/T9】当前请求学生是否**明确表示自己写不出来**（`inabilityDetect.isInabilityStatement` 的结果） */
+	private currentRequestIsInability = false
+	/** 【P6/T9】服从流程状态：仅本轮有效（新的学生请求复位） */
+	private demandComplianceState: DemandComplianceState = "none"
+
 	/**
 	 * 【F9】连续「助手回合且过程中学生没有发言」的计数 —— 比例指标在 Cline 多工具循环下恒真，改用绝对量。
 	 * 【P6/T7】★ 该字段已**退出 AI 依赖规则的判定**（依赖度改为「学生请求加权和」）：
@@ -185,6 +191,11 @@ export class BehaviorMonitor {
 			this.bumpedRulesThisRequest.clear()
 			this.studentRequestCount++
 			this.currentRequestIsDemand = isCompleteImplDemand(event.rawContent)
+			// 【P6/T9】服从态仅本轮：新的学生请求一律复位
+			if (this.demandComplianceState === "granted") {
+				this.demandComplianceState = "none"
+			}
+			this.currentRequestIsInability = isInabilityStatement(event.rawContent)
 			// 【P6/T7】询问类型与权重：概念问答只记 50%（滚动窗口上限 10 个请求）
 			this.currentRequestQueryType = toQueryType(event.category)
 			this.currentRequestDependencyWeight = dependencyWeightForQueryType(this.currentRequestQueryType)
@@ -622,6 +633,31 @@ export class BehaviorMonitor {
 	public isCurrentRequestDemand(): boolean {
 		return this.currentRequestIsDemand
 	}
+
+	/** 【P6/T9】本轮学生是否明确表示"自己写不出来" */
+	public isCurrentRequestInability(): boolean {
+		return this.currentRequestIsInability
+	}
+
+	/** 【P6/T9】服从流程状态 */
+	public getDemandComplianceState(): DemandComplianceState {
+		return this.demandComplianceState
+	}
+
+	/** 【P6/T9】已向学生询问一次（本轮不再重复询问） */
+	public markDemandComplianceAsked(): void {
+		this.demandComplianceState = "asked"
+	}
+
+	/** 【P6/T9】学生已确认 → 本轮给出完整实现 */
+	public markDemandComplianceGranted(): void {
+		this.demandComplianceState = "granted"
+	}
+
+	/** 【P6/T9】学生否认 / 主动退出服从流程 → 回引导态 */
+	public resetDemandCompliance(): void {
+		this.demandComplianceState = "none"
+	}
 	/**
 	 * 获取同规则累计触发次数
 	 */
@@ -692,6 +728,9 @@ export class BehaviorMonitor {
 		this.bumpedRulesThisRequest = new Set<BehaviorRuleId>()
 		this.studentRequestCount = 0
 		this.currentRequestIsDemand = false
+		// 【P6/T9】服从流程状态一并复位（跨任务不得残留"已获准"）
+		this.currentRequestIsInability = false
+		this.demandComplianceState = "none"
 		this.assistantTurnsWithoutUser = 0
 		// 【P6/T7】依赖度加权窗口与本轮询问类型一并复位（否则恢复会话后会带着上次的分数）
 		this.recentRequestWeights = []

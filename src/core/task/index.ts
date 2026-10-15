@@ -78,7 +78,9 @@ import { nextHasDeliveredKeyCode } from "@/core/task/student-analytics/keyCodeDe
 import { refineStudentCategory } from "@/core/task/student-analytics/RequestIntentRefiner"
 import {
 	buildConceptModeConstraint,
+	buildDemandComplianceConstraint,
 	buildDemandRefusalConstraint,
+	DEMAND_COMPLIANCE_ASK_TEXT,
 	detectConceptModeViolation,
 } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
@@ -135,6 +137,7 @@ import {
 	TeachingInterventionManager,
 	taskClassifier,
 } from "./student-analytics"
+import { isAffirmation } from "./student-analytics/inabilityDetect"
 import { buildInterventionAccountKey } from "./student-analytics/interventionAccounting"
 import {
 	type InterventionCopyEvent,
@@ -1063,6 +1066,8 @@ export class Task {
 			| "copyDecision"
 			| "copyReasons"
 			| "copyAdvisories"
+			// 【P6/T9】服从流程的痕迹（与 `copyDecision` 同一处置方式：同一落库通道，不喂 BehaviorMonitor）
+			| "demandCompliance"
 		>,
 		rawContent: string,
 	): Promise<void> {
@@ -1112,6 +1117,11 @@ export class Task {
 			return // 【P5/T17】同轮重复记账：跳过
 		}
 		void this.persistInterventionEvent(event, shownText ?? "")
+	}
+
+	/** 【P6/T9】落一条 `demand_compliance`（**不**计入 M9' 的 D，单独作为 D′ 统计） */
+	private persistDemandComplianceEvent(decision: "asked" | "granted" | "denied"): void {
+		void this.persistInterventionEvent({ eventType: "demand_compliance", demandCompliance: decision }, decision)
 	}
 
 	/**
@@ -2572,9 +2582,26 @@ export class Task {
 		// 学生再问一次完整代码就会把该轮重分类为 code_generation，护栏被静默撤销（等于学生
 		// 多要一次就能拆掉）。粘性状态下只有「学生本人编辑代码」或「意图转向已有具体代码」
 		// 才会退出，反复索要只被计数（见 ConceptModeGate）。
+		// 【P6/T9】b+c 服从流程：仅当学生**明确自述写不出**时询问一次（代码驱动，不交给模型自由发挥）
+		const complianceMonitor = this.getBehaviorMonitor()
+		if (complianceMonitor?.isCurrentRequestInability() && complianceMonitor.getDemandComplianceState() === "none") {
+			complianceMonitor.markDemandComplianceAsked()
+			this.persistDemandComplianceEvent("asked")
+			const { text: answerText } = await this.ask("followup", DEMAND_COMPLIANCE_ASK_TEXT)
+			if (isAffirmation(answerText)) {
+				complianceMonitor.markDemandComplianceGranted()
+				this.persistDemandComplianceEvent("granted")
+			} else {
+				complianceMonitor.resetDemandCompliance()
+				this.persistDemandComplianceEvent("denied")
+			}
+		}
+		const complianceGranted = complianceMonitor?.getDemandComplianceState() === "granted"
+
 		try {
 			const conceptState = this.getBehaviorMonitor()?.getConceptModeState()
-			if (conceptState?.active) {
+			// 【P6/T9】服从轮（学生已确认要完整实现）暂挂概念护栏 —— 仅本轮，下一个学生请求即复位
+			if (conceptState?.active && !complianceGranted) {
 				systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()
 				Logger.log(`[Task] 概念问答模式约束已注入 (sticky, demands=${conceptState.completeImplDemands})`)
 			}
@@ -2582,11 +2609,16 @@ export class Task {
 			// 实测（M6'）：学生一次索要，模型就直接给出完整实现且全程零干预；
 			// 概念护栅里那句"持续索要也不要放弃约束"被当成了背景噪声。
 			const demandMonitor = this.getBehaviorMonitor()
-			if (demandMonitor?.isCurrentRequestDemand()) {
+			if (demandMonitor?.isCurrentRequestDemand() && !complianceGranted) {
 				systemPromptFinal = systemPromptFinal + buildDemandRefusalConstraint()
 				Logger.log(
 					`[Task] 完整实现索要约束已注入 (escalation=${demandMonitor.getEscalationCount("complete_impl_demand")})`,
 				)
+			}
+			// 【P6/T9】学生已确认 ⇒ 本轮改注入服从约束（给出完整实现 + 关键步骤 + 下一步小练习）
+			if (complianceGranted) {
+				systemPromptFinal = systemPromptFinal + buildDemandComplianceConstraint()
+				Logger.log("[Task] 服从流程约束已注入 (compliance granted for this turn only)")
 			}
 		} catch (e) {
 			Logger.warn("[Task] 概念问答模式约束注入失败，跳过:", e)

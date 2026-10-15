@@ -156,7 +156,8 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 	})
 
 	it("【G5-④】结构守卫（**变更探测器**）：T16 强化约束只在本轮索要时注入", () => {
-		expect(taskSrc).to.include("if (demandMonitor?.isCurrentRequestDemand()) {")
+		// 【P6/T9】门控追加 `&& !complianceGranted`：学生自述写不出并确认后，本轮豁免拒答约束。
+		expect(taskSrc).to.include("if (demandMonitor?.isCurrentRequestDemand() && !complianceGranted) {")
 		expect(taskSrc).to.include("systemPromptFinal = systemPromptFinal + buildDemandRefusalConstraint()")
 		// 概念护栏与"索要"约束是**两条独立注入**（索要不是概念问答的子集：M6' 里分类会被翻转）
 		expect(taskSrc).to.include("systemPromptFinal = systemPromptFinal + buildConceptModeConstraint()")
