@@ -142,6 +142,7 @@ import {
 	toStudentVisibleBlockingText,
 } from "./student-analytics/interventionDisplay"
 import { planInterventionTurn } from "./student-analytics/interventionTurnPlan"
+import { dependencyWeightForQueryType, toQueryType } from "./student-analytics/queryType"
 import type { InterventionDecision } from "./student-analytics/TeachingInterventionManager"
 import { TaskState } from "./TaskState"
 import { ToolExecutor } from "./ToolExecutor"
@@ -1265,6 +1266,9 @@ export class Task {
 				eventType: "task_start",
 				role: "user",
 				category,
+				// 【P6/T8】询问类型与其依赖度权重（外部契约新增字段；教师端按加权和复算依赖度）
+				queryType: toQueryType(category),
+				dependencyWeight: dependencyWeightForQueryType(toQueryType(category)),
 				contentLength: analysis.contentLength,
 				hasCode: analysis.hasCode,
 				languageHint: analysis.languageHint,
@@ -1317,6 +1321,9 @@ export class Task {
 				eventType: "turn_message",
 				role: "user",
 				category,
+				// 【P6/T8】询问类型与其依赖度权重（外部契约新增字段；教师端按加权和复算依赖度）
+				queryType: toQueryType(category),
+				dependencyWeight: dependencyWeightForQueryType(toQueryType(category)),
 				contentLength: analysis.contentLength,
 				hasCode: analysis.hasCode,
 				languageHint: analysis.languageHint,

@@ -3,6 +3,8 @@
  * Student Programming Behavior Analytics - Type Definitions
  */
 
+import type { QueryType } from "./queryType"
+
 /**
  * 任务分类类型
  */
@@ -81,6 +83,10 @@ export interface StudentInteractionLog {
 	role: MessageRole
 	/** 任务分类 */
 	category: TaskCategory
+	/** 【P6/T8】询问类型（由 `category` 推导；旧日志缺省） */
+	queryType?: QueryType
+	/** 【P6/T8】该请求在 AI 依赖度里的权重（概念问答 0.5） */
+	dependencyWeight?: number
 	/** 输入内容长度（字符数） */
 	contentLength: number
 	/** 是否包含代码 */
