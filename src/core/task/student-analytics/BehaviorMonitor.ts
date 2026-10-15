@@ -213,8 +213,10 @@ export class BehaviorMonitor {
 				this.assistantCodeStreak = 0
 				// 【P6/T5】学生本人动手 ⇒ 独立阻断通道清零。
 				// ⚠️ 只清 `ai_coding_rounds`，不动其它规则的计数（"学生编辑 ⇒ 清零两个代码规则"是另一项待议裁定）。
+				// ⚠️ 也**不**清 `bumpedRulesThisRequest` 里的本规则标记：若连去重标记一起清，
+				// 同一学生请求内「AI 落盘 → 学生手改 → AI 再落盘」就能记 2 次，
+				// 违反全局约束「每个学生请求最多 +1」。
 				delete this.escalationCounter.ai_coding_rounds
-				this.bumpedRulesThisRequest.delete("ai_coding_rounds")
 				if (this.options.debug) {
 					Logger.info(
 						`[BehaviorMonitor][debug] code_edit by student → turnsSinceLastEdit & assistantCodeStreak reset to 0`,
@@ -531,7 +533,7 @@ export class BehaviorMonitor {
 		const escalationCount = this.getEscalationCount(ruleId)
 
 		Logger.info(
-			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.options.escalationBlockingThreshold})`,
+			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.blockingThresholdFor(ruleId)})`,
 		)
 
 		// 生成结构化警报，附带回退计数，供 TeachingInterventionManager 消费
@@ -617,7 +619,17 @@ export class BehaviorMonitor {
 			return false
 		}
 		const count = this.getEscalationCount(ruleId)
-		return count >= this.options.escalationBlockingThreshold
+		return count >= this.blockingThresholdFor(ruleId)
+	}
+
+	/**
+	 * 【P6/T5】某规则的阻断阈值 —— **唯一来源**。
+	 * `ai_coding_rounds` 走独立通道阈值（`aiCodingBlockingThreshold`），其余规则沿用 `escalationBlockingThreshold`。
+	 * 生效门（`shouldEscalateToBlocking`）与 `notify()` 的日志行都读这里，
+	 * 避免出现"日志/展示阈值 ≠ 生效阈值"的双轨漂移。
+	 */
+	private blockingThresholdFor(ruleId: BehaviorRuleId): number {
+		return ruleId === "ai_coding_rounds" ? this.options.aiCodingBlockingThreshold : this.options.escalationBlockingThreshold
 	}
 
 	/**
@@ -649,8 +661,8 @@ export class BehaviorMonitor {
 		this.currentRequestIsDemand = false
 		this.assistantTurnsWithoutUser = 0
 		this.escalationCounter = {}
-		// 【P6/T5】独立阻断通道的计数随任务重置一并清空
-		delete this.escalationCounter.ai_coding_rounds
+		// 【P6/T5】`ai_coding_rounds` 的计数就存在 `escalationCounter` 里，随上面一行一并清空
+		//（原先紧跟一行 `delete this.escalationCounter.ai_coding_rounds` 是 no-op 死代码，已删）。
 		this.blockingTriggered = false
 		this.currentTaskCategory = undefined
 		this.conceptModeState = INITIAL_CONCEPT_MODE_STATE

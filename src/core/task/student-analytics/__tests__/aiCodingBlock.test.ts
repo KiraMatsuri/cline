@@ -8,8 +8,8 @@
  */
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
-import { TEMPLATE_REGISTRY } from "../InterventionMessageGenerator"
-import type { StudentInteractionLog } from "../types"
+import { generateBlockingInterventionMessage, TEMPLATE_REGISTRY } from "../InterventionMessageGenerator"
+import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog } from "../types"
 import { editEv, ev } from "./__fixtures__/events"
 
 const stu = (raw: string): StudentInteractionLog =>
@@ -65,11 +65,30 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		expect(m.getAiCodingCount()).to.equal(1)
 	})
 
-	it("★ 边界：AI 落盘事件缺省 editor（旧日志）按人工处理 ⇒ 不清零、不计数", () => {
+	it("★ 边界：code_edit 缺省 editor（旧日志）按人工编辑处理 ⇒ 计数被清零", () => {
+		// 为什么缺省按人工处理：旧日志 / 未标注来源的编辑只能保守视为"学生自己动手"
+		//（与 `updateRealtimeStreaks` 的 `event.editor !== "ai"` 分支、`isStudentSideEvent` 同一口径）；
+		// 宁可多清零（漏记一次 AI 落盘）也不要反着误判：把学生的手动编辑当成 AI 落盘而继续累计依赖。
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("第一句"))
 		m.ingest(aiWrite())
+		expect(m.getAiCodingCount()).to.equal(1) // 前提：清零前确实计了一次，否则下面的 0 是恒真的
 		m.ingest(ev({ eventType: "code_edit", category: "other", hasCode: false, hasCodeBlock: false }))
+		expect(m.getAiCodingCount()).to.equal(0)
+	})
+
+	it("★ 同一请求内「AI 落盘 → 学生手改 → AI 再落盘」不得记 2 次", () => {
+		// 全局约束「每个学生请求最多 +1」：学生编辑只把**计数**清零，重入去重标记不动
+		//（`bumpedRulesThisRequest`）。若连标记一起清，AI 在本请求内再落盘就会再 +1。
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(stu("第一句"))
+		m.ingest(aiWrite())
+		expect(m.getAiCodingCount()).to.equal(1)
+
+		m.ingest(editEv({ editor: "user" })) // 学生手改 ⇒ 计数清零
+		expect(m.getAiCodingCount()).to.equal(0)
+
+		m.ingest(aiWrite()) // 同一请求内再次落盘：本请求已计过 ⇒ 不再 +1
 		expect(m.getAiCodingCount()).to.equal(0)
 	})
 
@@ -88,5 +107,35 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		expect(reg.strong[0].style).to.equal("challenge")
 		// 主语必须是"我（AI）"：这不是学生行为违规，而是"我在替你写"
 		expect(reg.gentle[0].template).to.include("我")
+		// 让用例名里的"不留未填充占位符"真有断言兜底：三档均为静态文案，不应残留 `{...}`
+		for (const t of [reg.gentle[0].template, reg.moderate[0].template, reg.strong[0].template]) {
+			expect(t).to.not.include("{")
+		}
+	})
+
+	it("★ 阻断文案：本规则有自己的阻断模板，主语是「我（AI）」而非指控学生", () => {
+		// 生产入口 `generateBlockingInterventionMessage()` 就是按 `BLOCKING_TEMPLATE_REGISTRY[ruleId]` 取文案
+		//（注册表未导出，所以"注册表含该键"只能透过这个函数断言：缺键会落到 `?? consecutive_code_generation`）。
+		const alert = (ruleId: BehaviorRuleId): BehaviorAlert => ({
+			ruleId,
+			message: "我已经替你写了 3 次完整代码。",
+			triggeredAt: new Date().toISOString(),
+			metricValue: 3,
+			threshold: 3,
+			escalationCount: 3,
+		})
+		const own = generateBlockingInterventionMessage(alert("ai_coding_rounds"), 60_000)
+		const fallback = generateBlockingInterventionMessage(alert("consecutive_code_generation"), 60_000)
+
+		// ① 注册表含 `ai_coding_rounds` 键 ⇒ 取到的是本规则模板，而不是兜底模板
+		expect(own.content).to.not.equal(fallback.content)
+		// ② 不得复用兜底文案里"指控学生"的字句
+		expect(own.content).to.not.include("直接请求 AI 生成代码")
+		expect(fallback.content).to.include("直接请求 AI 生成代码") // 反向对照：证明上面那句不是恒真
+		// ③ 主语必须是「我（AI）」，且阻断结构（标题 / 禁用功能 / 反思问题）齐备
+		expect(own.content).to.include("我")
+		expect(own.content).to.include("🚫 【教学干预 — 阻断模式】")
+		expect(own.disabledFeatures).to.deep.equal(["code_generation", "tool_execution"])
+		expect(own.reflectionQuestions?.length ?? 0).to.be.greaterThan(0)
 	})
 })
