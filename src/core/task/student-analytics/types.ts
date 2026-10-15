@@ -246,6 +246,11 @@ export type BehaviorRuleId =
 	 * 本规则是**唯一在任何分类下都启用且可升级**的规则（单位 = 学生请求）。
 	 */
 	| "complete_impl_demand"
+	/**
+	 * 【P6/T5】助手**真实编码文件**的次数（独立干预通道，唯一可升级为阻断的规则）。
+	 * 单位 = 一个学生请求内至多 1 次（`bumpOncePerRequest`）；学生本人编辑代码时清零。
+	 */
+	| "ai_coding_rounds"
 
 /**
  * 干预严重等级

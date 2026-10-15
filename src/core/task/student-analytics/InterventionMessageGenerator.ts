@@ -170,6 +170,27 @@ export const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeveri
 			},
 		],
 	},
+	/** 【P6/T5】独立阻断通道：**我（AI）**在替学生写代码（不指控学生） */
+	ai_coding_rounds: {
+		gentle: [
+			{
+				style: "hint",
+				template: "💡 提醒：这次是我（AI）把代码写完了。下一轮你先自己写一版，哪怕只是循环骨架，我再对照给你改。",
+			},
+		],
+		moderate: [
+			{
+				style: "question",
+				template: "🤔 换个方式：这几次都是我直接把代码写出来的。你能不能先说出“第一步做什么”，然后自己落笔写那一步？",
+			},
+		],
+		strong: [
+			{
+				style: "challenge",
+				template: "🎯 该你自己写了：接下来这一版请先由你独立完成（不完整也行），我只在你写完后指出问题。",
+			},
+		],
+	},
 }
 
 /**

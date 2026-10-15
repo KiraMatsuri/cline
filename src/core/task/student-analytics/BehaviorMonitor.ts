@@ -26,6 +26,8 @@ export interface BehaviorMonitorOptions {
 	minAdoptionSamples?: number
 	/** 触发阻断式干预的同规则累计次数阈值（默认 3 次） */
 	escalationBlockingThreshold?: number
+	/** 【P6/T5】助手真实落盘的阻断阈值（默认 3） */
+	aiCodingBlockingThreshold?: number
 }
 
 export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Object.freeze({
@@ -55,6 +57,8 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	// 【F1】6 → 3：对齐「第 3 次违规即阻断」的验收口径。★ 权威值在本文件：升级判定走
 	// shouldEscalateToBlocking()，TeachingInterventionManager 里那份同名配置从未被读取。
 	escalationBlockingThreshold: 3,
+	// 【P6/T5】独立阻断通道的阈值 = 3：与告知学生的文案（"连续 3 次直接编码会触发阻断"）逐字一致。
+	aiCodingBlockingThreshold: 3,
 })
 
 /** 【F5】可覆盖 `code_generation` 的"强信号"分类：都表示学生正在处理**新的具体代码** */
@@ -207,10 +211,15 @@ export class BehaviorMonitor {
 				this.turnsSinceLastEdit = 0
 				// 学生主动编辑代码 → 重置 streak（阻断判定仅关注连续无编辑的代码生成）
 				this.assistantCodeStreak = 0
+				// 【P6/T5】学生本人动手 ⇒ 独立阻断通道清零。
+				// ⚠️ 只清 `ai_coding_rounds`，不动其它规则的计数（"学生编辑 ⇒ 清零两个代码规则"是另一项待议裁定）。
+				delete this.escalationCounter.ai_coding_rounds
+				this.bumpedRulesThisRequest.delete("ai_coding_rounds")
 				if (this.options.debug) {
 					Logger.info(
 						`[BehaviorMonitor][debug] code_edit by student → turnsSinceLastEdit & assistantCodeStreak reset to 0`,
 					)
+					Logger.info("[BehaviorMonitor][debug] student code_edit → ai_coding_rounds reset to 0")
 				}
 			} else if (this.options.debug) {
 				// AI 落盘：既不清零也不额外计数（该回合已由 assistant turn_message 的 hasCodeBlock 计入）
@@ -259,6 +268,10 @@ export class BehaviorMonitor {
 		// —— 这是**有意行为**（回归场景 5 断言此点），不是 bug。
 		const policy = (ruleId: BehaviorRuleId): boolean => getRulePolicy(ruleId, this.currentTaskCategory).enabled
 
+		// 【P6/T5】独立阻断通道：只数"助手真的写了文件"，与其它规则解耦（不读 streak、不看分类之外的状态）。
+		if (policy("ai_coding_rounds")) {
+			this.checkAiCodingRoundsRule(event)
+		}
 		if (policy("consecutive_code_generation")) {
 			this.checkConsecutiveCodeGenerationRule(event)
 		}
@@ -356,6 +369,32 @@ export class BehaviorMonitor {
 			count,
 			this.options.escalationBlockingThreshold,
 		)
+	}
+
+	/**
+	 * 【P6/T5】独立阻断通道：助手**真实编码文件**。
+	 *
+	 * 信号 = `code_edit` 且 `editor === "ai"`（F2/F11 已保证 AI 落盘事件的归属；
+	 * 等价于 `write_to_file` / `replace_in_file` / `apply_patch` 成功写盘）。
+	 * 单位 = 一个学生请求内至多 1 次 —— 同一请求里写 3 个文件是"一件事"，不是 3 次依赖。
+	 * 与其它规则彻底解耦：它不读 streak、不看分类，只数落盘次数。
+	 */
+	private checkAiCodingRoundsRule(event: StudentInteractionLog): void {
+		if (event.eventType !== "code_edit" || event.editor !== "ai") {
+			return
+		}
+		const count = this.bumpOncePerRequest("ai_coding_rounds")
+		this.notify(
+			"ai_coding_rounds",
+			`我已经替你写了 ${count} 次完整代码。接下来请自己动手写一版，哪怕只是循环骨架。`,
+			count,
+			this.options.aiCodingBlockingThreshold,
+		)
+	}
+
+	/** 【P6/T5】独立阻断通道的当前计数（= 助手真实落盘次数） */
+	public getAiCodingCount(): number {
+		return this.getEscalationCount("ai_coding_rounds")
 	}
 
 	/**
@@ -610,6 +649,8 @@ export class BehaviorMonitor {
 		this.currentRequestIsDemand = false
 		this.assistantTurnsWithoutUser = 0
 		this.escalationCounter = {}
+		// 【P6/T5】独立阻断通道的计数随任务重置一并清空
+		delete this.escalationCounter.ai_coding_rounds
 		this.blockingTriggered = false
 		this.currentTaskCategory = undefined
 		this.conceptModeState = INITIAL_CONCEPT_MODE_STATE
