@@ -965,6 +965,11 @@ export class Task {
 	/** 【P5/T17】记账去重：上一次已记账的键（同一轮 + 同一学生请求只记一次） */
 	private lastDecisionAccountKey: string | undefined
 	private lastCopyAccountKey: string | undefined
+	/**
+	 * 【P6/T9 fix F1】服从流程记账去重：键 = 学生请求 + `asked`/`granted`/`denied`（见 `interventionAccountKey`）。
+	 * 为何也要带 `decision` 而不仅是学生请求序号：见该方法的 JSDoc。
+	 */
+	private lastComplianceAccountKey: string | undefined
 	/** 【F7】上次注入周切换通知时的教学周；undefined = 本任务尚未注入过 */
 	private lastInjectedWeek: number | undefined
 
@@ -1119,8 +1124,18 @@ export class Task {
 		void this.persistInterventionEvent(event, shownText ?? "")
 	}
 
-	/** 【P6/T9】落一条 `demand_compliance`（**不**计入 M9' 的 D，单独作为 D′ 统计） */
+	/**
+	 * 【P6/T9】落一条 `demand_compliance`（**不**计入 M9' 的 D，单独作为 D′ 统计）。
+	 *
+	 * 【P6/T9 fix F1】记账同样要过 `interventionAccountKey`：`attemptApiRequest` 在同一学生请求内
+	 * 会被工具轮与首 chunk 重试**多次进入**，不去重时重入产生的 `asked`/`denied` 会成对重复落库。
+	 * 键里必须带上 `decision`（见 `interventionAccountKey` 的 JSDoc）—— 否则 `asked` 与其后的
+	 * `granted`/`denied` 同属一个学生请求，后者的记录会被前者的去重一并吞掉。
+	 */
 	private persistDemandComplianceEvent(decision: "asked" | "granted" | "denied"): void {
+		if (!this.interventionAccountKey("compliance", decision)) {
+			return // 【P5/T17】同轮 + 同决策的重复记账：跳过
+		}
 		void this.persistInterventionEvent({ eventType: "demand_compliance", demandCompliance: decision }, decision)
 	}
 
@@ -1162,19 +1177,38 @@ export class Task {
 		return next
 	}
 
-	/** 【P5/T17 → P6/T1】记账去重（键的构造在 `buildInterventionAccountKey`，那里解释了为何不得含 apiRequestCount） */
-	private interventionAccountKey(kind: "decision" | "copy"): string | undefined {
+	/**
+	 * 【P5/T17 → P6/T1】记账去重（键的构造在 `buildInterventionAccountKey`，那里解释了为何不得含 apiRequestCount）。
+	 *
+	 * 【P6/T9 fix F1】`kind = "compliance"` 时键额外带 `decision`：`asked` 与其后的 `granted`/`denied`
+	 * 属于**同一个**学生请求，共用一把键会把后者的记录一并吞掉（T9 规格要求三态各记一次），
+	 * 带上后语义回到「同 `studentRequests` 下的**重复** `asked`（或重复 `denied`）只记一次」。
+	 */
+	private interventionAccountKey(
+		kind: "decision" | "copy" | "compliance",
+		decision?: "asked" | "granted" | "denied",
+	): string | undefined {
 		const studentRequests = this.getBehaviorMonitor()?.getStudentRequestCount() ?? 0
-		const key = buildInterventionAccountKey(this.taskId, studentRequests, kind)
-		const last = kind === "decision" ? this.lastDecisionAccountKey : this.lastCopyAccountKey
+		const baseKey = buildInterventionAccountKey(this.taskId, studentRequests, kind)
+		const key = decision === undefined ? baseKey : `${baseKey}:${decision}`
+		let last: string | undefined
+		if (kind === "decision") {
+			last = this.lastDecisionAccountKey
+		} else if (kind === "copy") {
+			last = this.lastCopyAccountKey
+		} else {
+			last = this.lastComplianceAccountKey
+		}
 		if (last === key) {
 			Logger.info(`[TeachingIntervention][${this.taskId}] skip duplicate ${kind} accounting (key=${key})`)
 			return undefined
 		}
 		if (kind === "decision") {
 			this.lastDecisionAccountKey = key
-		} else {
+		} else if (kind === "copy") {
 			this.lastCopyAccountKey = key
+		} else {
+			this.lastComplianceAccountKey = key
 		}
 		return key
 	}
@@ -2583,17 +2617,31 @@ export class Task {
 		// 多要一次就能拆掉）。粘性状态下只有「学生本人编辑代码」或「意图转向已有具体代码」
 		// 才会退出，反复索要只被计数（见 ConceptModeGate）。
 		// 【P6/T9】b+c 服从流程：仅当学生**明确自述写不出**时询问一次（代码驱动，不交给模型自由发挥）
+		// 【P6/T9 fix F1】否认/中止后**不得**在同一学生请求内被反复重问：`denied` 与 `granted` 一样是
+		// 「本请求已问过」的**终态**，活到下一个学生请求才由请求边界复位。`attemptApiRequest` 在同一学生请求内
+		// 会被工具轮（`recursivelyMakeClineRequests` 递归）与首 chunk 失败重试**多次进入**，若否认回落到 `"none"`，
+		// 门控重新武装 ⇒ 每轮重问一次，而答复被 `ask` 消费掉、请求身份不变 ⇒ 学生除确认或取消任务外无法脱离。
 		const complianceMonitor = this.getBehaviorMonitor()
 		if (complianceMonitor?.isCurrentRequestInability() && complianceMonitor.getDemandComplianceState() === "none") {
 			complianceMonitor.markDemandComplianceAsked()
 			this.persistDemandComplianceEvent("asked")
-			const { text: answerText } = await this.ask("followup", DEMAND_COMPLIANCE_ASK_TEXT)
-			if (isAffirmation(answerText)) {
-				complianceMonitor.markDemandComplianceGranted()
-				this.persistDemandComplianceEvent("granted")
-			} else {
-				complianceMonitor.resetDemandCompliance()
+			try {
+				const { text: answerText } = await this.ask("followup", DEMAND_COMPLIANCE_ASK_TEXT)
+				if (isAffirmation(answerText)) {
+					complianceMonitor.markDemandComplianceGranted()
+					this.persistDemandComplianceEvent("granted")
+				} else {
+					complianceMonitor.markDemandComplianceDenied()
+					this.persistDemandComplianceEvent("denied")
+				}
+			} catch (error) {
+				// 【P6/T9 fix F1】`ask` 抛错（任务中止 / ask promise 被忽略）时同样落 `denied` 终态：
+				// 否则 monitor 会永久停在 `"asked"`，而请求边界只复位两个终态 ⇒ 该 taskId（含 30 分钟内
+				// 恢复会话复用同一实例）**再也**进不了 b+c 流程。记账后照旧向上抛：中止语义必须继续传播。
+				complianceMonitor.markDemandComplianceDenied()
 				this.persistDemandComplianceEvent("denied")
+				Logger.warn("[Task] 服从流程询问被中止，按否认处理并向上抛出:", error)
+				throw error
 			}
 		}
 		const complianceGranted = complianceMonitor?.getDemandComplianceState() === "granted"

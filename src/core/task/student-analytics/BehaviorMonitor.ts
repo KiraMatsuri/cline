@@ -107,7 +107,18 @@ export class BehaviorMonitor {
 
 	/** 【P6/T9】当前请求学生是否**明确表示自己写不出来**（`inabilityDetect.isInabilityStatement` 的结果） */
 	private currentRequestIsInability = false
-	/** 【P6/T9】服从流程状态：仅本轮有效（新的学生请求复位） */
+	/**
+	 * 【P6/T9】服从流程状态：仅本轮有效 —— **两个终态**（`granted` / `denied`）都在请求边界复位为 `"none"`。
+	 *
+	 * 【P6/T9 fix F1】为何 `denied` 也是终态：见 `types.ts` 的 `DemandComplianceState`。
+	 *
+	 * ⚠️ 已知残留（【P6/T9 fix】登记，不阻塞）：若服从轮之后**没有**新的学生 ingest
+	 * （模型直接 `attempt_completion` 结束任务、或学生关窗），`granted` 会留在实例上；
+	 * 而 monitor 按 taskId 缓存（30 分钟 TTL，恢复会话会复用同一实例，见 `Task.monitorCache`）
+	 * ⇒ 该窗口内恢复同一 taskId，首个 API 请求会在**没有新确认**的情况下继续注入服从约束
+	 * （`buildDemandComplianceConstraint()`）。窗口 = 「30 分钟内恢复 且 期间无学生消息」；
+	 * 彻底修法需在任务结束/挂起时显式 `reset()`。
+	 */
 	private demandComplianceState: DemandComplianceState = "none"
 
 	/**
@@ -191,8 +202,10 @@ export class BehaviorMonitor {
 			this.bumpedRulesThisRequest.clear()
 			this.studentRequestCount++
 			this.currentRequestIsDemand = isCompleteImplDemand(event.rawContent)
-			// 【P6/T9】服从态仅本轮：新的学生请求一律复位
-			if (this.demandComplianceState === "granted") {
+			// 【P6/T9】服从态仅本轮：新的学生请求一律复位。
+			// 【P6/T9 fix F1】**两个终态**都要复位：`denied` 必须与 `granted` 一样活到下一个学生请求
+			// （期间 `attemptApiRequest` 会被工具轮与首 chunk 重试多次进入）—— 否则否认后门控重新武装 ⇒ 反复重问。
+			if (this.demandComplianceState === "granted" || this.demandComplianceState === "denied") {
 				this.demandComplianceState = "none"
 			}
 			this.currentRequestIsInability = isInabilityStatement(event.rawContent)
@@ -654,7 +667,24 @@ export class BehaviorMonitor {
 		this.demandComplianceState = "granted"
 	}
 
-	/** 【P6/T9】学生否认 / 主动退出服从流程 → 回引导态 */
+	/**
+	 * 【P6/T9 fix F1】学生否认 / `ask` 抛错中止 → 终态 `denied`（**本学生请求内不再询问**）。
+	 *
+	 * 终止态同样落 `denied` 的理由：`ask` 抛错（任务中止 / ask promise 被忽略）时若停在 `"asked"`，
+	 * 请求边界的复位分支（只认两个终态）不会命中 ⇒ 该 taskId（含 30 分钟内恢复会话复用同一实例）
+	 * 再也进不了 b+c 流程。
+	 */
+	public markDemandComplianceDenied(): void {
+		this.demandComplianceState = "denied"
+	}
+
+	/**
+	 * 【P6/T9】把服从态打回 `"none"`。**唯一**合法用途：`reset()` 与显式"重新进入引导态"的调用点。
+	 *
+	 * ⚠️ **不要**在"学生否认"时调用它：`"none"` 会让 `index.ts` 的询问门控在**同一学生请求内**重新武装
+	 * （`attemptApiRequest` 会被工具轮与首 chunk 重试多次进入）⇒ 每隔一轮重问一次。
+	 * 否认请用 `markDemandComplianceDenied()`（终态，由请求边界复位）。
+	 */
 	public resetDemandCompliance(): void {
 		this.demandComplianceState = "none"
 	}

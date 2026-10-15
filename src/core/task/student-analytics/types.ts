@@ -141,8 +141,16 @@ export interface StudentInteractionLog {
 	demandCompliance?: "asked" | "granted" | "denied"
 }
 
-/** 【P6/T9】服从流程状态：未进入 / 已询问 / 已获准（本轮给出完整实现） */
-export type DemandComplianceState = "none" | "asked" | "granted"
+/**
+ * 【P6/T9】服从流程状态：未进入 / 已询问 / 已获准（本轮给出完整实现）/ 已否认（本轮不再询问）。
+ *
+ * 【P6/T9 fix F1】`granted` 与 `denied` 都是**终态**：都表示"本学生请求已经问过了"，
+ * 只在下一个学生请求的请求边界复位为 `"none"`。
+ * ⚠️ 否认时若回落到 `"none"`，`index.ts` 的询问门控会在**同一个学生请求内**重新武装
+ * （`attemptApiRequest` 会被工具轮与首 chunk 重试多次进入）⇒ 每隔一轮重问一次，
+ * 而答复被 `ask` 消费掉、请求身份不变 ⇒ 学生除确认或取消任务外无法脱离。
+ */
+export type DemandComplianceState = "none" | "asked" | "granted" | "denied"
 
 /**
  * 内容分析结果
