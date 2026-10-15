@@ -16,7 +16,7 @@ import { appendEphemeralIntervention } from "../ephemeralIntervention"
 import { getRulePolicy } from "../rulePolicy"
 import { TaskClassifier } from "../TaskClassifier"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
-import { ev } from "./__fixtures__/events"
+import { editEv, ev } from "./__fixtures__/events"
 
 // 【测试卫生】同 priorityGate.p0.test.ts：阻断态是进程级全局静态，进来先存快照、每例前归零、跑完还原。
 const managerStaticState = TeachingInterventionManager as unknown as {
@@ -35,24 +35,36 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 	// ---------------- 统一模板（6 例） ----------------
 	// 与 G0 同形，仅改 describe 名；用于守护「每个优先级都从端到端可跑通」这一不变量。
 
-	it("★ 核心流程端到端：违规 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		m.ingest(ev({}))
+	it("★ 核心流程端到端：AI 真实落盘 3 次 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
+		// 【P6/T6】阻断的唯一入口是独立通道 `ai_coding_rounds`
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 3; i++) {
+			m.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m.getAiCodingCount()).to.equal(3)
 		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		const text = mgr.checkAndGenerateIntervention(m, 3)
 		expect(text).to.be.a("string").and.to.include("阻断模式")
 		expect(mgr.isBlockingActive()).to.equal(true)
 	})
 
-	it("★ 边界：阈值前一轮不阻断、恰好阈值阻断", () => {
-		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m2.ingest(ev({}))
-		m2.ingest(ev({}))
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
-		m2.ingest(ev({}))
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+	it("★ 边界：阈值前一次不阻断、恰好阈值阻断（独立通道 ai_coding_rounds）", () => {
+		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 2; i++) {
+			m2.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m2.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m2.getAiCodingCount()).to.equal(2)
+		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
+		m2.ingest(ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: "第 3 次" }))
+		m2.ingest(editEv({ editor: "ai" }))
+		expect(m2.getAiCodingCount()).to.equal(3)
+		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
 	})
 
 	it("★ 边界：概念问答下规则被门控停用（rulePolicy）", () => {
@@ -72,15 +84,28 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 
 	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空", () => {
 		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
-		m4.ingest(ev({}))
-		m4.ingest(ev({}))
-		m4.ingest(ev({}))
+		for (let i = 0; i < 3; i++) {
+			m4.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m4.ingest(editEv({ editor: "ai" }))
+		}
 		// 必须先消费掉队列，否则这条用例只是例 ① 的重复：命中阈值时阻断分支在
 		// `hasPendingAlerts()` 之前就已 return，队列里有没有警报都看不出来。
 		m4.consumePendingAlerts()
 		expect(m4.hasPendingAlerts()).to.equal(false)
 		const mgr4 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.be.a("string").and.to.not.be.empty
+	})
+
+	it("★【P6/T6】原可升级的代码规则改为只提示：计数照旧、阻断恒 false", () => {
+		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m6.ingest(ev({}))
+		m6.ingest(ev({}))
+		expect(m6.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		m6.ingest(ev({}))
+		expect(m6.getEscalationCount("consecutive_code_generation")).to.equal(3)
+		expect(m6.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 	})
 
 	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => {

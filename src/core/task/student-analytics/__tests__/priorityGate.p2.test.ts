@@ -17,7 +17,7 @@ import { nextWeekSwitch } from "@/core/teaching/weekSwitchNotice"
 import { BehaviorMonitor } from "../BehaviorMonitor"
 import { getRulePolicy } from "../rulePolicy"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
-import { ev } from "./__fixtures__/events"
+import { editEv, ev } from "./__fixtures__/events"
 
 // 【测试卫生】同 priorityGate.p0：阻断态是进程级全局静态（v2.7 防「退出/新建对话」绕过），
 // 进来存快照、每例前归零、跑完还原，避免同进程内后续 spec 继承"阻断冷却中"状态。
@@ -37,24 +37,36 @@ describe("G2 · 优先级综合（可跑通 + 边界）", () => {
 	// ---------------- 统一模板（6 例，照抄 priorityGate.p0.test.ts 的对应 6 个 it，仅改 describe 名）----------------
 	// 例 ① 核心流程端到端 / ② 阈值边界 / ③ rulePolicy 门控 / ④ 冷却只挡提示 / ⑤ 队列清空后阻断仍生效 / ⑥ enabled=false
 
-	it("★ 核心流程端到端：违规 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		m.ingest(ev({}))
+	it("★ 核心流程端到端：AI 真实落盘 3 次 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
+		// 【P6/T6】阻断的唯一入口是独立通道 `ai_coding_rounds`
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 3; i++) {
+			m.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m.getAiCodingCount()).to.equal(3)
 		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		const text = mgr.checkAndGenerateIntervention(m, 3)
 		expect(text).to.be.a("string").and.to.include("阻断模式")
 		expect(mgr.isBlockingActive()).to.equal(true)
 	})
 
-	it("★ 边界：阈值前一轮不阻断、恰好阈值阻断", () => {
-		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m2.ingest(ev({}))
-		m2.ingest(ev({}))
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
-		m2.ingest(ev({}))
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+	it("★ 边界：阈值前一次不阻断、恰好阈值阻断（独立通道 ai_coding_rounds）", () => {
+		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 2; i++) {
+			m2.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m2.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m2.getAiCodingCount()).to.equal(2)
+		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
+		m2.ingest(ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: "第 3 次" }))
+		m2.ingest(editEv({ editor: "ai" }))
+		expect(m2.getAiCodingCount()).to.equal(3)
+		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
 	})
 
 	it("★ 边界：概念问答下规则被门控停用（rulePolicy）", () => {
@@ -74,15 +86,28 @@ describe("G2 · 优先级综合（可跑通 + 边界）", () => {
 
 	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空（阻断不依赖 pendingAlerts）", () => {
 		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
-		m4.ingest(ev({}))
-		m4.ingest(ev({}))
-		m4.ingest(ev({}))
+		for (let i = 0; i < 3; i++) {
+			m4.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m4.ingest(editEv({ editor: "ai" }))
+		}
 		// 必须先消费掉队列，否则这条用例只是例 ① 的重复：命中阈值时阻断分支在
 		// `hasPendingAlerts()` 之前就已 return，队列里有没有警报都看不出来。
 		m4.consumePendingAlerts()
 		expect(m4.hasPendingAlerts()).to.equal(false)
 		const mgr4 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.be.a("string").and.to.not.be.empty
+	})
+
+	it("★【P6/T6】原可升级的代码规则改为只提示：计数照旧、阻断恒 false", () => {
+		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		m6.ingest(ev({}))
+		m6.ingest(ev({}))
+		expect(m6.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		m6.ingest(ev({}))
+		expect(m6.getEscalationCount("consecutive_code_generation")).to.equal(3)
+		expect(m6.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 	})
 
 	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => {
@@ -144,13 +169,26 @@ describe("G2 · 优先级综合（可跑通 + 边界）", () => {
 		expect(full.weekFile).to.equal("C:/a/b.json")
 	})
 
-	it("【G2-④】概念问答下 AI 依赖规则零提示（M2'/M3' 的通过条件）", () => {
+	it("【G2-④】概念问答：单次提问零提示（M2'/M3' 的通过条件）；规则本身已启用但永不阻断", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(ev({ eventType: "task_start", role: "user", category: "explanation" }))
 		for (let i = 0; i < 8; i++) m.ingest(ev({ role: "assistant" }))
+		// 单次请求内的多回合不算依赖（T19-b），因此这里既不计数也不提示
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
-		expect(getRulePolicy("high_recent_ai_dependency", "algorithm").enabled).to.equal(false)
+		// 【P6/T6】规则策略白名单反转：概念分类下依赖规则改为**启用**（可提示），但永不可阻断
+		expect(getRulePolicy("high_recent_ai_dependency", "algorithm")).to.deep.equal({
+			enabled: true,
+			canEscalateToBlocking: false,
+		})
+
+		// 反转后的可见后果：概念问答里**反复提问**（≥ 2 次学生请求）时，依赖规则会出温和提示
+		// （旧策略下连提示都不发），但任何情况下都不得升级为阻断。
+		m.ingest(ev({ role: "user", category: "explanation" }))
+		for (let i = 0; i < 8; i++) m.ingest(ev({ role: "assistant" }))
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.be.greaterThan(0)
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("high_recent_ai_dependency")
+		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 
 		// 非概念任务下仍然可用（计数可达 + 阈值边界：连续 5 个助手回合不触发、第 6 个触发）
 		// ⚠️ 已登记的残留：Cline 单次提问即产生 6+ 连续助手回合 ⇒ 该形态下仍会提示（见账本 §18.2）。

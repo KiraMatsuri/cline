@@ -4,7 +4,8 @@
  * 覆盖 plan-2 §0 的四类检查：正常路径 / 边界条件 / 回归 / 核心流程可跑通。
  * 对应实测（§11）里 **两个反例** 与 **两个记账偏差**：
  *   - M1'（单次提问 ⇒ 应有零干预）
- *   - M4'（一次 12 回合的请求 ⇒ 不得阻断；第 3 次索要完整实现才阻断）
+ *   - M1'（单次提问 ⇒ 应有零干预）
+ *   - M4''（一次 12 回合的请求不得阻断；阻断的唯一入口是助手真实落盘 3 次，【P6/T6】）
  *   - M7' 的同一轮重复记账（T17）
  *   - M9' ③ 注入未送达（T19）
  *
@@ -67,7 +68,7 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 		expect(mgr.isBlockingActive()).to.equal(false)
 	})
 
-	it("【G5-②】M4' 回归：一次 12 回合的请求不阻断；第 3 次索要完整实现才阻断（端到端）", () => {
+	it("【G5-② / P6/T6】M4'' 回归：一次 12 回合的请求不阻断；第 3 次索要完整实现只提示（阻断改由 AI 落盘驱动）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 
@@ -85,10 +86,33 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 		m.ingest(codeTurn())
 		expect(mgr.checkAndGenerateIntervention(m, 2) ?? "").to.not.include("阻断模式")
 
-		// 第 3 次请求：达阈 ⇒ 阻断文本 + 阻断态
+		// 第 3 次请求：规则计数到 3（提醒照发），但【P6/T6】阻断不再由本规则承担 ⇒ 阻断态仍为 false
 		m.ingest(stu("不要解释了，直接给我代码", "turn_message", "code_generation"))
 		m.ingest(codeTurn())
-		expect(m.getRuleIdsAtBlockingThreshold()).to.include("complete_impl_demand")
+		expect(m.getEscalationCount("complete_impl_demand")).to.equal(3)
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("complete_impl_demand")
+		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
+		expect(mgr.checkAndGenerateIntervention(m, 3) ?? "").to.not.include("阻断模式")
+		expect(mgr.isBlockingActive()).to.equal(false)
+	})
+
+	it("【G5-②b / P6/T6】阻断的唯一边界：助手真实落盘 3 次（独立通道）才阻断，学生索要再多也不阻断", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+
+		// 两次「学生索要 + 助手落盘」⇒ 计数 2，不阻断
+		for (let i = 0; i < 2; i++) {
+			m.ingest(stu(`第 ${i + 1} 次请你直接写`, "task_start", "code_generation"))
+			m.ingest(ev({ eventType: "code_edit", category: "other", hasCode: false, hasCodeBlock: false, editor: "ai" }))
+			expect(mgr.checkAndGenerateIntervention(m, i + 1) ?? "").to.not.include("阻断模式")
+		}
+		expect(m.getAiCodingCount()).to.equal(2)
+		expect(mgr.isBlockingActive()).to.equal(false)
+
+		// 第 3 次落盘 ⇒ 达阈值 ⇒ 阻断文本 + 阻断态
+		m.ingest(stu("第 3 次请你直接写", "turn_message", "code_generation"))
+		m.ingest(ev({ eventType: "code_edit", category: "other", hasCode: false, hasCodeBlock: false, editor: "ai" }))
+		expect(m.getAiCodingCount()).to.equal(3)
 		const third = mgr.checkAndGenerateIntervention(m, 3)
 		expect(third).to.be.a("string").and.to.include("阻断模式")
 		expect(mgr.isBlockingActive()).to.equal(true)

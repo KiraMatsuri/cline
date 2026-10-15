@@ -179,7 +179,8 @@ export class TeachingInterventionManager {
 					message: "",
 					triggeredAt: new Date().toISOString(),
 					metricValue: count,
-					threshold: monitor.getEscalationBlockingThreshold(),
+					// 【P6/T6 Step 3b】按规则取阈值（与门控 / 日志 / 通知同源），不再写死 escalationBlockingThreshold
+					threshold: monitor.getBlockingThresholdFor(blockingRule),
 					escalationCount: count,
 				},
 				turnIndex,

@@ -5,14 +5,14 @@
  * 却因为「每个 `turn_message` 都 +1」而在一轮之内把 `no_edit_streak` 推过阈值并连记 3 次
  * ⇒ 一次提问即被阻断 60 秒（根因 A）。本文件把新口径写成可执行的契约：
  *   ① 一次请求内的 12 个助手回合最多推进 1 格（旧口径会记 3 次违规）；
- *   ② 升级计数按「请求」累加，第 3 次索要完整实现才达阻断阈值（M4' 的预期口径）；
+ *   ② 升级计数按「请求」累加（第 3 次索要完整实现计数到 3；【P6/T6】之后它只提示、不再阻断）；
  *   ③ 学生本人编辑代码仍然归零；
  *   ④ 退化口径（从未见过学生回合的离线重放）保留按回合计数，不静默失效。
  *
  * ⚠️ 单位的**语义代价**（有意，已在 §11.6 记录）：`no_edit_streak` 的阈值 3 现在意为
- * "连续 3 次提问没动手 ⇒ 提醒"，其升级计数从**第 3 次提问**开始累加，
- * 因此该规则自身达到阻断阈值需要第 5 次提问；而"第 3 次索要完整实现即阻断"由
- * `complete_impl_demand` 规则承担（它每次索要都记一次，见 T14-②）。
+ * "连续 3 次提问没动手 ⇒ 提醒"，其升级计数从**第 3 次提问**开始累加；
+ * 而"第 3 次索要完整实现"由 `complete_impl_demand` 规则承担计数（它每次索要都记一次，见 T14-②）。
+ * 【P6/T6】两条规则如今都只提示；阻断由独立通道 `ai_coding_rounds` 驱动（见 `aiCodingBlock.test.ts`）。
  */
 
 import { expect } from "chai"
@@ -63,7 +63,7 @@ describe("【P5/T14】计数单位 = 学生请求", () => {
 		expect(m.getEscalationCount("no_edit_streak")).to.equal(0)
 	})
 
-	it("★【T14-②】连续 3 次索要完整实现 ⇒ 第 3 次达到阻断阈值（M4' 的预期口径）", () => {
+	it("★【T14-② / P6/T6】连续 3 次索要完整实现 ⇒ 计数到 3，但阻断入口已收归独立通道", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 
 		request(m, taskStart("帮我写一个完整的冒泡排序程序"), 2)
@@ -76,7 +76,9 @@ describe("【P5/T14】计数单位 = 学生请求", () => {
 
 		request(m, stuTurn("不要解释了，直接给我代码"), 2)
 		expect(m.getEscalationCount("complete_impl_demand")).to.equal(3)
-		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(true)
+		// 【P6/T6】计数与提醒保留（可审计），但本规则不再是阻断入口
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("complete_impl_demand")
+		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(false)
 	})
 
 	it("★【T14-③】学生本人编辑代码 ⇒ 未编辑计数归零（对照：不编辑则第 3 次请求起才开始计数）", () => {

@@ -2,14 +2,17 @@ import { expect } from "chai"
 import { getRulePolicy } from "../rulePolicy"
 import type { BehaviorRuleId, TaskCategory } from "../types"
 
+/** 全部规则（含独立阻断通道 `ai_coding_rounds`）*/
 const ALL_RULES: BehaviorRuleId[] = [
+	"ai_coding_rounds",
 	"consecutive_code_generation",
 	"no_edit_streak",
 	"high_adoption_low_self_modification",
 	"high_recent_ai_dependency",
+	"complete_impl_demand",
 ]
 
-describe("getRulePolicy（方案 C-1）", () => {
+describe("rulePolicy · getRulePolicy（方案 C-1 +【P6/T6】阻断白名单反转）", () => {
 	it("★ 概念问答（explanation）下停用代码类规则", () => {
 		for (const rule of ["consecutive_code_generation", "no_edit_streak"] as BehaviorRuleId[]) {
 			expect(getRulePolicy(rule, "explanation").enabled, rule).to.equal(false)
@@ -22,21 +25,53 @@ describe("getRulePolicy（方案 C-1）", () => {
 		}
 	})
 
-	it("★【F9】概念问答下 AI 依赖规则连提示也停用，且不得升级为阻断", () => {
-		const p = getRulePolicy("high_recent_ai_dependency", "explanation")
-		expect(p.enabled).to.equal(false)
-		expect(p.canEscalateToBlocking).to.equal(false)
+	it("★【P6/T6】只有 ai_coding_rounds 允许升级为阻断，其余一律只提示", () => {
+		for (const category of [undefined, "other", "explanation", "algorithm", "code_generation"] as Array<
+			TaskCategory | undefined
+		>) {
+			expect(getRulePolicy("ai_coding_rounds", category), `${category}`).to.deep.equal({
+				enabled: true,
+				canEscalateToBlocking: true,
+			})
+			for (const rule of [
+				"complete_impl_demand",
+				"consecutive_code_generation",
+				"no_edit_streak",
+				"high_recent_ai_dependency",
+				"high_adoption_low_self_modification",
+			] as BehaviorRuleId[]) {
+				expect(getRulePolicy(rule, category).canEscalateToBlocking, `${category}/${rule}`).to.equal(false)
+			}
+		}
 	})
 
-	it("★ 代码类任务下所有规则都启用；仅 AI 依赖不可升级为阻断（F9 回归修复）", () => {
+	it("★【P6/T6】概念问答下依赖规则改为**启用但只提示**（重复概念提问也要能出提示）", () => {
+		expect(getRulePolicy("high_recent_ai_dependency", "algorithm")).to.deep.equal({
+			enabled: true,
+			canEscalateToBlocking: false,
+		})
+	})
+
+	it("★【P6/T6】high_recent_ai_dependency 在任何分类下都启用，但任何分类下都不可阻断", () => {
+		for (const category of [undefined, "other", "explanation", "algorithm", "code_generation"] as Array<
+			TaskCategory | undefined
+		>) {
+			expect(getRulePolicy("high_recent_ai_dependency", category), `${category}`).to.deep.equal({
+				enabled: true,
+				canEscalateToBlocking: false,
+			})
+		}
+	})
+
+	it("★ 代码类任务下所有规则都启用；除 ai_coding_rounds 外一律不可升级为阻断", () => {
 		for (const category of ["code_generation", "debugging", "refactoring", "testing"] as TaskCategory[]) {
 			for (const rule of ALL_RULES) {
 				const p = getRulePolicy(rule, category)
 				expect(p.enabled, `${category}/${rule}`).to.equal(true)
-				// 【F9 回归修复 2026-10-13】high_recent_ai_dependency 永不可升级：其度量单位是
-				// “连续无学生发言的助手回合数”，Cline 一次提问即产生 6~11 个助手回合，
-				// 若允许升级则“一次提问就把学生阻断 60 秒”。其余三条仍可升级。
-				const expectedEscalation = rule !== "high_recent_ai_dependency"
+				// 【P6/T6】阻断的唯一入口是独立通道 ai_coding_rounds：
+				// 其余规则（含 F9 之后仍可升级的 consecutive_code_generation / no_edit_streak /
+				// complete_impl_demand / high_adoption_low_self_modification）一律"可提示、不可阻断"。
+				const expectedEscalation = rule === "ai_coding_rounds"
 				expect(p.canEscalateToBlocking, `${category}/${rule}`).to.equal(expectedEscalation)
 			}
 		}
@@ -50,24 +85,14 @@ describe("getRulePolicy（方案 C-1）", () => {
 		}
 	})
 
-	it("★【F5】code_generation 下代码类规则可用且可升级（粘性要守住的正是这个口径）", () => {
+	it("★【F5】code_generation 下代码类规则可用，但阻断能力已收归独立通道（不得被误读为门控失效）", () => {
 		expect(getRulePolicy("consecutive_code_generation", "code_generation")).to.deep.equal({
 			enabled: true,
-			canEscalateToBlocking: true,
+			canEscalateToBlocking: false,
 		})
 		expect(getRulePolicy("no_edit_streak", "code_generation")).to.deep.equal({
 			enabled: true,
-			canEscalateToBlocking: true,
+			canEscalateToBlocking: false,
 		})
-	})
-
-	it("★【F9】概念问答下 high_recent_ai_dependency 连提示都停用", () => {
-		expect(getRulePolicy("high_recent_ai_dependency", "explanation").enabled).to.equal(false)
-		expect(getRulePolicy("high_recent_ai_dependency", "algorithm").enabled).to.equal(false)
-		// 非概念分类不受影响（仍出温和提示），但**任何分类下都不可升级为阻断**
-		expect(getRulePolicy("high_recent_ai_dependency", "code_generation").enabled).to.equal(true)
-		expect(getRulePolicy("high_recent_ai_dependency", undefined).enabled).to.equal(true)
-		expect(getRulePolicy("high_recent_ai_dependency", "code_generation").canEscalateToBlocking).to.equal(false)
-		expect(getRulePolicy("high_recent_ai_dependency", undefined).canEscalateToBlocking).to.equal(false)
 	})
 })

@@ -113,6 +113,32 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		}
 	})
 
+	it("★【P6/T6 Step 3b】阈值按规则取：aiCodingBlockingThreshold=2 时第 2 次落盘即阻断，其它规则仍读 escalationBlockingThreshold", () => {
+		// 为什么需要这条：两个阈值默认都是 3，"按规则取值"和"写死一个统一值"在默认配置下**不可区分**。
+		// 把独立通道阈值下调到 2，就能把两种实现区分开。
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, aiCodingBlockingThreshold: 2, escalationBlockingThreshold: 5 })
+		expect(m.getBlockingThresholdFor("ai_coding_rounds")).to.equal(2)
+		expect(m.getBlockingThresholdFor("consecutive_code_generation")).to.equal(5)
+
+		// 2 次学生请求，各落盘 1 次 ⇒ ai_coding_rounds = 2 ≥ 2 ⇒ 立即达到阻断阈值
+		for (let i = 0; i < 2; i++) {
+			m.ingest(stu(`第 ${i + 1} 次请你直接写`))
+			m.ingest(aiWrite())
+		}
+		expect(m.getAiCodingCount()).to.equal(2)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+
+		// 对照：同为"2 次命中"的代码规则不得升级 —— 它读的是 escalationBlockingThreshold=5
+		// （若实现写死了统一阈值，这里会因 2 ≥ 2 而误判为 true）。
+		const m2 = new BehaviorMonitor("t2", { cooldownMs: 0, aiCodingBlockingThreshold: 2, escalationBlockingThreshold: 5 })
+		m2.ingest(stu("第一句"))
+		m2.ingest(ev({ taskId: "t2" }))
+		m2.ingest(stu("第二句"))
+		m2.ingest(ev({ taskId: "t2" }))
+		expect(m2.getEscalationCount("consecutive_code_generation")).to.equal(2)
+		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+	})
+
 	it("★ 阻断文案：本规则有自己的阻断模板，主语是「我（AI）」而非指控学生", () => {
 		// 生产入口 `generateBlockingInterventionMessage()` 就是按 `BLOCKING_TEMPLATE_REGISTRY[ruleId]` 取文案
 		//（注册表未导出，所以"注册表含该键"只能透过这个函数断言：缺键会落到 `?? consecutive_code_generation`）。

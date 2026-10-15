@@ -533,7 +533,7 @@ export class BehaviorMonitor {
 		const escalationCount = this.getEscalationCount(ruleId)
 
 		Logger.info(
-			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.blockingThresholdFor(ruleId)})`,
+			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.getBlockingThresholdFor(ruleId)})`,
 		)
 
 		// 生成结构化警报，附带回退计数，供 TeachingInterventionManager 消费
@@ -619,16 +619,17 @@ export class BehaviorMonitor {
 			return false
 		}
 		const count = this.getEscalationCount(ruleId)
-		return count >= this.blockingThresholdFor(ruleId)
+		return count >= this.getBlockingThresholdFor(ruleId)
 	}
 
 	/**
 	 * 【P6/T5】某规则的阻断阈值 —— **唯一来源**。
 	 * `ai_coding_rounds` 走独立通道阈值（`aiCodingBlockingThreshold`），其余规则沿用 `escalationBlockingThreshold`。
-	 * 生效门（`shouldEscalateToBlocking`）与 `notify()` 的日志行都读这里，
-	 * 避免出现"日志/展示阈值 ≠ 生效阈值"的双轨漂移。
+	 * 生效门（`shouldEscalateToBlocking`）、`notify()` 的日志行，以及
+	 * `TeachingInterventionManager` 合成阻断 alert 时的 `threshold` 字段都读这里，
+	 * 避免出现"日志/展示/合成阈值 ≠ 生效阈值"的多轨漂移（P6/T6 Step 3b 收口）。
 	 */
-	private blockingThresholdFor(ruleId: BehaviorRuleId): number {
+	public getBlockingThresholdFor(ruleId: BehaviorRuleId): number {
 		return ruleId === "ai_coding_rounds" ? this.options.aiCodingBlockingThreshold : this.options.escalationBlockingThreshold
 	}
 

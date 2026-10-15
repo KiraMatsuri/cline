@@ -2,7 +2,22 @@ import { expect } from "chai"
 import { after } from "mocha"
 import { BehaviorMonitor } from "../BehaviorMonitor"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
-import { ev } from "./__fixtures__/events"
+import { editEv, ev } from "./__fixtures__/events"
+
+// 【P6/T6】阻断的唯一入口 = 独立通道 `ai_coding_rounds`（助手真实落盘，阈值 3，学生本人编辑清零）。
+/** 一次「学生请求 + 助手落盘」的组合 —— 即独立通道推进 1 格 */
+const aiWriteRound = (m: BehaviorMonitor, i: number): void => {
+	m.ingest(
+		ev({
+			eventType: "turn_message",
+			role: "user",
+			hasCode: false,
+			hasCodeBlock: false,
+			rawContent: `第 ${i} 次请你直接写`,
+		}),
+	)
+	m.ingest(editEv({ editor: "ai" }))
+}
 
 // 【测试卫生】TeachingInterventionManager 的阻断状态是**跨会话全局静态**（v2.7 防
 // 「退出/新建对话」绕过），本文件的阻断用例必然写它；而 .mocharc.json 把全部 spec 放在
@@ -17,13 +32,27 @@ const managerStaticState = TeachingInterventionManager as unknown as {
 
 describe("F1 · 升级阈值可达性", () => {
 	it("★ 阈值恰为 3：第 2 次不升级，第 3 次升级（边界）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, aiCodingBlockingThreshold: 3 })
+		aiWriteRound(m, 1)
+		aiWriteRound(m, 2)
+		expect(m.getAiCodingCount()).to.equal(2)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
+		aiWriteRound(m, 3)
+		expect(m.getAiCodingCount()).to.equal(3)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+	})
+
+	it("★【P6/T6】原可升级的代码规则现只提示：计数照旧、阻断恒 false（阻断入口已收归独立通道）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 		m.ingest(ev({}))
 		m.ingest(ev({}))
-		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(2)
 		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 		m.ingest(ev({}))
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+		// 计数仍在（可审计），且提醒照发
+		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(3)
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("consecutive_code_generation")
+		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
 	})
 
 	it("★ 计数与提醒冷却解耦：冷却期内仍逐轮计数", () => {
@@ -56,11 +85,12 @@ describe("F1 · 升级阈值可达性", () => {
 	})
 
 	it("★ 阻断不依赖 pendingAlerts（队列被清空后仍能阻断）", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		m.ingest(ev({}))
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		aiWriteRound(m, 1)
+		aiWriteRound(m, 2)
+		aiWriteRound(m, 3)
 		m.consumePendingAlerts() // 模拟"本轮无新警报"
+		expect(m.hasPendingAlerts()).to.equal(false)
 		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		const text = mgr.checkAndGenerateIntervention(m, 1)
 		expect(text).to.be.a("string").and.to.include("阻断模式")
@@ -77,25 +107,25 @@ describe("F1 · 升级阈值可达性", () => {
 	})
 
 	it("★ 阈值下界 1：首个命中回合即升级", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 1 })
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
-		m.ingest(ev({}))
-		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(1)
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0, aiCodingBlockingThreshold: 1 })
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
+		aiWriteRound(m, 1)
+		expect(m.getAiCodingCount()).to.equal(1)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
 	})
 
 	it("★ reset() 后计数归零且不再满足升级条件", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		aiWriteRound(m, 1)
+		aiWriteRound(m, 2)
+		aiWriteRound(m, 3)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
 
 		m.reset()
 
-		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(0)
+		expect(m.getEscalationCount("ai_coding_rounds")).to.equal(0)
 		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
 		expect(m.getPendingAlerts().length).to.equal(0)
 	})
 
@@ -119,14 +149,15 @@ describe("F1 · 升级阈值可达性", () => {
 		m.ingest(ev({ eventType: "turn_message", role: "assistant" }))
 		m.ingest(ev({ eventType: "turn_message", role: "assistant" }))
 		expect(m.getEscalationCount("no_edit_streak")).to.equal(3)
-		expect(m.shouldEscalateToBlocking("no_edit_streak")).to.equal(true)
+		// 【P6/T6】计数保留，但该规则不再是阻断入口
+		expect(m.shouldEscalateToBlocking("no_edit_streak")).to.equal(false)
 	})
 
 	// ---- 【T9-b / 裁定 C】high_adoption_low_self_modification 的升级能力回归 ----
 	// notify() 移出自增后，该规则若不在 check*Rule() 内计数，计数将**恒为 0**：
 	// 命中只产生提醒，永远升不了级 —— 这是 F1 引入的静默能力回退。
 
-	it("★【T9-b】采纳率高 + 自主修改少时逐轮计数，可达阻断阈值", () => {
+	it("★【T9-b / P6/T6】采纳率高 + 自主修改少时逐轮计数（可审计），但不可再升级为阻断", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 		// 2 次"已采纳"判定（达到 minAdoptionSamples=2，采纳率 100%）
 		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
@@ -136,7 +167,7 @@ describe("F1 · 升级阈值可达性", () => {
 			m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
 		}
 		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(3)
-		expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(true)
+		expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(false)
 	})
 
 	it("【T9-b】自主修改率达标时不计数（规则条件不成立）", () => {

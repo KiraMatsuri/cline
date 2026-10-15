@@ -20,6 +20,10 @@ describe("干预参数基线（方案 D 止血）", () => {
 		expect(MONITOR_DEFAULTS.cooldownMs).to.equal(120_000)
 	})
 
+	it("★【P6/T6】独立阻断通道阈值 3（与告知学生的文案「连续 3 次直接编码会触发阻断」逐字一致）", () => {
+		expect(MONITOR_DEFAULTS.aiCodingBlockingThreshold).to.equal(3)
+	})
+
 	it("AI 依赖阈值 0.85（原 0.7）、最少 6 条回合（原 4）", () => {
 		expect(MONITOR_DEFAULTS.aiDependencyThreshold).to.equal(0.85)
 		expect(MONITOR_DEFAULTS.minTurnsForDependency).to.equal(6)

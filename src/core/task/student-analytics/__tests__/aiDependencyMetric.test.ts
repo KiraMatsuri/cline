@@ -64,12 +64,13 @@ describe("F9 · ai_dependency 绝对回合数指标", () => {
 		expect(m.getRuleIdsAtBlockingThreshold()).to.not.include("high_recent_ai_dependency")
 	})
 
-	it("★【回归修复】其他三条规则的阻断能力未被削弱（对照）", () => {
+	it("★【P6/T6】原可升级的代码规则现只提示（对照）：计数照旧、阻断恒 false", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 		m.ingest(ev({}))
 		m.ingest(ev({}))
 		m.ingest(ev({}))
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(3)
+		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 	})
 
 	it("★【修复】学生编辑代码（code_edit）也把计数归零", () => {

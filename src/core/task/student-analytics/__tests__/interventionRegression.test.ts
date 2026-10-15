@@ -50,9 +50,12 @@ describe("场景 2 — 真实依赖必须仍然干预", () => {
 	})
 })
 
-describe("场景 3 — 阻断仍可升级，且时长与文案一致", () => {
-	it("★ 代码类任务下累计 6 次触发 → 阻断，冷却为 60s", () => {
-		const m = new BehaviorMonitor("s4", { cooldownMs: 0, escalationBlockingThreshold: 6 })
+describe("场景 3 — 阻断仍可升级（独立通道 ai_coding_rounds），且时长与文案一致", () => {
+	it("★ 助手真实落盘累计 6 次触发 → 阻断，冷却为 60s", () => {
+		// 【P6/T6】阻断的唯一入口 = 独立通道 `ai_coding_rounds`（助手真实落盘）。
+		// 本用例验证的仍是"阻断能否升级 + 时长与文案一致"，只是入口换了规则：
+		// 原先走 consecutive_code_generation（现已只提示）的写法已随白名单反转失效。
+		const m = new BehaviorMonitor("s4", { cooldownMs: 0, aiCodingBlockingThreshold: 6 })
 		// 显式抬高单任务限额、并放宽循环轮数：让这个用例只验证“阻断能否升级”，
 		// 不因限额/轮数这类无关参数而假失败。
 		const mgr = new TeachingInterventionManager("s4", {
@@ -66,17 +69,23 @@ describe("场景 3 — 阻断仍可升级，且时长与文案一致", () => {
 		let blockingText: string | null = null
 		let turn = 1
 		for (let round = 0; round < 20 && blockingText === null; round++) {
-			// 【P5-A】违规单位 = **一个学生请求**：每轮先发一条学生提问，再产生一个助手代码回合。
-			// （旧写法在一个 task_start 之后连造助手回合 —— 那只是一次提问内的多回合，
-			//   新口径下同一条规则在一次请求内至多记 1 次，永远升不到 6。）
+			// 【P6/T6】违规单位 = **一个学生请求内至多 1 次助手落盘**：
+			// 每轮先发一条学生提问，再产生一次"AI 真的写了文件"的 code_edit 事件。
 			m.ingest(ev("s4", "user", turn++, "code_generation", { hasCode: false, hasCodeBlock: false }))
-			m.ingest(ev("s4", "assistant", turn++, "code_generation", { hasCode: true, hasCodeBlock: true }))
+			m.ingest({
+				...ev("s4", "assistant", turn++, "code_generation"),
+				eventType: "code_edit",
+				hasCode: false,
+				hasCodeBlock: false,
+				editor: "ai",
+			})
 			const text = mgr.checkAndGenerateIntervention(m, turn)
 			if (text && text.includes('interventionType="blocking"')) {
 				blockingText = text
 			}
 		}
 
+		expect(m.getAiCodingCount()).to.equal(6)
 		expect(blockingText, "阻断未能在合理轮次内触发").to.not.equal(null)
 		expect(blockingText).to.include("冷却倒计时: 1 分钟")
 		expect(blockingText).to.not.include("3 分钟")

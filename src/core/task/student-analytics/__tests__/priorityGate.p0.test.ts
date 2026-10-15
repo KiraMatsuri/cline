@@ -34,24 +34,47 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 
 	// ---------------- 统一模板（6 例） ----------------
 
-	it("★ 核心流程端到端：违规 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		m.ingest(ev({}))
+	it("★ 核心流程端到端：AI 真实落盘 3 次 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
+		// 【P6/T6】阻断的唯一入口是独立通道 `ai_coding_rounds`（旧写法走的 consecutive_code_generation 已不可阻断）
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 3; i++) {
+			m.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m.getAiCodingCount()).to.equal(3)
 		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		const text = mgr.checkAndGenerateIntervention(m, 3)
 		expect(text).to.be.a("string").and.to.include("阻断模式")
 		expect(mgr.isBlockingActive()).to.equal(true)
 	})
 
-	it("★ 边界：阈值前一轮不阻断、恰好阈值阻断", () => {
-		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m2.ingest(ev({}))
-		m2.ingest(ev({}))
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
-		m2.ingest(ev({}))
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(true)
+	it("★ 边界：阈值前一次不阻断、恰好阈值阻断（独立通道 ai_coding_rounds）", () => {
+		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 2; i++) {
+			m2.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m2.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m2.getAiCodingCount()).to.equal(2)
+		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
+		m2.ingest(ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: "第 3 次" }))
+		m2.ingest(editEv({ editor: "ai" }))
+		expect(m2.getAiCodingCount()).to.equal(3)
+		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+	})
+
+	it("★【P6/T6】原可升级的代码规则改为只提示：计数照旧、阻断恒 false", () => {
+		const mCode = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		mCode.ingest(ev({}))
+		mCode.ingest(ev({}))
+		expect(mCode.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		mCode.ingest(ev({}))
+		expect(mCode.getEscalationCount("consecutive_code_generation")).to.equal(3)
+		expect(mCode.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		expect(ruleIds(mCode)).to.include("consecutive_code_generation")
 	})
 
 	it("★ 边界：概念问答下规则被门控停用（rulePolicy）", () => {
@@ -71,9 +94,12 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 
 	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空（阻断不依赖 pendingAlerts）", () => {
 		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
-		m4.ingest(ev({}))
-		m4.ingest(ev({}))
-		m4.ingest(ev({}))
+		for (let i = 0; i < 3; i++) {
+			m4.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m4.ingest(editEv({ editor: "ai" }))
+		}
 		// 必须先消费掉队列，否则这条用例只是例 ① 的重复：命中阈值时阻断分支在
 		// `hasPendingAlerts()` 之前就已 return，队列里有没有警报都看不出来。
 		m4.consumePendingAlerts()
@@ -160,10 +186,13 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 	})
 
 	it("【G0-⑥】阻断态可被外部观察到（isBlockingActive / getBlockingEndsAt）", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
-		m.ingest(ev({}))
-		m.ingest(ev({}))
-		m.ingest(ev({}))
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 3; i++) {
+			m.ingest(
+				ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: `第 ${i} 次` }),
+			)
+			m.ingest(editEv({ editor: "ai" }))
+		}
 		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
 		expect(mgr.isBlockingActive()).to.equal(false)
 		mgr.checkAndGenerateIntervention(m, 3)
@@ -171,7 +200,7 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 		expect(mgr.getBlockingEndsAt()).to.be.greaterThan(Date.now())
 	})
 
-	it("【G0-⑦】high_adoption_low_self_modification 逐轮计数并可达阻断阈值（T9-b）", () => {
+	it("【G0-⑦】high_adoption_low_self_modification 逐轮计数并出提醒，但已不再可阻断（T9-b + P6/T6）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
 		m.ingest(ev({ eventType: "adoption_infer", adoptionStatus: "adopted" }))
@@ -179,7 +208,10 @@ describe("G0 · 优先级综合（可跑通 + 边界）", () => {
 			m.ingest(ev({ role: "assistant", hasCode: true, hasCodeBlock: true }))
 		}
 		expect(m.getEscalationCount("high_adoption_low_self_modification")).to.equal(3)
-		expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(true)
+		// 【P6/T6】计数与提醒保留（可审计），但阻断的唯一入口已收归独立通道 ai_coding_rounds
+		expect(ruleIds(m)).to.include("high_adoption_low_self_modification")
+		expect(m.shouldEscalateToBlocking("high_adoption_low_self_modification")).to.equal(false)
+		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
 	})
 
 	after(() => {

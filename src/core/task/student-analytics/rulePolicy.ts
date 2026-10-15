@@ -1,5 +1,5 @@
 /**
- * 规则策略（方案 C-1）
+ * 规则策略（方案 C-1 +【P6/T6】阻断白名单反转）
  *
  * 背景：4 条规则原本对任何任务都启用，但它们的阈值是按"学生在写代码、AI 在旁辅助"设计的。
  * 学生端当前的主要用法是"提问 → AI 检索资料并讲解"，在这个用法下：
@@ -7,6 +7,11 @@
  *   - 一次提问产生多个助手回合 → high_recent_ai_dependency 恒 > 0.7
  *   - Python 讲解必然出现代码/反引号 → consecutive_code_generation 极易触发
  * 三条规则同时近似恒真 + 升级阈值小 = 几轮内必然阻断。
+ *
+ * 【P6/T6】阻断式干预已改为**独立通道**（product ruling 2026-10-14）：唯一入口是
+ * `ai_coding_rounds`（助手真实落盘次数，阈值 3，学生本人编辑清零）。其余规则一律
+ * "可提示、不可阻断" —— 因此本模块由原先的"黑名单"（个别规则永不可阻断）**反转为白名单**
+ * （只有一条可阻断）。
  *
  * 本模块把"什么时候该干预"显式编码为纯函数，便于单测与离线复算。
  */
@@ -29,53 +34,32 @@ const CODE_ORIENTED_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>
 	"no_edit_streak",
 ])
 
-/**
- * 【F9 回归修复 2026-10-13】**永不允许升级为阻断**的规则。
- *
- * 理由：`high_recent_ai_dependency` 的度量单位是"连续无学生发言的助手回合数"，
- * 而 Cline 的多工具循环下**一次学生提问就会产生 6~11 个助手回合** ⇒ 阈值 6 在一轮内即被满足，
- * 连续 3 轮就达到阻断阈值（3）。也就是说：**一次提问就可能让学生被阻断 60 秒** ——
- * 这正是本轮修订（F1/F2/F3）要消灭的失效模式。
- * ⇒ 该规则的定位是**温和提示**：计数保留（可审计），但**永不可升级为阻断**。
- */
-const NEVER_BLOCKING_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["high_recent_ai_dependency"])
+/** 【P6/T6】仅有这一个规则可以升级为阻断式干预（独立通道，见 plan-2 §12.2） */
+const BLOCKING_CAPABLE_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["ai_coding_rounds"])
 
-/**
- * 【P5/T16】**任何分类下都启用且可升级**的规则。
- *
- * 目前只有「直接索要完整实现」：它描述的是**学生意图**，与任务分类无关 ——
- * 而概念型任务恰恰是它最需要生效的场景（M6'/M11' 的通过条件）。
- */
-const ALWAYS_ESCALATING_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["complete_impl_demand"])
+/** 【P6/T6】任何分类下都启用（仍不可阻断）：描述的是**学生意图/助手行为**，与任务分类无关 */
+const ALWAYS_ENABLED_RULES: ReadonlySet<BehaviorRuleId> = new Set<BehaviorRuleId>(["complete_impl_demand", "ai_coding_rounds"])
 
 /**
  * 判定某条规则在给定任务分类下的策略。
  *
- * 保守原则：分类缺失/未知/other/language_request 时**全部启用且可升级** ——
+ * 保守原则：分类缺失/未知/other/language_request 时**全部启用** ——
  * 宁可保留原有干预能力，也不要因为分类器没命中而让干预静默失效。
  */
 export function getRulePolicy(ruleId: BehaviorRuleId, category: TaskCategory | undefined): RulePolicy {
-	if (NEVER_BLOCKING_RULES.has(ruleId)) {
-		// 概念问答下连提示都不发（M2'/M3' 的通过条件）；其余分类保留温和提示，但不可阻断。
-		const enabled = !category || !CONCEPTUAL_CATEGORIES.has(category)
-		return { enabled, canEscalateToBlocking: false }
+	const canEscalateToBlocking = BLOCKING_CAPABLE_RULES.has(ruleId)
+
+	// 「索要完整实现」描述学生意图、「AI 落盘计数」描述助手行为 —— 都与任务分类无关，
+	// 概念问答恰恰是它们最需要生效的场景。
+	if (ALWAYS_ENABLED_RULES.has(ruleId)) {
+		return { enabled: true, canEscalateToBlocking }
 	}
 
-	if (ALWAYS_ESCALATING_RULES.has(ruleId)) {
-		return { enabled: true, canEscalateToBlocking: true }
+	// 概念问答：代码类规则停用（原有理由不变：这类任务下它们的分母恒真）
+	if (category && CONCEPTUAL_CATEGORIES.has(category) && CODE_ORIENTED_RULES.has(ruleId)) {
+		return { enabled: false, canEscalateToBlocking }
 	}
 
-	if (!category || !CONCEPTUAL_CATEGORIES.has(category)) {
-		return { enabled: true, canEscalateToBlocking: true }
-	}
-
-	// 概念问答：代码类规则整体停用
-	if (CODE_ORIENTED_RULES.has(ruleId)) {
-		return { enabled: false, canEscalateToBlocking: false }
-	}
-
-	// 其余规则（只采纳不消化）仍保留提示，但不允许升级为阻断 ——
-	// 因为在这类任务里它们的分母（user turn_message 数）天然极小，比例指标不可靠。
-	// （AI 依赖已由上方 NEVER_BLOCKING_RULES 提前 return，不再落到这里。）
-	return { enabled: true, canEscalateToBlocking: false }
+	// 其余规则一律启用，但**永不可阻断**（P6/T6：阻断唯一入口是 ai_coding_rounds）
+	return { enabled: true, canEscalateToBlocking }
 }
