@@ -48,6 +48,28 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal(["ai_coding_rounds"])
 	})
 
+	it("★ 概念分类（algorithm）下同样可阻断（策略白名单与分类无关）", () => {
+		// 【P6/T6 Step 3b】Task 6 只把「只有 ai_coding_rounds 可阻断」写到了**策略级**，
+		// 而运行期用例全在 undefined / code_generation 下构造 ⇒ 概念分类这条路径此前无覆盖。
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		const askConcept = (raw: string): StudentInteractionLog =>
+			ev({
+				eventType: "turn_message",
+				role: "user",
+				category: "algorithm",
+				hasCode: false,
+				hasCodeBlock: false,
+				rawContent: raw,
+			})
+		for (let i = 0; i < 3; i++) {
+			m.ingest(askConcept(`第 ${i + 1} 个概念问题`))
+			m.ingest(editEv({ editor: "ai" }))
+		}
+		expect(m.getAiCodingCount()).to.equal(3)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal(["ai_coding_rounds"])
+	})
+
 	it("★ 学生本人编辑代码 ⇒ 计数清零（未达阈值前）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("第一句"))

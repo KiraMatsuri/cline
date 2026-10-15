@@ -8,6 +8,7 @@
 import { Logger } from "@/shared/services/Logger"
 import { type ConceptModeState, INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "./ConceptModeGate"
 import { isCompleteImplDemand } from "./demandDetect"
+import { dependencyWeightForQueryType, type QueryType, toQueryType } from "./queryType"
 import { getRulePolicy } from "./rulePolicy"
 import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog, TaskCategory } from "./types"
 
@@ -28,6 +29,8 @@ export interface BehaviorMonitorOptions {
 	escalationBlockingThreshold?: number
 	/** 【P6/T5】助手真实落盘的阻断阈值（默认 3） */
 	aiCodingBlockingThreshold?: number
+	/** 【P6/T7】依赖度加权和的命中阈值（默认 3 = 3 次编码类提问 或 6 次概念提问） */
+	dependencyWeightedThreshold?: number
 }
 
 export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Object.freeze({
@@ -38,6 +41,9 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	// 是"3 次提问就攒满升级阈值"的直接原因之一。
 	cooldownMs: 120_000,
 	// 【方案 D 止血】4 → 6。原值在"一次提问 = 7~11 个助手回合"的形态下太容易达到。
+	// 【P6/T7】★ 本阈值已**退出 AI 依赖规则的判定**（该规则改为「学生请求加权和 ≥ dependencyWeightedThreshold」）：
+	// 它算的是助手回合数，而概念问答的助手回合多是讲解，会把分母算歪 ⇒ 概念问题永远凑不满阈值。
+	// 保留字段与默认值仅为向后兼容（配置透传 / 离线统计仍可能引用）。
 	minTurnsForDependency: 6,
 	// 【方案 D 止血】0.7 → 0.85。原阈值在 Cline 多工具循环下几乎必然被突破
 	// （实测 3/4 个任务里用户 turn_message 数为 0，比例恒 100%）。
@@ -59,7 +65,13 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	escalationBlockingThreshold: 3,
 	// 【P6/T5】独立阻断通道的阈值 = 3：与告知学生的文案（"连续 3 次直接编码会触发阻断"）逐字一致。
 	aiCodingBlockingThreshold: 3,
+	// 【P6/T7】依赖度按**询问类型加权**后，加权和的命中阈值 = 3。
+	// 权重含义：概念问答 0.5 / 其余 1.0 ⇒ 3 次编码类提问 或 6 次概念提问命中（用户 2026-10-14 裁定）。
+	dependencyWeightedThreshold: 3,
 })
+
+/** 【P6/T7】依赖度的滚动窗口（学生请求数） */
+const DEPENDENCY_WINDOW_REQUESTS = 10
 
 /** 【F5】可覆盖 `code_generation` 的"强信号"分类：都表示学生正在处理**新的具体代码** */
 const STRONG_SIGNAL_CATEGORIES: ReadonlySet<TaskCategory> = new Set<TaskCategory>([
@@ -92,8 +104,17 @@ export class BehaviorMonitor {
 	/** 【P5/T16】当前请求是否在索要「完整实现」（`demandDetect.isCompleteImplDemand` 的结果） */
 	private currentRequestIsDemand = false
 
-	/** 【F9】连续「助手回合且过程中学生没有发言」的计数 —— 比例指标在 Cline 多工具循环下恒真，改用绝对量 */
+	/**
+	 * 【F9】连续「助手回合且过程中学生没有发言」的计数 —— 比例指标在 Cline 多工具循环下恒真，改用绝对量。
+	 * 【P6/T7】★ 该字段已**退出 AI 依赖规则的判定**（依赖度改为「学生请求加权和」）：
+	 * 本字段仍在每次 ingest 时维护，但**仅为文案/未来使用保留**，不再有任何判定消费方。
+	 */
 	private assistantTurnsWithoutUser = 0
+
+	/** 【P6/T7】最近 N 个学生请求的依赖度权重（滚动窗口） */
+	private recentRequestWeights: number[] = []
+	private currentRequestQueryType: QueryType = "other"
+	private currentRequestDependencyWeight = 1
 
 	/** 【方案 C-1】最近一次**学生**事件的意图分类（用于规则分流） */
 	private currentTaskCategory: TaskCategory | undefined
@@ -164,6 +185,13 @@ export class BehaviorMonitor {
 			this.bumpedRulesThisRequest.clear()
 			this.studentRequestCount++
 			this.currentRequestIsDemand = isCompleteImplDemand(event.rawContent)
+			// 【P6/T7】询问类型与权重：概念问答只记 50%（滚动窗口上限 10 个请求）
+			this.currentRequestQueryType = toQueryType(event.category)
+			this.currentRequestDependencyWeight = dependencyWeightForQueryType(this.currentRequestQueryType)
+			this.recentRequestWeights.push(this.currentRequestDependencyWeight)
+			if (this.recentRequestWeights.length > DEPENDENCY_WINDOW_REQUESTS) {
+				this.recentRequestWeights.shift()
+			}
 		}
 		// 【F3】概念护栏的任务级粘性：索要完整代码**不退出**。
 		// ⚠️ 分类只在「学生侧」事件上读（isStudentIntent）：实测 adoption_infer 事件也带 category
@@ -217,6 +245,8 @@ export class BehaviorMonitor {
 				// 同一学生请求内「AI 落盘 → 学生手改 → AI 再落盘」就能记 2 次，
 				// 违反全局约束「每个学生请求最多 +1」。
 				delete this.escalationCounter.ai_coding_rounds
+				// 【P6/T7】学生自己动手 = 依赖度归零：清空加权窗口（与上面同一"学生编辑"分支，不再单开判定）。
+				this.recentRequestWeights = []
 				if (this.options.debug) {
 					Logger.info(
 						`[BehaviorMonitor][debug] code_edit by student → turnsSinceLastEdit & assistantCodeStreak reset to 0`,
@@ -480,43 +510,45 @@ export class BehaviorMonitor {
 	}
 
 	/**
-	 * 【F9】改为**绝对回合数**：连续「助手回合且学生未发言」达到阈值即命中。
-	 * 比例指标（assistantTurns / totalTurns）在 Cline 形态下分母极小、恒 >0.85，实测 0.857 ⇒ 恒真，压不住。
-	 * 计数与提醒冷却解耦（与另两条规则同口径）：命中即 bump，冷却只挡提醒。
+	 * 【P6/T7】AI 依赖度 = 窗口内学生请求的**加权和**（概念问答 0.5 / 其余 1）。
+	 * 命中只发**温和提示**，永不阻断（`rulePolicy` 把唯一阻断入口留给 `ai_coding_rounds`）。
+	 * 单位是学生请求 ⇒ 一次长检索（多助手回合）不会把它击穿（F9 的教训）。
 	 */
 	private checkHighRecentAiDependencyRule(event: StudentInteractionLog): void {
 		if (event.eventType !== "turn_message") {
 			return
 		}
-		// 【P5-A/T19-b】★ 一次提问内的多回合是 agent 循环的正常形态（实测 6~12 回合，每次工具调用
-		// 一个回合），**不构成**"AI 依赖"。因此必须已有 ≥ 2 次学生请求才评估本规则，
-		// 否则 M1'（只问一句「第一周学了什么」）会被误报为依赖。
-		// 退化口径：从未见过学生回合时（单测/离线重放）不做此限制。
-		if (this.studentRequestCount > 0 && this.studentRequestCount < 2) {
-			if (this.options.debug) {
-				Logger.info(
-					`[BehaviorMonitor][debug] aiDependency rule skipped: studentRequestCount=${this.studentRequestCount} < 2`,
-				)
-			}
-			return
-		}
-		if (this.assistantTurnsWithoutUser < this.options.minTurnsForDependency) {
-			if (this.options.debug) {
-				Logger.info(
-					`[BehaviorMonitor][debug] aiDependency rule skipped: assistantTurnsWithoutUser=${this.assistantTurnsWithoutUser} < min=${this.options.minTurnsForDependency}`,
-				)
-			}
+		// 【P6/T7】旧门控（`assistantTurnsWithoutUser >= minTurnsForDependency` + `studentRequestCount < 2`）已删除：
+		// 它算的是「学生未参与的**助手回合**数」，在「问一句 → 6~12 个助手回合」的形态下与依赖度无关，
+		// 且概念问答的助手回合多为讲解、本就不应计入 ⇒ 概念问题永远凑不满 ⇒ 整条规则静默失效。
+		// 现在分母（学生请求加权和）本身就可靠，单次提问的 0.5/1.0 远低于阈值 3，M1' 自然不受影响。
+		const score = this.getWeightedDependencyScore()
+		if (score < this.options.dependencyWeightedThreshold) {
 			return
 		}
 
 		this.bumpOncePerRequest("high_recent_ai_dependency")
-
 		this.notify(
 			"high_recent_ai_dependency",
-			`最近连续 ${this.assistantTurnsWithoutUser} 个助手回合里你都没有参与，建议先写思路或伪代码再请求完整答案。`,
-			this.assistantTurnsWithoutUser,
-			this.options.minTurnsForDependency,
+			`最近 ${this.recentRequestWeights.length} 次提问累计依赖度 ${score.toFixed(1)}（概念问答按 50% 计），建议先写思路或伪代码再请求完整答案。`,
+			score,
+			this.options.dependencyWeightedThreshold,
 		)
+	}
+
+	/** 【P6/T7】当前滚动窗口的加权依赖度 */
+	public getWeightedDependencyScore(): number {
+		return this.recentRequestWeights.reduce((sum, w) => sum + w, 0)
+	}
+
+	/** 【P6/T7】本轮请求的询问类型（供日志字段使用） */
+	public getCurrentRequestQueryType(): QueryType {
+		return this.currentRequestQueryType
+	}
+
+	/** 【P6/T7】本轮请求的依赖度权重 */
+	public getCurrentRequestDependencyWeight(): number {
+		return this.currentRequestDependencyWeight
 	}
 
 	private notify(ruleId: BehaviorRuleId, message: string, metricValue: number = 0, threshold: number = 0): void {
@@ -661,6 +693,10 @@ export class BehaviorMonitor {
 		this.studentRequestCount = 0
 		this.currentRequestIsDemand = false
 		this.assistantTurnsWithoutUser = 0
+		// 【P6/T7】依赖度加权窗口与本轮询问类型一并复位（否则恢复会话后会带着上次的分数）
+		this.recentRequestWeights = []
+		this.currentRequestQueryType = "other"
+		this.currentRequestDependencyWeight = 1
 		this.escalationCounter = {}
 		// 【P6/T5】`ai_coding_rounds` 的计数就存在 `escalationCounter` 里，随上面一行一并清空
 		//（原先紧跟一行 `delete this.escalationCounter.ai_coding_rounds` 是 no-op 死代码，已删）。

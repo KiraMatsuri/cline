@@ -141,29 +141,41 @@ describe("【P5/T14】计数单位 = 学生请求", () => {
 	})
 })
 
-describe("【P5/T19-b】AI 依赖规则的作用域 = 跨请求", () => {
-	it("★ 单次请求的 8 个助手回合不触发；第 2 次请求后仍持续无参与才记 1 次，且永不阻断", () => {
+describe("【P5/T19-b + P6/T7】AI 依赖规则的作用域 = 跨请求加权和", () => {
+	it("★ 单次请求的 8 个助手回合不触发；累计到 3 次请求才命中 1 次，且永不阻断", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		request(m, stuTurn("第一句"), 8)
+		// 【P6/T7】助手回合不再计权：1 次编码类请求 = 1.0（无论其内部包含多少助手回合）
+		expect(m.getWeightedDependencyScore()).to.equal(1)
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
 
 		request(m, stuTurn("第二句"), 8)
-		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1) // 每请求至多 1 次
+		expect(m.getWeightedDependencyScore()).to.equal(2)
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0) // 2.0 < 3 仍未命中
 
-		// F9：本规则的度量单位是"学生未参与的助手回合数"，一次提问天然产生 6~11 个回合 ⇒ 不得升级为阻断
+		request(m, stuTurn("第三句"), 8)
+		expect(m.getWeightedDependencyScore()).to.equal(3)
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
+
+		// 本规则只提示，永不阻断：阻断唯一入口是 ai_coding_rounds
 		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 
-	it("★ 边界：第 2 次请求后学生有发言/编辑 ⇒ 计数归零，规则不再命中", () => {
+	it("★ 边界：学生本人编辑 ⇒ 加权窗口归零，规则重新从 0 累计", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		request(m, stuTurn("第一句"), 8)
 		request(m, stuTurn("第二句"), 8)
+		request(m, stuTurn("第三句"), 8)
+		expect(m.getWeightedDependencyScore()).to.equal(3)
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 
-		// 学生在后续请求里持续参与 ⇒ 连续无发言的回合数不再累积
-		request(m, stuTurn("第三句"), 2)
-		m.ingest(editEv({ editor: "user" }))
+		m.ingest(editEv({ editor: "user" })) // 学生亲手改代码 ⇒ 依赖度归零
+		expect(m.getWeightedDependencyScore()).to.equal(0)
+
+		// 重新累计：再来 2 次请求仍不足阈值（若没清零，这 2 次早就又记了一次）
 		request(m, stuTurn("第四句"), 2)
+		request(m, stuTurn("第五句"), 2)
+		expect(m.getWeightedDependencyScore()).to.equal(2)
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 	})
 })

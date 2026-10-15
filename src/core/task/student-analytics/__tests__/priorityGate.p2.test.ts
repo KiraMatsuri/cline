@@ -174,6 +174,7 @@ describe("G2 · 优先级综合（可跑通 + 边界）", () => {
 		m.ingest(ev({ eventType: "task_start", role: "user", category: "explanation" }))
 		for (let i = 0; i < 8; i++) m.ingest(ev({ role: "assistant" }))
 		// 单次请求内的多回合不算依赖（T19-b），因此这里既不计数也不提示
+		expect(m.getWeightedDependencyScore()).to.equal(0.5) // 【P6/T7】概念问答的加权依赖度只记 50%
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
 		// 【P6/T6】规则策略白名单反转：概念分类下依赖规则改为**启用**（可提示），但永不可阻断
@@ -182,20 +183,28 @@ describe("G2 · 优先级综合（可跑通 + 边界）", () => {
 			canEscalateToBlocking: false,
 		})
 
-		// 反转后的可见后果：概念问答里**反复提问**（≥ 2 次学生请求）时，依赖规则会出温和提示
-		// （旧策略下连提示都不发），但任何情况下都不得升级为阻断。
-		m.ingest(ev({ role: "user", category: "explanation" }))
-		for (let i = 0; i < 8; i++) m.ingest(ev({ role: "assistant" }))
-		expect(m.getEscalationCount("high_recent_ai_dependency")).to.be.greaterThan(0)
+		// 【P6/T7】加权口径下的可见后果：概念问答只记 50%，所以必须**反复**提问才命中
+		// （6 次概念提问 3.0 = 3 次编码类提问）。上面那次 task_start 已是第 1 次提问，
+		// 故"累计 5 次 = 2.5"仍不命中 —— 旧断言（第 2 次提问即计数 > 0）钉住的是加权前的语义。
+		for (let i = 0; i < 4; i++) m.ingest(ev({ role: "user", category: "explanation" }))
+		expect(m.getWeightedDependencyScore()).to.equal(2.5)
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
+
+		m.ingest(ev({ role: "user", category: "explanation" })) // 第 6 次提问 ⇒ 3.0 ⇒ 出现温和提示
+		expect(m.getWeightedDependencyScore()).to.be.closeTo(3, 1e-9)
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("high_recent_ai_dependency")
 		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 
-		// 非概念任务下仍然可用（计数可达 + 阈值边界：连续 5 个助手回合不触发、第 6 个触发）
-		// ⚠️ 已登记的残留：Cline 单次提问即产生 6+ 连续助手回合 ⇒ 该形态下仍会提示（见账本 §18.2）。
+		// 非概念任务下仍然可用（权重 1.0 ⇒ 阈值边界：2 次提问不触发、第 3 次触发）
 		const m2 = new BehaviorMonitor("t2", { cooldownMs: 0 })
-		for (let i = 0; i < 5; i++) m2.ingest(ev({ taskId: "t2", role: "assistant" }))
+		for (let i = 0; i < 2; i++) {
+			m2.ingest(ev({ taskId: "t2", role: "user", category: "code_generation" }))
+		}
+		expect(m2.getWeightedDependencyScore()).to.equal(2)
 		expect(m2.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
-		m2.ingest(ev({ taskId: "t2", role: "assistant" }))
+		m2.ingest(ev({ taskId: "t2", role: "user", category: "code_generation" }))
 		expect(m2.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 	})
 
