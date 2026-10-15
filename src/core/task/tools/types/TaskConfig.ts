@@ -86,6 +86,15 @@ export interface TaskServices {
 export interface TaskCallbacks {
 	say: (type: ClineSay, text?: string, images?: string[], files?: string[], partial?: boolean) => Promise<number | undefined>
 
+	/**
+	 * 【P6/T4】展示前的干预处理（剥离回执块 + 必要时追加模板兜底 + 落 `intervention_copy` 记账）。
+	 * 由 `Task` 实现（状态都在它身上）；`attempt_completion` 等工具层展示路径必须复用，
+	 * 否则"模型没用回执块 ⇒ 模板兜底"这条链在 completion 路径上永不生效（实测两条 gentle 决策不可见）。
+	 *
+	 * 可选：未挂载时调用方必须按"不附加文案"处理（`?? rest`）。
+	 */
+	applyInterventionDisplay?: (assistantText: string) => Promise<string>
+
 	ask: (
 		type: ClineAsk,
 		text?: string,

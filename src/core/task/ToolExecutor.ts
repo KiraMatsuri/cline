@@ -130,6 +130,11 @@ export class ToolExecutor {
 			userContent: ClineContent[],
 			context: "initial_task" | "resume" | "feedback",
 		) => Promise<{ cancel?: boolean; wasCancelled?: boolean; contextModification?: string; errorMessage?: string }>,
+
+		// 【P6/T4】展示层钩子（目前只有干预处理）。由 `Task` 提供实现 —— 状态（模板、本轮交付标志、
+		// 记账键）都在 `Task` 上，工具层不许自己实现一份，否则 `attempt_completion` 展示路径会漏掉
+		// 「模型没写回执块 ⇒ 模板兜底」这条链（实测两条 gentle 决策零可见文案）。
+		private interventionDisplayHooks: { applyInterventionDisplay: (assistantText: string) => Promise<string> },
 	) {
 		this.autoApprover = new AutoApprove(this.stateManager)
 
@@ -192,6 +197,7 @@ export class ToolExecutor {
 				clearActiveHookExecution: this.clearActiveHookExecution,
 				getActiveHookExecution: this.getActiveHookExecution,
 				runUserPromptSubmitHook: this.runUserPromptSubmitHook,
+				applyInterventionDisplay: this.interventionDisplayHooks.applyInterventionDisplay,
 			},
 			coordinator: this.coordinator,
 		}

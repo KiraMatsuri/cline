@@ -612,6 +612,10 @@ export class Task {
 			this.clearActiveHookExecution.bind(this),
 			this.getActiveHookExecution.bind(this),
 			this.runUserPromptSubmitHook.bind(this),
+			// 【P6/T4】工具层展示路径的干预处理钩子（剥离 + 模板兜底 + 记账），实现仍在 Task 上（状态都在这里）
+			{
+				applyInterventionDisplay: (text: string) => this.applyInterventionDisplay(text),
+			},
 		)
 	}
 
@@ -1108,6 +1112,47 @@ export class Task {
 			return // 【P5/T17】同轮重复记账：跳过
 		}
 		void this.persistInterventionEvent(event, shownText ?? "")
+	}
+
+	/**
+	 * 【P6/T4】展示前的干预处理（DRY：文本块路径与 `attempt_completion` 路径共用）。
+	 *
+	 * 1) 剥离回执块（`‹teaching_intervention_copy›`）；
+	 * 2) 需要时**追加兜底模板**（模型没按契约写回执块时，干预一次都不丢）；
+	 * 3) 落 `intervention_copy` 记账（M9' 的 C/T/N）；
+	 * 4) 置位"本回合已交付"（顺延重投据此判断送达）。
+	 *
+	 * ⚠️ `attempt_completion` 的展示同样走这里 —— 实测表明模型常用它独占整轮，
+	 * 若只挂在文本块路径，学生将完全看不到 gentle 干预。
+	 * ⚠️ 调用方**必须**只在 `!block.partial` 时调用：本方法会记账，而流式期间每个 chunk 都会调一次。
+	 */
+	private async applyInterventionDisplay(rawContent: string): Promise<string> {
+		if (rawContent === undefined || rawContent === null) {
+			return rawContent
+		}
+		const { found, rest } = extractInterventionCopy(rawContent)
+		const shown = resolveInterventionCopyForDisplay({
+			found,
+			body: rest,
+			lastInjectionTemplate: this.lastInjectionTemplate,
+			// 【M9' ②】一次决策只投递一条文案：同回合的第 2、3 个展示块只剥离
+			copyAlreadyDelivered: this.interventionCopyDeliveredThisTurn,
+			recentTexts: this.recentStudentTexts.join("\n"),
+			interventionRuleId: this.lastInjectionMeta?.ruleId,
+			interventionSeverity: this.lastInjectionMeta?.severity,
+			interventionStyle: this.lastInjectionMeta?.style,
+		})
+		let next = rest
+		if (shown.text) {
+			next = rest ? `${shown.text}\n\n---\n\n${rest}` : shown.text
+			this.interventionCopyDeliveredThisTurn = true
+			// 【M13'】记住已展示的文案，下一轮任务书据此要求「换一种说法」
+			this.recentInterventionCopies = [...this.recentInterventionCopies, shown.text].slice(-5)
+		}
+		if (shown.event) {
+			this.persistInterventionCopyEvent(shown.event, shown.text)
+		}
+		return next
 	}
 
 	/** 【P5/T17 → P6/T1】记账去重（键的构造在 `buildInterventionAccountKey`，那里解释了为何不得含 apiRequestCount） */
@@ -2853,37 +2898,17 @@ export class Task {
 				// 持久化走的是另一个变量 `assistantTextOnly`（见 attemptApiRequest →
 				// addToApiConversationHistory），因此本处剥离**不会**影响 apiConversationHistory，
 				// M9' 的 C（回执块数）仍可数（F13 硬要求 2）。
+				// 【P6/T4】完整版（剥离 + 模板兜底 + 记账）抽到 `applyInterventionDisplay()`：
+				// `attempt_completion` 展示路径（工具层）现在复用同一实现，两条路径不再各写一份。
 				if (block.partial) {
 					// 流式中间态：回执块通常还没闭合（extractInterventionCopy 按契约恒等返回），
 					// 但开标签已经会被渲染出来 ⇒ 丢弃开标签及其后全部内容，只预览前缀。
 					// `say(…, partial=false)` 是**整条替换**语义，最终文案由那一次呈现。
+					// ⚠️ partial 分支**不得**走 `applyInterventionDisplay`：它会记账，
+					// 而 presentAssistantMessage 在流式期间会被反复调用 ⇒ 每帧落一条干预事件。
 					content = dropUnclosedInterventionCopy(content)
 				} else {
-					const { found, rest } = extractInterventionCopy(content)
-					content = rest
-
-					// ⚠️ 记账**必须**门控在 `!partial`：presentAssistantMessage 在流式期间会被反复调用，
-					// 不门控则每帧都会落一条干预事件 ⇒ M9' 的三条守恒式全部失效。
-					const shown = resolveInterventionCopyForDisplay({
-						found,
-						body: content,
-						lastInjectionTemplate: this.lastInjectionTemplate,
-						// 【M9' ②】一次决策只投递一条文案：同回合的第 2、3 个 text 块只剥离
-						copyAlreadyDelivered: this.interventionCopyDeliveredThisTurn,
-						recentTexts: this.recentStudentTexts.join("\n"),
-						interventionRuleId: this.lastInjectionMeta?.ruleId,
-						interventionSeverity: this.lastInjectionMeta?.severity,
-						interventionStyle: this.lastInjectionMeta?.style,
-					})
-					if (shown.text) {
-						content = content ? `${shown.text}\n\n---\n\n${content}` : shown.text
-						this.interventionCopyDeliveredThisTurn = true
-						// 【M13'】记住已展示的文案，下一轮任务书据此要求「换一种说法」
-						this.recentInterventionCopies = [...this.recentInterventionCopies, shown.text].slice(-5)
-					}
-					if (shown.event) {
-						this.persistInterventionCopyEvent(shown.event, shown.text)
-					}
+					content = await this.applyInterventionDisplay(content)
 				}
 
 				await this.say("text", content, undefined, undefined, block.partial)

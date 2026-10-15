@@ -41,9 +41,10 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 			// partial 阶段块通常还没闭合，用 dropUnclosedInterventionCopy() 把开标签及其后内容整体丢弃，
 			// 避免学生看到 `<teaching_intervention_copy …>` 残渣。
 			const { rest } = extractInterventionCopy(result)
+			const shownText = (await uiHelpers.getConfig().callbacks.applyInterventionDisplay?.(rest)) ?? rest
 			await uiHelpers.say(
 				"completion_result",
-				uiHelpers.removeClosingTag(block, "result", dropUnclosedInterventionCopy(rest)),
+				uiHelpers.removeClosingTag(block, "result", dropUnclosedInterventionCopy(shownText)),
 				undefined,
 				undefined,
 				block.partial,
@@ -55,12 +56,13 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 		const result: string | undefined = block.params.result
 		const command: string | undefined = block.params.command
 
-		// ⚠️ 【F13 残留登记】本文件是**展示路径**：只剥离、**不**参与 M9' 记账。
+		// ⚠️ 【F13 残留登记】本文件是**展示路径**；剥离、兜底与记账统一委托给
+		// `config.callbacks.applyInterventionDisplay()`（Task 侧实现，两处 `completion_result` 展示点均走此处）。
 		// 任务书明确要求模型把回执块写在**正文**（`result` 参数不计入教学对账），但模型仍可能违反。
 		// 违反时的表现：正文侧记一条 `block_missing`（>T）并把模板兜底展示给学生，而本路径又展示了
 		// 模型写在 `result` 里的那份文案 ⇒ 一个决策对应两条可见文案，M9' ①（`V = C + T`）因此不成立。
-		// 这是**设计层面的残留**，不加记账：本层拿不到 `lastInjectionTemplate`/本轮交付状态（都在 Task 上），
-		// 强行补记账需要跨层状态，且会把「模型不遵从契约」这一真实信号洗掉。
+		// 这是**设计层面的残留**，不加记账：本层拿不到「该 `result` 是否就是模型中选的那份」，强行补记账
+		// 会把「模型不遵从契约」这一真实信号洗掉。
 		// 人工验收 M9' 时若见 ① 不成立，先查 `result` 参数里是否混进了回执块。
 
 		// Validate required parameters
@@ -135,7 +137,14 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 				// haven't sent a command message yet so first send completion_result then command
 				// 【F13】展示路径剥离（理由同上：持久化用的是 `assistantTextOnly`）
 				const { rest } = extractInterventionCopy(result)
-				const completionMessageTs = await config.callbacks.say("completion_result", rest, undefined, undefined, false)
+				const shownText = (await config.callbacks.applyInterventionDisplay?.(rest)) ?? rest
+				const completionMessageTs = await config.callbacks.say(
+					"completion_result",
+					shownText,
+					undefined,
+					undefined,
+					false,
+				)
 				await config.callbacks.saveCheckpoint(true, completionMessageTs)
 				await addNewChangesFlagToLastCompletionResultMessage()
 				telemetryService.captureTaskCompleted(config.ulid)
@@ -167,7 +176,8 @@ export class AttemptCompletionHandler implements IToolHandler, IPartialBlockHand
 			// Send the complete completion_result message (partial was already removed above)
 			// 【F13】展示路径剥离（理由同上：持久化用的是 `assistantTextOnly`）
 			const { rest } = extractInterventionCopy(result)
-			const completionMessageTs = await config.callbacks.say("completion_result", rest, undefined, undefined, false)
+			const shownText = (await config.callbacks.applyInterventionDisplay?.(rest)) ?? rest
+			const completionMessageTs = await config.callbacks.say("completion_result", shownText, undefined, undefined, false)
 			await config.callbacks.saveCheckpoint(true, completionMessageTs)
 			await addNewChangesFlagToLastCompletionResultMessage()
 			telemetryService.captureTaskCompleted(config.ulid)

@@ -120,6 +120,8 @@ describe("G3 · 优先级综合（可跑通 + 边界）", () => {
 				return undefined
 			},
 			removeClosingTag: (_block: unknown, _tag: string, text?: string) => text ?? "",
+			// 【P6/T4】`handlePartialBlock` 现在会向 Task 侧要展示钩子；未挂载时按“不附加文案”处理（`?? rest`）
+			getConfig: () => ({ callbacks: {} }),
 		} as unknown as Parameters<typeof handler.handlePartialBlock>[1]
 		const copy = "我刚刚给了实现。你先动手写第一版？"
 		await handler.handlePartialBlock(
@@ -134,7 +136,9 @@ describe("G3 · 优先级综合（可跑通 + 边界）", () => {
 		const taskDir = path.join(__dirname, "..", "..") // src/core/task
 		const taskSrc = fs.readFileSync(path.join(taskDir, "index.ts"), "utf-8")
 		const handlerSrc = fs.readFileSync(path.join(taskDir, "tools", "handlers", "AttemptCompletionHandler.ts"), "utf-8")
-		expect(taskSrc).to.include("extractInterventionCopy(content)")
+		// 【P6/T4】文本块路径的剥离/兜底/记账已搬进 `Task.applyInterventionDisplay()`（两条展示路径共用）
+		expect(taskSrc).to.include("this.applyInterventionDisplay(content)")
+		expect(taskSrc).to.include("private async applyInterventionDisplay(")
 		expect(taskSrc).to.include("resolveInterventionCopyForDisplay")
 		expect(handlerSrc).to.include("extractInterventionCopy(result)")
 		// F13 硬要求 2：剥离只喂展示，历史累积仍是原始 chunk 文本

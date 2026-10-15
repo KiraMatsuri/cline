@@ -27,6 +27,8 @@ describe("F13 · 展示路径剥离（AttemptCompletionHandler）", () => {
 				return undefined
 			},
 			removeClosingTag: (_block: unknown, _tag: string, text?: string) => text ?? "",
+			// 【P6/T4】`handlePartialBlock` 现在会向 Task 侧要展示钩子；未挂载时按“不附加文案”处理（`?? rest`）
+			getConfig: () => ({ callbacks: {} }),
 		} as unknown as Parameters<typeof handler.handlePartialBlock>[1]
 
 		const copy = "我刚刚给了实现。你先动手写第一版？"
@@ -55,8 +57,11 @@ describe("F13 · 展示路径剥离（AttemptCompletionHandler）", () => {
 		// 只有 say（展示），不得有持久化路径 —— F13 硬要求 2 的前置条件
 		expect(handlerSrc).to.not.include("addToApiConversationHistory")
 
-		// index.ts：display 路径解析 + 剥离；且持久化用的是另一个变量（assistantTextOnly）
-		expect(taskSrc).to.include("extractInterventionCopy(content)")
+		// index.ts：display 路径解析 + 剥离；【P6/T4】文本块路径已**委托**给 `Task.applyInterventionDisplay()`，
+		// 剥离/兜底/记账逐字仍在，只是搬进了那个方法（DRY：两条展示路径共用）。
+		expect(taskSrc).to.include("this.applyInterventionDisplay(content)")
+		expect(taskSrc).to.include("private async applyInterventionDisplay(")
+		expect(taskSrc).to.include("extractInterventionCopy(rawContent)")
 		expect(taskSrc).to.include("resolveInterventionCopyForDisplay")
 	})
 
