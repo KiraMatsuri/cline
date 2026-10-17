@@ -27,6 +27,8 @@ describe("【P6/T8】询问类型字段", () => {
 		// 硬编码权重一份也不允许（两种写法都钉）
 		expect(taskSrc).to.not.include("dependencyWeight: 0.5")
 		expect(taskSrc).to.not.include("dependencyWeight: 1")
+		// 也不允许出现第三个装配点（总数 = 2 ⇒ 没有遗漏的日志构造器）
+		expect(taskSrc.split("dependencyWeight:").length - 1, "只应有 startTask 与 turn-level 两个装配点").to.equal(2)
 	})
 
 	it("★ 权重与类型一致（纯函数回归）", () => {

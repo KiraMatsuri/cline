@@ -89,7 +89,7 @@ describe("【P6/T5】ai_coding_rounds", () => {
 
 	it("★ 边界：code_edit 缺省 editor（旧日志）按人工编辑处理 ⇒ 计数被清零", () => {
 		// 为什么缺省按人工处理：旧日志 / 未标注来源的编辑只能保守视为"学生自己动手"
-		//（与 `updateRealtimeStreaks` 的 `event.editor !== "ai"` 分支、`isStudentSideEvent` 同一口径）；
+		//（与 `updateRealtimeStreaks` 的 `event.editor !== "ai"` 分支同一口径）；
 		// 宁可多清零（漏记一次 AI 落盘）也不要反着误判：把学生的手动编辑当成 AI 落盘而继续累计依赖。
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("第一句"))

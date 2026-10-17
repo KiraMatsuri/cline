@@ -54,8 +54,8 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	// 【方案 D 止血】5 → 8。该计数器对每个 turn_message 都 +1（助手回合也算），
 	// 一次提问就能贡献 7~11，原值 5 等价于"问一句话就触发"。
 	// 【P5-A】8 → 3 ★ 单位已改为「学生请求」（见 updateRealtimeStreaks）：
-	// 8 现在意为"连续 8 次提问没动手"，与「及时干预」相悖；3 即"连续 3 次提问没动手 → 提醒"，
-	// 对齐 M4'（第 3 次索要完整实现即阻断）与 M6'（新一轮索要计入升级计数）的口径。
+	// 8 现在意为"连续 8 次提问没动手"，与「及时干预」相悖；3 即"连续 3 次提问没动手 → 提醒"。
+	// 【P6/T6】本规则**只提示、永不阻断**（阻断入口已收归 `ai_coding_rounds`）。
 	noEditTurnStreakThreshold: 3,
 	consecutiveAssistantCodeThreshold: 3,
 	adoptionRateThreshold: 0.7,
@@ -120,13 +120,6 @@ export class BehaviorMonitor {
 	 * 彻底修法需在任务结束/挂起时显式 `reset()`。
 	 */
 	private demandComplianceState: DemandComplianceState = "none"
-
-	/**
-	 * 【F9】连续「助手回合且过程中学生没有发言」的计数 —— 比例指标在 Cline 多工具循环下恒真，改用绝对量。
-	 * 【P6/T7】★ 该字段已**退出 AI 依赖规则的判定**（依赖度改为「学生请求加权和」）：
-	 * 本字段仍在每次 ingest 时维护，但**仅为文案/未来使用保留**，不再有任何判定消费方。
-	 */
-	private assistantTurnsWithoutUser = 0
 
 	/** 【P6/T7】最近 N 个学生请求的依赖度权重（滚动窗口） */
 	private recentRequestWeights: number[] = []
@@ -227,31 +220,7 @@ export class BehaviorMonitor {
 		})
 
 		this.updateRealtimeStreaks(event)
-
-		// 【F9】AI 独占输出的绝对量：任何"学生侧"事件都归零（含 code_edit / task_start），
-		//        助手回合 +1。原先只覆盖 turn_message ⇒ "边改代码边不发言"的学生计数仍会爬升。
-		if (this.isStudentSideEvent(event)) {
-			this.assistantTurnsWithoutUser = 0
-		} else if (event.eventType === "turn_message" && event.role === "assistant") {
-			this.assistantTurnsWithoutUser++
-		}
-
 		this.evaluateRules(event)
-	}
-
-	/** 【F9】该事件是否表示"学生本人有动作"（发言 / 开题 / 亲手编辑代码） */
-	private isStudentSideEvent(event: StudentInteractionLog): boolean {
-		if (event.eventType === "task_start") {
-			return true
-		}
-		if (event.eventType === "turn_message") {
-			return event.role !== "assistant"
-		}
-		// 【F2】只有"人"的编辑才算学生动手；缺省 editor（旧日志）按人工处理
-		if (event.eventType === "code_edit") {
-			return event.editor !== "ai"
-		}
-		return false
 	}
 
 	private updateRealtimeStreaks(event: StudentInteractionLog): void {
@@ -404,7 +373,9 @@ export class BehaviorMonitor {
 	/**
 	 * 【P5/T16】直接索要「完整实现」。
 	 *
-	 * 单位 = **学生请求**（`bumpOncePerRequest`）⇒ 第 3 次索要即达阻断阈值，与 M4'/M6' 口径一致。
+	 * 单位 = **学生请求**（`bumpOncePerRequest`）⇒ 第 3 次索要计数为 3。
+	 * 【P6/T6】但本规则**永不阻断**（阻断只由 `ai_coding_rounds` 承担）；它的职责是计数、发提示，
+	 * 并作为 b+c 服从流程（"我不会写" ⇒ 询问一次 ⇒ 确认后给完整实现）的入口 — 即 M6'' 的口径。
 	 * 本规则不依赖 `assistantCodeStreak` / `turnsSinceLastEdit`，因此概念型任务里也能生效。
 	 */
 	private checkCompleteImplDemandRule(event: StudentInteractionLog): void {
@@ -755,7 +726,6 @@ export class BehaviorMonitor {
 		// 【P6/T9】服从流程状态一并复位（跨任务不得残留"已获准"）
 		this.currentRequestIsInability = false
 		this.demandComplianceState = "none"
-		this.assistantTurnsWithoutUser = 0
 		// 【P6/T7】依赖度加权窗口与本轮询问类型一并复位（否则恢复会话后会带着上次的分数）
 		this.recentRequestWeights = []
 		this.currentRequestQueryType = "other"
