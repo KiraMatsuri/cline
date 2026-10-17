@@ -80,12 +80,16 @@ describe("G6 · P6（独立阻断通道 / 依赖度加权 / 展示去噪）", ()
 		once.ingest(stu("什么是冒泡排序", "algorithm"))
 		expect(once.getPendingAlerts()).to.have.length(0)
 
-		const many = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		// 阻断阈值压到 1：命中 1 次即「计数达标」，使「不阻断」只能由白名单解释（否则此处是恒真断言）
+		const many = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 1 })
 		for (let i = 0; i < 6; i++) {
 			many.ingest(stu(`第 ${i + 1} 个概念问题`, "explanation"))
 		}
 		const alerts = many.getPendingAlerts().filter((a) => a.ruleId === "high_recent_ai_dependency")
 		expect(alerts).to.have.length(1)
+		expect(many.getWeightedDependencyScore()).to.equal(3)
+		expect(many.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
+		expect(many.getBlockingThresholdFor("high_recent_ai_dependency")).to.equal(1)
 		expect(many.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 
@@ -97,9 +101,9 @@ describe("G6 · P6（独立阻断通道 / 依赖度加权 / 展示去噪）", ()
 			true,
 		)
 	})
-})
 
-after(() => {
-	managerStaticState.globalBlockingEndsAt = savedEndsAt
-	managerStaticState.globalLastBlockingIntervention = savedLast
+	after(() => {
+		managerStaticState.globalBlockingEndsAt = savedEndsAt
+		managerStaticState.globalLastBlockingIntervention = savedLast
+	})
 })

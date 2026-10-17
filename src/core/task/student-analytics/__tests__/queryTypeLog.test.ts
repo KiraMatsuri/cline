@@ -19,9 +19,14 @@ describe("【P6/T8】询问类型字段", () => {
 	it("★ 两处日志组装都写入该字段", () => {
 		const queryTypeOccurrences = taskSrc.split("queryType: toQueryType(category)").length - 1
 		expect(queryTypeOccurrences, "startTask 与 turn-level 两处都要写").to.equal(2)
-		// 【交接复查】两处组装点必须**成对**写 `dependencyWeight`，且取值来自纯函数（不得各自硬编码）
-		const weightOccurrences = taskSrc.split("dependencyWeight: dependencyWeightForQueryType(").length - 1
+		// 【交接复查】两处组装点必须**成对**写 `dependencyWeight`，且取值来自纯函数（不得各自硬编码、
+		// 不得把询问类型钉成字面量 —— 否则权重与 queryType 会各自飘逸）
+		const weightOccurrences =
+			taskSrc.split("dependencyWeight: dependencyWeightForQueryType(toQueryType(category))").length - 1
 		expect(weightOccurrences, "startTask 与 turn-level 两处都要写派生快照").to.equal(2)
+		// 硬编码权重一份也不允许（两种写法都钉）
+		expect(taskSrc).to.not.include("dependencyWeight: 0.5")
+		expect(taskSrc).to.not.include("dependencyWeight: 1")
 	})
 
 	it("★ 权重与类型一致（纯函数回归）", () => {

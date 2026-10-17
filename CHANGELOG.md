@@ -31,17 +31,33 @@
 
 ### Changed
 
+- **阻断式干预改为独立通道：只数「助手真实落盘」（P6，M4''）**。新增规则 `ai_coding_rounds`：信号是
+  `code_edit` 且 `editor = "ai"`，阈值 **3**，同一学生请求**最多 +1**；学生本人编辑一次代码（`editor` 缺省或≠`ai`）
+  即**清零**。`rulePolicy` 改为**白名单**：`ai_coding_rounds` 是**唯一**可升级为阻断的规则，
+  且在全部分类（含 `explanation` / `algorithm`）下均可阻断 —— 旧口径「概念问答下不可阻断」不再成立。
+  `complete_impl_demand` / `no_edit_streak` / `consecutive_code_generation` / `high_recent_ai_dependency`
+  仍然计数与提示（可审计），但**永不阻断**。阻断回合改为**暂停等待学生回复**（`ask`）而不是结束任务，
+  因此不再触发 Cline 的「失误重试」⇒ 同一条学生消息只有**一次**提示与**一对** `D`/`T`。
+  阈值统一为 **3**（`aiCodingBlockingThreshold` 与 `escalationBlockingThreshold` 均为 3，
+  后者现仅用于告警日志/展示，不再产生阻断）。
+- **AI 依赖度改用询问类型加权（P6，M16'）**：分母从「助手回合」改为「学生请求的加权和」
+  （`concept` = **0.5**、其余 = 1，窗口 10，阈值 `dependencyWeightedThreshold = 3`）。
+  6 次概念提问或 3 次代码类请求才出 1 条 gentle 提示，单次提问仍零干预；该规则**永不阻断**。
+  旧的前置（`assistantTurnsWithoutUser >= minTurnsForDependency` 与「≥ 2 次学生请求」）已删除。
+- **学生说「我不会写」时的服从流程（b+c，M6''）**：明确表示自己写不出来时，助手先**问一次**
+  （文案明确告知「连续 3 次直接编码会触发阻断式干预」），学生确认后本轮才给出完整实现。
+  询问/确认落在 `demand_compliance` 事件（`asked` / `granted` / `denied`），**不计入** `intervention_decision`。
 - **学生行为日志新增询问类型字段（外部契约新增，不改既有字段语义）**：`queryType`
   （`concept` / `coding` / `other`）与 `dependencyWeight`（概念问答 **0.5**、其余 1）。
   教师端"AI 依赖度"指标可按加权和口径复算 —— 概念型提问按 **50%** 计入，
   因此同一会话的依赖度**低于**按条数直算的旧口径。仅新增字段，旧 JSONL 仍可解析。
 - **教学干预计数单位：助手回合 → 学生请求**（对治 M4' 的根因）。`noEditTurnStreakThreshold` 8 → **3**，
   语义随之变为「连续 3 次提问没动手 ⇒ 提醒」；同一学生请求内每条规则**至多升级一次**；
-  `high_recent_ai_dependency` 另加「已有 ≥ 2 次学生请求才评估」的前置 —— 一次提问内的 6~12 个助手回合
+  `high_recent_ai_dependency` 的评估单位改为学生请求（**P6 已进一步改为加权和**，见本版首条） —— 一次提问内的 6~12 个助手回合
   是 agent 工具循环的正常形态，**不构成** AI 依赖。**退化口径**：从未观测到学生回合时（离线重放 /
   异常数据）仍按回合计数，与 `rulePolicy`「分类缺失时全部启用」同一保守原则：宁可多计也不静默失效。
   副作用（有意）：`no_edit_streak` 自身达到阻断阈值需「第 5 次提问」；
-  「第 3 次索要完整实现即阻断」由 `complete_impl_demand` 承担。
+  （**P6 已取代**：「第 3 次索要完整实现即阻断」不再成立 —— 阻断只由 `ai_coding_rounds` 承担，见本版首条。）
 - **注入内容变更**：system prompt 从"认知边界约束 + 资料全文"改为"**认知边界约束 + 资料索引 + 检索状态**"，
   上下文从 16k 降至 1k 量级（真实数据 week=18 / 77 chunk：13,889 → 2,329 字符，−83.2%）。
   **认知边界约束段为必需项** —— 检索边界拦不住模型凭通用知识超纲作答。
@@ -68,7 +84,8 @@
 - **教学干预误触发修复 · 方案 C-1（按学生意图分流规则）**：新增 `rulePolicy.ts`，把「什么时候该干预」
   编码为纯函数。概念问答（`explanation` / `algorithm`）下**停用** `consecutive_code_generation` 与
   `no_edit_streak`（这两条规则在「学生只提问、不写码」的用法下分母恒真），其余规则保留提示但
-  **不允许升级为阻断**；分类缺失/未知时**全部启用且可升级**（保守兜底，宁可保留能力也不静默失效）。
+  **不允许升级为阻断**；分类缺失/未知时**全部启用**（**P6 已强化**：`canEscalateToBlocking` 改为全局白名单，
+  只有 `ai_coding_rounds` 为 true，与分类无关）。
 - **教学干预误触发修复 · 方案 C-2（概念问答不给完整代码）**：新增 `conceptModeConstraint.ts`，
   概念问答场景向 system prompt 追加「只给关键步骤片段、不给完整可运行实现」的约束，并对违规写可见化日志。
   **它是提示词约束、不拦截模型输出** —— 代码层过滤会误伤学生正当代码，明确不做。
@@ -93,8 +110,9 @@
   （见 `### Changed` 的计数单位条）：同请求最多推进 1 格。
 - **概念型任务里「直接把完整代码给我」零干预（实测 M6'）**：`rulePolicy` 在 `explanation` / `algorithm`
   下停用代码类规则 ⇒ 这类索要**没有任何可计数、可升级的规则**，只剩一句提示词约束，模型一次就给完整实现。
-  新增规则 `complete_impl_demand`（只看学生原文、不受分类门控，每次索要记一次 ⇒ 第 3 次达阻断阈值）、
-  其 gentle/moderate/strong 三档文案，以及仅在本轮索要时注入的 `buildDemandRefusalConstraint()` 强化约束。
+  新增规则 `complete_impl_demand`（只看学生原文、不受分类门控，每次索要记一次）——
+  **P6 已取代其阻断角色**：现由 `ai_coding_rounds`（助手真实落盘 3 次）阻断，本规则保留计数、
+  gentle/moderate/strong 三档文案与 `buildDemandRefusalConstraint()` 强化约束，并作为 b+c 服从流程的入口。
 - **F12 漏掉一类真实方言形态（S5）**：`attribute` 引号未闭合（名字与值粘在一起）时不满足成对引号的
   标签正则 ⇒ `server_name` 丢失 ⇒「without value for required parameter 'server_name'. Retrying...」
   白耗回合（又反过来喂给上面那条阻断误触发）。新增畸形开标签的前置兜底：只丢弃名字之后到 `>` 的内容，
