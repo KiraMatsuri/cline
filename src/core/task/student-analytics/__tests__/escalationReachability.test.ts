@@ -97,13 +97,15 @@ describe("F1 · 升级阈值可达性", () => {
 		expect(mgr.isBlockingActive()).to.equal(true)
 	})
 
-	it("概念问答下仍不可升级（rulePolicy 门控优先于计数）", () => {
+	it("概念问答下代码类规则被分流停用（不计数），且 high_recent_ai_dependency 不可阻断", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
 		m.ingest(ev({ eventType: "task_start", role: "user", category: "algorithm" }))
 		m.ingest(ev({}))
 		m.ingest(ev({}))
 		m.ingest(ev({}))
 		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(0) // 规则被停用 → 不计数
+		// 【P6/T6】依赖度规则仍启用（只提示），但白名单之外一律不可升级为阻断
+		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 
 	it("★ 阈值下界 1：首个命中回合即升级", () => {

@@ -51,13 +51,25 @@ describe("【P6/T7】ai_dependency = 学生请求加权和", () => {
 
 	it("★ 计数与提醒冷却解耦（冷却期内仍逐请求计数）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 120_000 })
-		for (let i = 0; i < 6; i++) m.ingest(ask("code_generation", `第 ${i + 1} 句`))
+		for (let i = 0; i < 3; i++) m.ingest(ask("code_generation", `第 ${i + 1} 句`))
+		// 第 3 次请求首次命中加权阈值
+		expect(m.getWeightedDependencyScore()).to.equal(3)
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
+		// 【交接复查】命中后继续追问仍在计数（旧断言只覆盖"冷却期内逐轮计数"，未验证命中后的持续推进）
+		m.ingest(ask("code_generation", "第 4 句"))
+		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(2)
+
+		m.ingest(ask("code_generation", "第 5 句"))
+		m.ingest(ask("code_generation", "第 6 句"))
 		expect(m.getWeightedDependencyScore()).to.equal(6)
 		// 第 3/4/5/6 次请求时分数已达阈值 ⇒ 计数不受冷却影响（共 4 次）
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(4)
 		// 提醒仍受 120s 冷却 ⇒ 本规则只出 1 条
-		// （不断言 pendingAlerts 总数：同一序列下 no_edit_streak 等规则也会并发提醒）
 		expect(m.getPendingAlerts().filter((a) => a.ruleId === "high_recent_ai_dependency").length).to.equal(1)
+		// 【交接复查】补回"同序列的 pendingAlerts 总数"断言（T7 改写时丢失）：
+		// 新口径下共 2 条 —— high_recent_ai_dependency + 并发的 no_edit_streak（第 3 次学生请求首次命中）。
+		expect(m.getPendingAlerts()).to.have.lengthOf(2)
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("high_recent_ai_dependency")
 	})
 
 	it("★ 单次概念提问零提示（M2' 的通过条件）", () => {

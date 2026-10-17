@@ -673,21 +673,15 @@ export class BehaviorMonitor {
 	 * 终止态同样落 `denied` 的理由：`ask` 抛错（任务中止 / ask promise 被忽略）时若停在 `"asked"`，
 	 * 请求边界的复位分支（只认两个终态）不会命中 ⇒ 该 taskId（含 30 分钟内恢复会话复用同一实例）
 	 * 再也进不了 b+c 流程。
+	 *
+	 * ⚠️ 否认时**不要**把状态打回 `"none"`：那会让 `index.ts` 的询问门控在**同一学生请求内**重新武装
+	 * （`attemptApiRequest` 会被工具轮与首 chunk 重试多次进入）⇒ 每隔一轮重问一次。
+	 * 复位只发生在请求边界（见 `ingest()`）与 `reset()`。
 	 */
 	public markDemandComplianceDenied(): void {
 		this.demandComplianceState = "denied"
 	}
 
-	/**
-	 * 【P6/T9】把服从态打回 `"none"`。**唯一**合法用途：`reset()` 与显式"重新进入引导态"的调用点。
-	 *
-	 * ⚠️ **不要**在"学生否认"时调用它：`"none"` 会让 `index.ts` 的询问门控在**同一学生请求内**重新武装
-	 * （`attemptApiRequest` 会被工具轮与首 chunk 重试多次进入）⇒ 每隔一轮重问一次。
-	 * 否认请用 `markDemandComplianceDenied()`（终态，由请求边界复位）。
-	 */
-	public resetDemandCompliance(): void {
-		this.demandComplianceState = "none"
-	}
 	/**
 	 * 获取同规则累计触发次数
 	 */

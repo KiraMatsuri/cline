@@ -49,7 +49,7 @@ describe("BehaviorMonitor — 按学生意图分流（方案 C-1）", () => {
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("consecutive_code_generation")
 	})
 
-	it("★【F9】概念问答下 high_recent_ai_dependency 连提示都不发", () => {
+	it("★ 单次概念提问不达加权阈值（0.5 < 3）⇒ 不发提示", () => {
 		const m = new BehaviorMonitor("c3", { cooldownMs: 0, escalationBlockingThreshold: 1 })
 		m.ingest(taskStart("c3", "explanation"))
 		for (let i = 1; i <= 8; i++) {
