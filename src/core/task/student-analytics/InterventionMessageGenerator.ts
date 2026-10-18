@@ -12,7 +12,7 @@ import type { BehaviorAlert, BehaviorRuleId, InterventionMessage, InterventionSe
 /** 单条消息模板 */
 interface MessageTemplate {
 	style: InterventionStyle
-	/** 模板字符串，支持 {streak} / {percent} / {threshold} 占位符 */
+	/** 模板字符串，支持 {streak} / {count} / {percent} / {threshold} 占位符 */
 	template: string
 }
 
@@ -35,35 +35,39 @@ export const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeveri
 		gentle: [
 			{
 				style: "hint",
+				// 【P7/T5・附议 1】口径对齐：{streak} 是**助手回合**数，{count} 是**学生请求**数。
+				// 2026-10-18 实测里学生只发了 2 条消息，文案却说「连续 3 轮」，读起来像学生在刷屏。
 				template:
-					"💡 学习提示：刚才我连续 {streak} 轮给出的内容里都带了代码。要不要换一下顺序 —— 你先说说打算怎么实现，我再帮你补细节？",
+					"💡 学习提示：最近几个回合我给出的内容里一直带着代码（已记录 {count} 次）。要不要换一下顺序 —— 你先说说打算怎么实现，我再帮你补细节？",
 			},
 			{
 				style: "question",
-				template: "🤔 思考一下：这 {streak} 轮我都给了代码。这里面哪一段是你已经能自己写出来的？试着从那段开始动手。",
+				template:
+					"🤔 思考一下：最近 {streak} 个回合里，代码都是我写你。这里面哪一段是你已经能自己写出来的？试着从那段开始动手。",
 			},
 		],
 		moderate: [
 			{
 				style: "question",
 				template:
-					"🤔 学习引导：我已经连续 {streak} 轮直接给代码了。在继续之前，能否先讲讲你对当前实现的理解？比如：核心逻辑分几步？",
+					"🤔 学习引导：最近几个回合我一直在直接给代码（已记录 {count} 次）。在继续之前，能否先讲讲你对当前实现的理解？比如：核心逻辑分几步？",
 			},
 			{
 				style: "challenge",
-				template: "🎯 小挑战：这 {streak} 轮都是我写代码。这一轮你先写出函数签名和核心步骤，我来帮你补充和检查，好吗？",
+				template:
+					"🎯 小挑战：最近 {streak} 个回合都是我写代码。这一轮你先写出函数签名和核心步骤，我来帮你补充和检查，好吗？",
 			},
 		],
 		strong: [
 			{
 				style: "challenge",
 				template:
-					"🎯 动手实践：我已经连续 {streak} 轮提供完整代码了。为了真正掌握，请先自己实现核心部分，遇到具体卡点再来问我。",
+					"🎯 动手实践：最近几个回合我一直在提供完整代码（已记录 {count} 次）。为了真正掌握，请先自己实现核心部分，遇到具体卡点再来问我。",
 			},
 			{
 				style: "reflection",
 				template:
-					"📝 学习反思：这 {streak} 轮你拿到的都是现成代码。请回顾一下：其中的核心逻辑你能独立复述吗？哪一部分你最没把握？",
+					"📝 学习反思：最近 {streak} 个回合里，你拿到的都是现成代码。请回顾一下：其中的核心逻辑你能独立复述吗？哪一部分你最没把握？",
 			},
 		],
 	},
@@ -267,10 +271,14 @@ function determineSeverity(metricValue: number, threshold: number): Intervention
  * 填充模板中的占位符
  */
 function fillTemplate(template: string, alert: BehaviorAlert): string {
-	return template
-		.replace(/\{streak\}/g, String(Math.round(alert.metricValue)))
-		.replace(/\{percent\}/g, String(Math.round(alert.metricValue * 100)))
-		.replace(/\{threshold\}/g, String(Math.round(alert.threshold)))
+	return (
+		template
+			.replace(/\{streak\}/g, String(Math.round(alert.metricValue)))
+			// 【P7/T5】{count} = 该规则在**学生请求**口径下的累计次数（与 `{streak}` 的回合/指标口径区分）
+			.replace(/\{count\}/g, String(Math.round(alert.escalationCount ?? alert.metricValue)))
+			.replace(/\{percent\}/g, String(Math.round(alert.metricValue * 100)))
+			.replace(/\{threshold\}/g, String(Math.round(alert.threshold)))
+	)
 }
 
 /**
