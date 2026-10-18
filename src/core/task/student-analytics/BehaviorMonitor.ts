@@ -5,6 +5,7 @@
  * 当检测到高依赖或单一行为趋势时，输出温和提醒。
  */
 
+import { normalizePathKey } from "@/shared/pathKeys"
 import { Logger } from "@/shared/services/Logger"
 import { type ConceptModeState, INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "./ConceptModeGate"
 import { isCompleteImplDemand } from "./demandDetect"
@@ -123,6 +124,13 @@ export class BehaviorMonitor {
 
 	/** 【P6/T7】最近 N 个学生请求的依赖度权重（滚动窗口） */
 	private recentRequestWeights: number[] = []
+	/**
+	 * 【P8/T3（裁定 3-B）】本学生请求内由 AI 写过的文件（`file_save` / `code_edit` 且 `editor==="ai"`）。
+	 * 与 `studentEditedFilesThisRequest` 做集合差，用来甄别「归属误判产生的伪学生编辑」。
+	 */
+	private aiWrittenFilesThisRequest = new Set<string>()
+	/** 【P8/T3】本学生请求内出现过「人工编辑」的文件（`code_edit` 且 `editor!=="ai"`） */
+	private studentEditedFilesThisRequest = new Set<string>()
 	private currentRequestQueryType: QueryType = "other"
 	private currentRequestDependencyWeight = 1
 
@@ -192,6 +200,10 @@ export class BehaviorMonitor {
 		//   - 记录请求数（供「一次提问内的多回合不算 AI 依赖」使用）；
 		//   - 重新判定本轮是否在索要完整实现（供 T16 的 complete_impl_demand 规则）。
 		if (isStudentIntent) {
+			// 【P8/T3（裁定 3-B）】先结算上一请求的「学生是否真的动手」，再开新请求的记账
+			this.settleStudentEditReset()
+			this.aiWrittenFilesThisRequest.clear()
+			this.studentEditedFilesThisRequest.clear()
 			this.bumpedRulesThisRequest.clear()
 			this.studentRequestCount++
 			this.currentRequestIsDemand = isCompleteImplDemand(event.rawContent)
@@ -220,7 +232,44 @@ export class BehaviorMonitor {
 		})
 
 		this.updateRealtimeStreaks(event)
+
+		// 【P8/T3（裁定 3-B）】记录本请求内的 AI 写盘（结算时与「学生编辑」做集合差）。
+		// 注意：必须与 `updateRealtimeStreaks` 的“学生编辑”记录成对存在，
+		// 否则 `settleStudentEditReset()` 会把归属误判当成真动手。
+		if ((event.eventType === "code_edit" || event.eventType === "file_save") && event.editor === "ai" && event.filePath) {
+			this.aiWrittenFilesThisRequest.add(normalizePathKey(event.filePath))
+		}
+
 		this.evaluateRules(event)
+	}
+
+	/**
+	 * 【P8/T3（裁定 3-B）】把「上一请求内学生动过手」结算为明确的清零动作。
+	 *
+	 * 判定：`学生编辑过的文件` **减去** `同一请求内 AI 写过的文件` 仍有剩余 ⇒ 才算真的动手。
+	 *
+	 * 为什么延迟到请求边界：写盘归属误判产生的 `code_edit(editor=user)` 往往**早于**任何 AI 归属事件
+	 * （2026-10-18 实测 4 次写盘里 3 次如此），即时判定看不到未来。只在边界看整个请求，
+	 * 才符合裁定原文「同一学生请求内该文件没有任何 AI 写盘事件」。
+	 */
+	private settleStudentEditReset(): void {
+		if (this.studentEditedFilesThisRequest.size === 0) {
+			return
+		}
+		const genuine = [...this.studentEditedFilesThisRequest].filter((f) => !this.aiWrittenFilesThisRequest.has(f))
+		if (genuine.length === 0) {
+			// 整批“学生编辑”都落在本请求里被 AI 写过的文件上 ⇒ 归属误判，不清零
+			Logger.info(`[BehaviorMonitor][${this.taskId}] student-edit ignored: same files were written by AI in this request`)
+			return
+		}
+		this.clearAiCodingProgress(`student edited ${genuine.join(", ")}`)
+	}
+
+	/** 【P8/T3】“学生确实动手”的后果：阻断通道归零 + 依赖度窗口清空（同一误判的连带项） */
+	private clearAiCodingProgress(reason: string): void {
+		delete this.escalationCounter.ai_coding_rounds
+		this.recentRequestWeights = []
+		Logger.info(`[BehaviorMonitor][${this.taskId}] ai_coding_rounds reset → 0 (${reason})`)
 	}
 
 	private updateRealtimeStreaks(event: StudentInteractionLog): void {
@@ -232,19 +281,19 @@ export class BehaviorMonitor {
 				this.turnsSinceLastEdit = 0
 				// 学生主动编辑代码 → 重置 streak（阻断判定仅关注连续无编辑的代码生成）
 				this.assistantCodeStreak = 0
-				// 【P6/T5】学生本人动手 ⇒ 独立阻断通道清零。
-				// ⚠️ 只清 `ai_coding_rounds`，不动其它规则的计数（"学生编辑 ⇒ 清零两个代码规则"是另一项待议裁定）。
-				// ⚠️ 也**不**清 `bumpedRulesThisRequest` 里的本规则标记：若连去重标记一起清，
-				// 同一学生请求内「AI 落盘 → 学生手改 → AI 再落盘」就能记 2 次，
-				// 违反全局约束「每个学生请求最多 +1」。
-				delete this.escalationCounter.ai_coding_rounds
-				// 【P6/T7】学生自己动手 = 依赖度归零：清空加权窗口（与上面同一"学生编辑"分支，不再单开判定）。
-				this.recentRequestWeights = []
+				// 【P8/T3（裁定 3-B）】计数清零**不再当场发生**：写盘归属误判产生的
+				// `code_edit(editor=user)` 常常**早于**任何 AI 归属事件（2026-10-18 实测 3/4 次如此），
+				// 当场判定看不到未来 ⇒ 记入本请求集合，由 `settleStudentEditReset()` 在请求边界结算。
+				// 没有 `filePath` 时无法做逐文件甄别（旧日志 / 异 fixtures）⇒ 保守地立即清零。
+				if (event.filePath) {
+					this.studentEditedFilesThisRequest.add(normalizePathKey(event.filePath))
+				} else {
+					this.clearAiCodingProgress("student edit (no filePath)")
+				}
 				if (this.options.debug) {
 					Logger.info(
 						`[BehaviorMonitor][debug] code_edit by student → turnsSinceLastEdit & assistantCodeStreak reset to 0`,
 					)
-					Logger.info("[BehaviorMonitor][debug] student code_edit → ai_coding_rounds reset to 0")
 				}
 			} else if (this.options.debug) {
 				// AI 落盘：既不清零也不额外计数（该回合已由 assistant turn_message 的 hasCodeBlock 计入）
@@ -769,6 +818,9 @@ export class BehaviorMonitor {
 		this.bumpedRulesThisRequest = new Set<BehaviorRuleId>()
 		this.studentRequestCount = 0
 		this.currentRequestIsDemand = false
+		// 【P8/T3】写盘/编辑归属集合一并复位（跨任务不得残留“上一请求 AI 写过某文件”）
+		this.aiWrittenFilesThisRequest = new Set<string>()
+		this.studentEditedFilesThisRequest = new Set<string>()
 		// 【P6/T9】服从流程状态一并复位（跨任务不得残留"已获准"）
 		this.currentRequestIsInability = false
 		this.demandComplianceState = "none"
