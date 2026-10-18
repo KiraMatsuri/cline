@@ -326,6 +326,12 @@ export interface BehaviorAlert {
 	threshold: number
 	/** 当前任务内同规则已触发的累计次数（含本次） */
 	escalationCount?: number
+	/**
+	 * 【P7/T4（裁定 3）】触发时的**学生请求序号**。
+	 * 管理器用它判断一条未被展示的警报是否已经过期（最多顺延 1 个学生请求）。
+	 * 内部字段，不写入 `student_interactions.log`。
+	 */
+	studentRequest?: number
 }
 
 /**

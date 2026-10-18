@@ -580,6 +580,8 @@ export class BehaviorMonitor {
 			metricValue,
 			threshold,
 			escalationCount,
+			// 【P7/T4】记录学生请求序号：未被展示的警报最多顺延 1 个请求（见 dropStaleAlerts）
+			studentRequest: this.studentRequestCount,
 		}
 		this.pendingAlerts.push(alert)
 	}
@@ -592,10 +594,12 @@ export class BehaviorMonitor {
 	}
 
 	/**
-	 * 获取所有待处理的警报（只读，不清空队列）
+	 * 获取所有待处理的警报（只读快照，不清空队列）。
+	 * 【P7/T4】返回**副本**：此前直接返回内部数组，调用方拿到的活引用会在后续 ingest 时静默变长
+	 * （`before.length` 先后读两次会得到不同值，测试与日志都容易误读）。
 	 */
 	public getPendingAlerts(): ReadonlyArray<BehaviorAlert> {
-		return this.pendingAlerts
+		return [...this.pendingAlerts]
 	}
 
 	/**
@@ -606,6 +610,39 @@ export class BehaviorMonitor {
 		const alerts = [...this.pendingAlerts]
 		this.pendingAlerts = []
 		return alerts
+	}
+
+	/**
+	 * 【P7/T4（裁定 3）】只移除**已经展示给学生的那一条**警报。
+	 *
+	 * 旧行为是 `consumePendingAlerts()` 清空整队后只展示优先级最高的一条 ⇒ 其余规则
+	 * 的警报**永久丢失**（2026-10-18 实测：加权依赖度 4.0 ≥ 3 已达阈并入了队，
+	 * 却被同轮 `no_edit_streak` 挤掉，此后 120s 规则冷却使它再也无法入队）。
+	 */
+	public dropAlert(alert: BehaviorAlert): boolean {
+		const index = this.pendingAlerts.indexOf(alert)
+		if (index < 0) {
+			return false
+		}
+		this.pendingAlerts.splice(index, 1)
+		return true
+	}
+
+	/**
+	 * 【P7/T4（裁定 3）】丢弃过期警报：触发于 `maxCarryRequests` 个学生请求之前的未展示警报。
+	 *
+	 * 为什么需要：顺延后如果一直有更高优先级的规则在抢，陈年提示可能在几十秒后突然冒出，
+	 * 那时学生早已不在同一个语境里。默认只顺延 1 个学生请求。
+	 * @returns 被丢弃的警报（供调用方写日志）
+	 */
+	public dropStaleAlerts(maxCarryRequests = 1): BehaviorAlert[] {
+		const stale = this.pendingAlerts.filter(
+			(alert) => alert.studentRequest !== undefined && alert.studentRequest < this.studentRequestCount - maxCarryRequests,
+		)
+		if (stale.length > 0) {
+			this.pendingAlerts = this.pendingAlerts.filter((alert) => !stale.includes(alert))
+		}
+		return stale
 	}
 
 	/** 【方案 C-1】当前任务的学生意图分类（未捕获到时为 undefined） */

@@ -172,6 +172,9 @@ export class TeachingInterventionManager {
 		const blockingRule = monitor.getRuleIdsAtBlockingThreshold()[0]
 		if (blockingRule) {
 			const count = monitor.getEscalationCount(blockingRule)
+			// 【P7/T4】阻断是最强信号：冷却期内残留的普通提示已失去语境，直接清空
+			//（否则解除阻断后会突然冒出上一条早已过时的建议）
+			monitor.consumePendingAlerts()
 			return this.triggerBlocking(
 				monitor,
 				{
@@ -216,19 +219,27 @@ export class TeachingInterventionManager {
 			return null
 		}
 
-		// 消费警报
-		const alerts = monitor.consumePendingAlerts()
+		// 【P7/T4（裁定 3）】取队**而不清空**：旧写法 `consumePendingAlerts()` 会把所有警报一次取走，
+		// 而下面只展示优先级最高的一条 ⇒ 其余规则的警报永久丢失（2026-10-18 实测：
+		// 加权依赖度 4.0 已达阈并入队，却被同轮的 `no_edit_streak` 挤掉且再也不会重现）。
+		// 现在只丢掉**真正展示给学生的那一条**，其余顺延到下一次。
+		const stale = monitor.dropStaleAlerts()
+		for (const alert of stale) {
+			Logger.info(
+				`[TeachingIntervention][${this.taskId}] drop stale alert: rule=${alert.ruleId}, triggeredAt=${alert.triggeredAt}`,
+			)
+		}
+		const alerts = monitor.getPendingAlerts()
 		if (alerts.length === 0) {
 			return null
 		}
-
-		let intervention: InterventionMessage
-		let injectionText: string
 
 		// 【F1】防御性回退：上面的 getRuleIdsAtBlockingThreshold() 入口已覆盖此情形。
 		// 保留 alerts 侧判定并复用同一个 triggerBlocking()，避免两处阻断分支漂移（DRY）。
 		const blockingAlert = alerts.find((alert) => monitor.shouldEscalateToBlocking(alert.ruleId))
 		if (blockingAlert) {
+			// 阻断是最强信号：冷却期内的普通提示已失去意义，留着只会在解除后突然冒出陈年文案
+			monitor.consumePendingAlerts()
 			return this.triggerBlocking(monitor, blockingAlert, turnIndex)
 		}
 
@@ -240,8 +251,14 @@ export class TeachingInterventionManager {
 		}
 
 		const priorityAlert = this.selectHighestPriorityAlert(eligibleAlerts)
-		intervention = generateInterventionMessage(priorityAlert, this.options.preferredStyle, this.options.globalCooldownMs)
-		injectionText = formatInterventionForInjection(intervention, recentCopies)
+		// 【P7/T4】只丢弃本次真正展示的那一条（其余顺延到下一次）
+		monitor.dropAlert(priorityAlert)
+		const intervention = generateInterventionMessage(
+			priorityAlert,
+			this.options.preferredStyle,
+			this.options.globalCooldownMs,
+		)
+		const injectionText = formatInterventionForInjection(intervention, recentCopies)
 
 		if (this.options.logToOutputChannel) {
 			Logger.info(
