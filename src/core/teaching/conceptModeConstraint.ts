@@ -11,7 +11,7 @@
  *   那会误伤学生可能需要的正当代码 —— 故明确不做。
  */
 
-import { parseFencedCodeBlocks } from "@/shared/markdown/codeBlocks"
+import { detectFullImplementation } from "@/core/task/student-analytics/fullImplementationDetect"
 
 /** 追加到 system prompt 的概念问答约束文本 */
 export function buildConceptModeConstraint(): string {
@@ -101,32 +101,20 @@ export interface ConceptModeViolation {
 	blockLines?: number
 }
 
-/** 判定"像完整实现"的最小行数。保守取值：低于此不判违规，避免误伤片段 */
-const MIN_COMPLETE_IMPL_LINES = 6
-
-/** 循环关键词 —— 完整实现通常至少含一处循环 */
-const LOOP_PATTERN = /\b(for|while)\b/
+/** 判定"像完整实现"的阈值与结构词已收归 `detectFullImplementation`（【P7/T2】单一真值源） */
 
 /**
- * 检测回复里是否出现了"完整可运行实现"（仅用于可见化，不用于拦截）。
+ * 检测回复里是否出现了"完整可运行实现"。
  *
- * 判定条件（保守，两个都满足才算）：
- *   1. 存在 fenced 代码块，且其中**有效行数 ≥ 6**；
- *   2. 该代码块内含 `for` / `while` 循环。
- *
- * 为什么保守：长代码块也可能是数据结构定义、也可能是学生当前确实在写的代码。
- * 宁可漏报（少记一条日志），也不要误报。
+ * 【P7/T2】改为**委托** `detectFullImplementation()`：裁定 2 之后该判定不再只用于日志，
+ * 还会推动 `ai_coding_rounds` 计数并可能导致阻断 —— 两处各持一套阈值迟早漂移
+ * （旧实现只靠"行数 + 循环"，会把带 `___` 的填空模板误判为完整实现）。
+ * 保留本导出是为了既有单测与离线复算的向后兼容。
  */
 export function detectConceptModeViolation(text: string): ConceptModeViolation {
-	// 复用 Task 3a 的公共解析器，不再自持一份围栏正则
-	for (const block of parseFencedCodeBlocks(text)) {
-		if (block.lineCount >= MIN_COMPLETE_IMPL_LINES && LOOP_PATTERN.test(block.inner)) {
-			return {
-				violated: true,
-				reason: `fenced 代码块含循环且有效行数 ${block.lineCount} ≥ ${MIN_COMPLETE_IMPL_LINES}，疑似完整实现`,
-				blockLines: block.lineCount,
-			}
-		}
+	const verdict = detectFullImplementation(text)
+	if (!verdict.detected) {
+		return { violated: false }
 	}
-	return { violated: false }
+	return { violated: true, reason: verdict.reason, blockLines: verdict.blockLines }
 }
