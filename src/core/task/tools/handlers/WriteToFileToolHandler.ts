@@ -79,6 +79,11 @@ export class WriteToFileToolHandler implements IFullyManagedTool {
 			if (!config.services.diffViewProvider.isEditing) {
 				// Open the editor and prepare to stream content in
 				await config.services.diffViewProvider.open(absolutePath, { displayPath: relPath })
+				// 【P8/T2】在这里就记一次「AI 写盘」：diffView 可能在 `saveChanges()` **之前**
+				// 就把内容落到真实文件（实测：变更事件的 2s 防抖 flush 早于 saveChanges 前的 mark）
+				// ⇒ 归属会退化成「学生动手」，把 `ai_coding_rounds` 清零。
+				// 幂等：只是刷新时间戳，与 `saveChanges()` 前那次 mark 不冲突。
+				config.services.fileContextTracker.markFileAsEditedByCline(absolutePath)
 			}
 			// Editor is open, stream content in real-time (false = don't finalize yet)
 			await config.services.diffViewProvider.update(newContent, false)
@@ -155,6 +160,8 @@ export class WriteToFileToolHandler implements IFullyManagedTool {
 				const partialMessage = JSON.stringify(sharedMessageProps)
 				await config.callbacks.ask("tool", partialMessage, true).catch(() => {}) // sending true for partial even though it's not a partial, this shows the edit row before the content is streamed into the editor
 				await config.services.diffViewProvider.open(absolutePath, { displayPath: relPath })
+				// 【P8/T2】同 `handlePartialBlock`：必须在内容落到真实文件**之前**标记归属
+				config.services.fileContextTracker.markFileAsEditedByCline(absolutePath)
 			}
 			await config.services.diffViewProvider.update(newContent, true)
 			await setTimeoutPromise(300) // wait for diff view to update
