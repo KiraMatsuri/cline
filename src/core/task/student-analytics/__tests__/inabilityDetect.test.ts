@@ -19,6 +19,9 @@ describe("【P7/T1】写不出来 / 无法理解的识别", () => {
 	})
 
 	it("★ 正例：扩充的口语 / 放弃类自述（裁定 1-A）", () => {
+		// 【P8/T4】2026-10-18 第二轮实测漏判的原句（旧模式只允许「实在/真的」插在「我」与「写不出来」之间）
+		expect(isInabilityStatement("我还是写不出来，请直接帮我实现")).to.equal(true)
+		expect(isInabilityStatement("我仍然写不出")).to.equal(true)
 		expect(isInabilityStatement("我搞不定这个循环")).to.equal(true)
 		expect(isInabilityStatement("我没思路")).to.equal(true)
 		expect(isInabilityStatement("我放弃了")).to.equal(true)
@@ -35,6 +38,8 @@ describe("【P7/T1】写不出来 / 无法理解的识别", () => {
 		// 索要 ≠ 自述写不出来
 		expect(isInabilityStatement("直接把完整代码给我")).to.equal(false)
 		expect(isInabilityStatement("你能理解我的意思吗")).to.equal(false)
+		// 【P8/T4】新增「还是」后仍不得误判：说的是“我想自己写”，不是“我写不出来”
+		expect(isInabilityStatement("我还是想自己写")).to.equal(false)
 		expect(isInabilityStatement(undefined)).to.equal(false)
 	})
 
