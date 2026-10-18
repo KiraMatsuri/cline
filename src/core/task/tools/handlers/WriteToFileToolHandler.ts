@@ -292,7 +292,9 @@ export class WriteToFileToolHandler implements IFullyManagedTool {
 			}
 
 			// Mark the file as edited by Cline
-			config.services.fileContextTracker.markFileAsEditedByCline(relPath)
+			// 【P8/T1】用**绝对路径**标记：归属查询侧同时给绝对与相对形态，但绝不能只依赖模型给的"原始路径"
+			//（实测模型给 `/bubble_sort.py` 这类带前导斜杠的路径，与 `asRelativePath` 的结果不相等）
+			config.services.fileContextTracker.markFileAsEditedByCline(absolutePath)
 
 			// Save the changes and get the result
 			const { newProblemsMessage, userEdits, autoFormattingEdits, finalContent } =

@@ -232,7 +232,16 @@ export class FileContextTracker {
 	 */
 	public wasRecentlyWrittenByCline(filePath: string, windowMs: number = this.writeAttributionWindowMs): boolean {
 		const at = this.recentlyWrittenByClineAt.get(canonicalPathKey(filePath))
-		return at !== undefined && Date.now() - at <= windowMs
+		if (at === undefined) {
+			// 【P8/T1】归属 miss 必须可观测：2026-10-18 实测里有 3/4 次 AI 写盘被误判成「学生动手」
+			//（连带把 `ai_coding_rounds` 清零），但日志里看不出原因。这条只在 debug 级别输出，
+			// 把待查的键与已知键一并打印，下一次踩到一眼就能定位。
+			Logger.info(
+				`[FileContextTracker] attribution miss: query=${canonicalPathKey(filePath)}, known=[${[...this.recentlyWrittenByClineAt.keys()].join(", ")}]`,
+			)
+			return false
+		}
+		return Date.now() - at <= windowMs
 	}
 
 	/**

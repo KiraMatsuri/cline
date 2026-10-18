@@ -35,13 +35,25 @@ export interface FileContextTrackerLike {
 /**
  * 【F2】判定某次 code_edit / file_save 的编辑者归属。
  * 无 tracker 或判定抛错时一律回退 "user"（旧语义），保证日志主流程不受影响。
+ *
+ * 【P8/T1】接受**多形态路径**（绝对 fsPath + 相对路径），任一击中即判 ai。
+ * 为什么必须多形态：写盘侧 `markFileAsEditedByCline()` 传的是模型给的原始路径（可能带前导斜杠，
+ * 如 `/bubble_sort.py`），而日志侧曾经只拿 `asRelativePath()` 的结果去查 —— 两侧路径形态不同时
+ * Map 精确比较必然 miss，整次 AI 写盘被误判成「学生动手」，进而把 `ai_coding_rounds` 清零
+ * （2026-10-18 实测：4 次写盘只沉淀出 2 次计数，阻断永不触发）。
  */
-export function resolveEditEditor(relPath: string, tracker: FileContextTrackerLike | undefined): "user" | "ai" {
+export function resolveEditEditor(paths: string | readonly string[], tracker: FileContextTrackerLike | undefined): "user" | "ai" {
 	if (!tracker) {
 		return "user"
 	}
+	const candidates = typeof paths === "string" ? [paths] : paths
 	try {
-		return tracker.wasRecentlyWrittenByCline(relPath) ? "ai" : "user"
+		for (const candidate of candidates) {
+			if (candidate && tracker.wasRecentlyWrittenByCline(candidate)) {
+				return "ai"
+			}
+		}
+		return "user"
 	} catch {
 		return "user" // 归属判定失败不得影响日志主流程
 	}
@@ -202,7 +214,8 @@ export class CodeEditTracker implements vscode.Disposable {
 		const relativePath = await asRelativePath(filePath)
 		const languageHint = contentAnalyzer.inferLanguage(document.getText().substring(0, 500))
 		// 【F11-③】`role` 与 `editor` 同源（不得两处各算一次）
-		const editor = resolveEditEditor(relativePath, this.fileContextTracker)
+		// 【P8/T1】归属查询同时给绝对与相对两种形态（mark 侧用的是模型原始路径，可能带前导斜杠）
+		const editor = resolveEditEditor([filePath, relativePath], this.fileContextTracker)
 
 		const log: StudentInteractionLog = {
 			ts: new Date().toISOString(),
@@ -239,7 +252,8 @@ export class CodeEditTracker implements vscode.Disposable {
 		const ext = path.extname(filePath).toLowerCase()
 		const languageHint = this.inferLanguageFromExtension(ext)
 		// 【F11-③】`role` 与 `editor` 同源（不得两处各算一次）
-		const editor = resolveEditEditor(relativePath, this.fileContextTracker)
+		// 【P8/T1】同上：绝对 + 相对双形态查询
+		const editor = resolveEditEditor([filePath, relativePath], this.fileContextTracker)
 
 		const log: StudentInteractionLog = {
 			ts: new Date().toISOString(),

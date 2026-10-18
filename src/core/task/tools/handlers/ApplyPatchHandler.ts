@@ -331,6 +331,9 @@ export class ApplyPatchHandler implements IFullyManagedTool {
 				const change = commit.changes[changedFilePath]
 				// For move operations, track the new path instead
 				const pathToTrack = change.type === PatchActionType.UPDATE && change.movePath ? change.movePath : changedFilePath
+				// 【P8/T1】`changedFiles` 来自解析后的补丁，均为**绝对路径**；与归属查询侧（绝对 + 相对双形态）对齐。
+				// ⚠️ 这里 mark 在 `saveFileChange()` 之后：apply_patch 是一次性写盘（非流式），
+				// 变更事件的 2s 防抖 flush 仍晚于本行，因此不存在 write_to_file 那种竞态。
 				config.services.fileContextTracker.markFileAsEditedByCline(pathToTrack)
 				await config.services.fileContextTracker.trackFileContext(pathToTrack, "cline_edited")
 			}

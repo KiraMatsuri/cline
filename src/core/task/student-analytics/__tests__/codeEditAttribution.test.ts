@@ -90,6 +90,45 @@ describe("F11-③ · 编辑日志的 role 归属", () => {
 	})
 })
 
+describe("【P8/T1】归属判定：绝对 + 相对双形态", () => {
+	it("★ mark 用绝对路径、查询同时给绝对与相对 ⇒ 命中", () => {
+		const t = new FileContextTracker({} as Controller, "t1")
+		t.markFileAsEditedByCline(process.platform === "win32" ? "d:\\test-work\\bubble_sort.py" : "/w/bubble_sort.py")
+		const abs = process.platform === "win32" ? "d:\\test-work\\bubble_sort.py" : "/w/bubble_sort.py"
+		expect(resolveEditEditor([abs, "bubble_sort.py"], t)).to.equal("ai")
+	})
+
+	it("★ 模型给的带前导斜杠路径（本轮实测形态）也能被原始形态命中", () => {
+		const t = new FileContextTracker({} as Controller, "t1")
+		t.markFileAsEditedByCline("/bubble_sort.py") // write_to_file 的原始 params.path
+		// 只给相对形态 ⇒ 不命中（这正是本轮 3/4 次被误判成「学生动手」的原因）
+		expect(resolveEditEditor("bubble_sort.py", t)).to.equal("user")
+		// 给出原始形态 ⇒ 命中
+		expect(resolveEditEditor(["/bubble_sort.py", "bubble_sort.py"], t)).to.equal("ai")
+	})
+
+	it("★ 两个形态都没被 mark ⇒ user（不得误判成 ai）", () => {
+		const t = new FileContextTracker({} as Controller, "t1")
+		t.markFileAsEditedByCline("/other.py")
+		expect(resolveEditEditor(["/bubble_sort.py", "bubble_sort.py"], t)).to.equal("user")
+	})
+
+	it("★ 无 tracker ⇒ user（保持旧语义，不影响日志主流程）", () => {
+		expect(resolveEditEditor(["a.py", "a.py"], undefined)).to.equal("user")
+	})
+
+	it("★ 结构守卫：两处日志构造点都用绝对+相对双形态；写盘侧 mark 用绝对路径", () => {
+		const trackerSrc = fs.readFileSync(path.join(__dirname, "..", "CodeEditTracker.ts"), "utf-8")
+		expect(trackerSrc.match(/resolveEditEditor\(\[filePath, relativePath\]/g)?.length ?? 0).to.equal(2)
+		const writeSrc = fs.readFileSync(
+			path.join(__dirname, "..", "..", "tools", "handlers", "WriteToFileToolHandler.ts"),
+			"utf-8",
+		)
+		expect(writeSrc).to.include("markFileAsEditedByCline(absolutePath)")
+		expect(writeSrc).to.not.include("markFileAsEditedByCline(relPath)")
+	})
+})
+
 describe("F2 · wasRecentlyWrittenByCline 只读语义（不得破坏既有 watcher）", () => {
 	it("连续两次查询都为 true —— 证明它不消费状态", () => {
 		const tracker = new FileContextTracker({} as Controller, "t1")
