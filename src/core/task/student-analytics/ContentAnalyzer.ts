@@ -5,6 +5,7 @@
 
 import { parseFencedCodeBlocks } from "@/shared/markdown/codeBlocks"
 import { stripLeakedToolCallMarkup } from "@/shared/markdown/toolCallMarkup"
+import { detectFullImplementation } from "./fullImplementationDetect"
 import type { ContentAnalysisResult, LanguageHint } from "./types"
 
 /**
@@ -160,6 +161,7 @@ export class ContentAnalyzer {
 				hasCode: false,
 				hasCodeBlock: false,
 				hasInlineCode: false,
+				hasFullImpl: false,
 				languageHint: "unknown",
 				codeBlockCount: 0,
 			}
@@ -178,12 +180,16 @@ export class ContentAnalyzer {
 		// 【② 已决 = B1】所有判定统一基于剔除工具标记后的文本
 		const hasCode = this.detectCode(scrubbed)
 		const languageHint = this.inferLanguage(scrubbed)
+		// 【P7/T3（裁定 2）】是否给出了可直接运行的完整实现 —— `ai_coding_rounds` 的第二个信号。
+		// 与 `hasCodeBlock` 分开：有代码块 ≠ 完整实现（骨架/填空/伪代码都不算）。
+		const hasFullImpl = detectFullImplementation(scrubbed).detected
 
 		return {
 			contentLength,
 			hasCode,
 			hasCodeBlock,
 			hasInlineCode,
+			hasFullImpl,
 			languageHint,
 			codeBlockCount,
 		}

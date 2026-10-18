@@ -95,6 +95,12 @@ export interface StudentInteractionLog {
 	hasCode: boolean
 	/** 【v2.13】是否含 fenced 代码块（仅 role=assistant 时有值；streak 只认它） */
 	hasCodeBlock?: boolean
+	/**
+	 * 【P7/T3】是否给出了「可直接运行的完整实现」（仅 role=assistant 时有值；旧日志缺省）。
+	 * 判定见 `fullImplementationDetect.detectFullImplementation()`。
+	 * 它是 `ai_coding_rounds` 的第二个信号（第一个是 `code_edit` + `editor="ai"`）。
+	 */
+	hasFullImpl?: boolean
 	/** 推断的编程语言 */
 	languageHint: LanguageHint
 	/** 附带图片数量 */
@@ -164,6 +170,8 @@ export interface ContentAnalysisResult {
 	hasCodeBlock: boolean
 	/** 【v2.13】是否仅含行内代码（单反引号）—— 与"提及"等价，不构成代码生成 */
 	hasInlineCode: boolean
+	/** 【P7/T3】是否给出了可直接运行的完整实现（结构关键字 + 行数 + 无占位符 + 无中文伪代码） */
+	hasFullImpl: boolean
 	/** 推断的语言类型 */
 	languageHint: LanguageHint
 	/** 检测到的代码片段数量（仅 fenced） */

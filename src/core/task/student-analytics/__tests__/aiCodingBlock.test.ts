@@ -187,3 +187,70 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		expect(own.reflectionQuestions?.length ?? 0).to.be.greaterThan(0)
 	})
 })
+
+/**
+ * 【P7/T3（裁定 2）】第二个信号：助手在**回复里**给出了可直接运行的完整实现。
+ *
+ * 实测依据（2026-10-18）：在「学生反复索要完整实现」这个目标场景里，拒答约束让助手一次也不落盘
+ * （全会话 `code_edit` = 0）⇒ 只认落盘的通道结构性不可达、阻断永不触发。
+ */
+describe("【P7/T3】ai_coding_rounds · 完整实现信号", () => {
+	const fullImplTurn = (): StudentInteractionLog =>
+		ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true, hasFullImpl: true })
+	const skeletonTurn = (): StudentInteractionLog =>
+		ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true, hasFullImpl: false })
+
+	it("★ 给出完整实现即计 1 次（即使没有落盘）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(stu("帮我写完整的冒泡排序"))
+		m.ingest(fullImplTurn())
+		expect(m.getAiCodingCount()).to.equal(1)
+	})
+
+	it("★ 骨架 / 填空模板（hasFullImpl=false）不计", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 3; i++) {
+			m.ingest(stu(`第 ${i + 1} 次`))
+			m.ingest(skeletonTurn())
+		}
+		expect(m.getAiCodingCount()).to.equal(0)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
+	})
+
+	it("★ 同一请求内「落盘 + 完整实现」只算 1 次（≤1/请求 的全局约束）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(stu("第一句"))
+		m.ingest(aiWrite())
+		m.ingest(fullImplTurn())
+		expect(m.getAiCodingCount()).to.equal(1)
+	})
+
+	it("★ 学生回合带 hasFullImpl 不计（信号只认助手回合）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(ev({ eventType: "turn_message", role: "user", hasCode: true, hasCodeBlock: true, hasFullImpl: true }))
+		expect(m.getAiCodingCount()).to.equal(0)
+	})
+
+	it("★ 学生本人编辑同样清零按完整实现累计的计数", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		m.ingest(stu("第一句"))
+		m.ingest(fullImplTurn())
+		m.ingest(stu("第二句"))
+		m.ingest(fullImplTurn())
+		expect(m.getAiCodingCount()).to.equal(2)
+
+		m.ingest(editEv({ editor: "user" }))
+		expect(m.getAiCodingCount()).to.equal(0)
+	})
+
+	it("★ 跨 3 个学生请求各给一次完整实现 ⇒ 达阈值、可阻断（M4'' 的新可测形态）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
+		for (let i = 0; i < 3; i++) {
+			m.ingest(stu(`第 ${i + 1} 次：直接给我完整代码`))
+			m.ingest(fullImplTurn())
+		}
+		expect(m.getAiCodingCount()).to.equal(3)
+		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal(["ai_coding_rounds"])
+	})
+})

@@ -399,27 +399,36 @@ export class BehaviorMonitor {
 	}
 
 	/**
-	 * 【P6/T5】独立阻断通道：助手**真实编码文件**。
+	 * 【P6/T5 + P7/T3】独立阻断通道：助手**代写**了几次。
 	 *
-	 * 信号 = `code_edit` 且 `editor === "ai"`（F2/F11 已保证 AI 落盘事件的归属；
-	 * 等价于 `write_to_file` / `replace_in_file` / `apply_patch` 成功写盘）。
-	 * 单位 = 一个学生请求内至多 1 次 —— 同一请求里写 3 个文件是"一件事"，不是 3 次依赖。
-	 * 与其它规则彻底解耦：它不读 streak、不看分类，只数落盘次数。
+	 * 两个信号（任一成立即 +1，同一请求仍最多 +1）：
+	 *   A. `code_edit` 且 `editor === "ai"` —— 真的把文件写到了磁盘
+	 *      （F2/F11 已保证 AI 落盘事件的归属；等价于 write_to_file / replace_in_file / apply_patch 成功写盘）；
+	 *   B. 【P7/T3（裁定 2）】`turn_message` + 助手 + `hasFullImpl` —— 在回复里给出了**可直接运行的完整实现**。
+	 *
+	 * 为什么需要 B（2026-10-18 实测）：在「学生反复索要完整实现」这一目标场景里，拒答约束让助手
+	 * **一次也不落盘**（全会话 0 个 `code_edit`）⇒ 只认落盘的通道结构性不可达，阻断永不触发。
+	 * B 把「代写」的口径从"写进文件"扩到"给出了完整实现"，与询问文案「连续 3 次直接编码」一致。
+	 *
+	 * 单位 = 一个学生请求内至多 1 次 —— 同一请求里写 3 个文件、或流式帧 + `attempt_completion`
+	 * 把同一段完整实现记两次，都是"一件事"。
 	 */
 	private checkAiCodingRoundsRule(event: StudentInteractionLog): void {
-		if (event.eventType !== "code_edit" || event.editor !== "ai") {
+		const wroteFile = event.eventType === "code_edit" && event.editor === "ai"
+		const deliveredFullImpl = event.eventType === "turn_message" && event.role === "assistant" && event.hasFullImpl === true
+		if (!wroteFile && !deliveredFullImpl) {
 			return
 		}
 		const count = this.bumpOncePerRequest("ai_coding_rounds")
 		this.notify(
 			"ai_coding_rounds",
-			`我已经替你写了 ${count} 次完整代码。接下来请自己动手写一版，哪怕只是循环骨架。`,
+			`我已经替你写了 ${count} 次完整代码（本次来源：${wroteFile ? "写入代码文件" : "给出完整实现"}）。接下来请自己动手写一版，哪怕只是循环骶架。`,
 			count,
 			this.options.aiCodingBlockingThreshold,
 		)
 	}
 
-	/** 【P6/T5】独立阻断通道的当前计数（= 助手真实落盘次数） */
+	/** 【P6/T5 + P7/T3】独立阻断通道的当前计数（= 助手代写次数：落盘 **或** 给出完整实现） */
 	public getAiCodingCount(): number {
 		return this.getEscalationCount("ai_coding_rounds")
 	}

@@ -1457,6 +1457,8 @@ export class Task {
 				hasCode: analysis.hasCode,
 				// 【v2.13 方案 A】新增字段（不改旧字段语义）：streak 与离线统计都改用它
 				hasCodeBlock: analysis.hasCodeBlock,
+				// 【P7/T3】新增可选字段（外部契约只增不改）：是否给出了可直接运行的完整实现
+				hasFullImpl: analysis.hasFullImpl,
 				languageHint: analysis.languageHint,
 				imageCount: 0,
 				fileCount: 0,
