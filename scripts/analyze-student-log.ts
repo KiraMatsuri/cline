@@ -4,10 +4,27 @@
  * Student Interaction Log Offline Analysis Script
  *
  * 用法:
- *   npx ts-node scripts/analyze-student-log.ts [logPath]
+ *   node scripts/analyze-student-log.ts [选项] [日志路径]
+ *   npx ts-node scripts/analyze-student-log.ts [选项] [日志路径]
  *
- * 参数:
- *   logPath - 可选，日志文件路径。默认为 D:\\cline-test\\.cline-logs\\student_interactions.log
+ * 日志路径（需求 1 修复点）:
+ *   不再写死 `D:\cline-test\...`。带参数 → 只分析该文件；
+ *   不带参数 → 按解析链自动定位（见 src/core/teaching/logPathResolver.ts）：
+ *     1) 环境变量 CLINE_STUDENT_LOG
+ *     2) --workspace <目录> 下的 .cline-logs/student_interactions.log
+ *     3) 当前目录下的 .cline-logs/student_interactions.log
+ *     4) 当前目录的上级目录（最多 4 级）中的 .cline-logs/student_interactions.log
+ *
+ * 选项:
+ *   -w, --workspace <dir>   显式指定工作区目录
+ *   -l, --log <file>        显式指定日志文件（等价于位置参数）
+ *   -o, --out <file>        JSON 输出路径（默认 <日志>_analysis.json）
+ *   -j, --json              额外导出 JSON 报告
+ *       --strict            日志不存在或 0 条有效记录时返回非 0 退出码
+ *   -h, --help              显示帮助
+ *
+ * 退出码:
+ *   0 成功 | 1 日志不存在/读取失败 | 2 --strict 下日志为空 | 3 参数错误
  *
  * 输出:
  *   - 总任务数
@@ -19,6 +36,8 @@
 
 import * as fs from "fs"
 import * as path from "path"
+
+import { describeLogSource, resolveLogPath, STUDENT_LOG_ENV, STUDENT_LOG_RELATIVE } from "../src/core/teaching/logPathResolver.ts"
 
 // ============= 类型定义（与 src/core/task/student-analytics/types.ts 保持一致） =============
 
@@ -112,33 +131,44 @@ interface StudentProfile {
 
 // ============= 分析函数 =============
 
-function readLogs(logPath: string): StudentInteractionLog[] {
-	if (!fs.existsSync(logPath)) {
-		console.error(`❌ 日志文件不存在: ${logPath}`)
-		process.exit(1)
+interface LoadResult {
+	events: StudentInteractionLog[]
+	parseErrors: number
+	error?: string
+}
+
+function loadLogs(logPath: string): LoadResult {
+	let content: string
+	try {
+		if (!fs.existsSync(logPath)) {
+			return { events: [], parseErrors: 0, error: `日志文件不存在: ${logPath}` }
+		}
+		content = fs.readFileSync(logPath, "utf8")
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e)
+		return { events: [], parseErrors: 0, error: `读取日志失败: ${msg}` }
 	}
 
-	const content = fs.readFileSync(logPath, "utf8")
-	const lines = content.trim().split("\n").filter(Boolean)
-
-	const logs: StudentInteractionLog[] = []
+	const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0)
+	const events: StudentInteractionLog[] = []
 	let parseErrors = 0
 
 	for (let i = 0; i < lines.length; i++) {
 		try {
-			const log = JSON.parse(lines[i]) as StudentInteractionLog
-			logs.push(log)
-		} catch (_error) {
+			events.push(JSON.parse(lines[i]) as StudentInteractionLog)
+		} catch {
 			parseErrors++
-			console.warn(`⚠️ 第 ${i + 1} 行解析失败，已跳过`)
+			// 只提示前 5 行，避免坏日志刷屏
+			if (parseErrors <= 5) {
+				console.warn(`⚠️ 第 ${i + 1} 行解析失败，已跳过`)
+			}
 		}
 	}
-
-	if (parseErrors > 0) {
-		console.warn(`\n⚠️ 共有 ${parseErrors} 行解析失败\n`)
+	if (parseErrors > 5) {
+		console.warn(`⚠️ 其余 ${parseErrors - 5} 行解析失败，已跳过`)
 	}
 
-	return logs
+	return { events, parseErrors }
 }
 
 function analyzeLogs(logs: StudentInteractionLog[]): AnalysisResult {
@@ -633,52 +663,218 @@ function printProfile(profile: StudentProfile): void {
 	console.log("=".repeat(60) + "\n")
 }
 
-// ============= 主程序 =============
+// ============= 命令行参数 =============
 
-function main(): void {
-	// 过滤标记参数（--json / -j），剩余参数作为日志文件路径
-	const args = process.argv.slice(2).filter((a) => !a.startsWith("-"))
-	const flags = new Set(process.argv.slice(2).filter((a) => a.startsWith("-")))
+interface CliOptions {
+	logPath?: string
+	workspace?: string
+	json: boolean
+	outPath?: string
+	strict: boolean
+	help: boolean
+}
 
-	let logPath: string
-	if (args[0]) {
-		logPath = path.resolve(args[0])
-	} else {
-		// 默认路径：D:\\cline-test\\.cline-logs\\student_interactions.log
-		logPath = path.join("D:\\cline-test", ".cline-logs", "student_interactions.log")
+const USAGE = `学生交互日志离线分析脚本
+
+用法:
+  node scripts/analyze-student-log.ts [选项] [日志路径]
+  npx ts-node scripts/analyze-student-log.ts [选项] [日志路径]
+
+日志路径:
+  传了 → 只分析该文件（不存在则退出码 1，绝不偷偷换文件）
+  不传 → 依次尝试：
+    1) 环境变量 ${STUDENT_LOG_ENV}
+    2) --workspace <目录> 下的 ${STUDENT_LOG_RELATIVE}
+    3) 当前目录下的 ${STUDENT_LOG_RELATIVE}
+    4) 当前目录的上级目录（最多 4 级）中的 ${STUDENT_LOG_RELATIVE}
+
+选项:
+  -w, --workspace <dir>   显式指定工作区目录
+  -l, --log <file>        显式指定日志文件（等价于位置参数）
+  -o, --out <file>        JSON 输出路径（默认 <日志>_analysis.json）
+  -j, --json              额外导出 JSON 报告
+      --strict            日志不存在或 0 条有效记录时返回非 0 退出码
+  -h, --help              显示本帮助
+
+退出码:
+  0 成功 | 1 日志不存在/读取失败 | 2 --strict 下日志为空 | 3 参数错误`
+
+function parseArgs(argv: string[]): { options: CliOptions; error?: string } {
+	const options: CliOptions = { json: false, strict: false, help: false }
+	const positionals: string[] = []
+
+	for (let i = 0; i < argv.length; i++) {
+		const raw = argv[i]
+		const eq = raw.indexOf("=")
+		const isLongWithValue = raw.startsWith("--") && eq > 0
+		const name = isLongWithValue ? raw.slice(0, eq) : raw
+		const inlineValue = isLongWithValue ? raw.slice(eq + 1) : undefined
+
+		const takeValue = (): string | undefined => {
+			if (inlineValue !== undefined) return inlineValue
+			const next = argv[i + 1]
+			if (!next || next.startsWith("-")) return undefined
+			i++
+			return next
+		}
+
+		switch (name) {
+			case "-h":
+			case "--help":
+				options.help = true
+				break
+			case "-j":
+			case "--json":
+				options.json = true
+				break
+			case "--strict":
+				options.strict = true
+				break
+			case "-l":
+			case "--log": {
+				const value = takeValue()
+				if (!value) return { options, error: `${name} 需要一个日志文件路径` }
+				options.logPath = value
+				break
+			}
+			case "-w":
+			case "--workspace": {
+				const value = takeValue()
+				if (!value) return { options, error: `${name} 需要一个工作区目录` }
+				options.workspace = value
+				break
+			}
+			case "-o":
+			case "--out": {
+				const value = takeValue()
+				if (!value) return { options, error: `${name} 需要一个输出文件路径` }
+				options.outPath = value
+				break
+			}
+			default: {
+				if (raw.startsWith("-")) return { options, error: `未知选项: ${raw}` }
+				positionals.push(raw)
+			}
+		}
 	}
 
-	console.log(`\n📖 正在读取日志文件: ${logPath}`)
+	if (positionals.length > 1) {
+		return { options, error: `只能指定一个日志路径，当前收到 ${positionals.length} 个: ${positionals.join(", ")}` }
+	}
+	if (positionals.length === 1) {
+		if (options.logPath) return { options, error: "日志路径重复指定（位置参数与 --log 只能二选一）" }
+		options.logPath = positionals[0]
+	}
+	if (options.workspace && options.logPath) {
+		return { options, error: "--workspace 与日志路径不能同时使用（--workspace 意味着读该目录的默认日志）" }
+	}
 
-	// 读取并解析日志
-	const logs = readLogs(logPath)
-	console.log(`✅ 成功读取 ${logs.length} 条日志记录`)
+	return { options }
+}
+
+// ============= 主程序 =============
+
+function main(): number {
+	const { options, error } = parseArgs(process.argv.slice(2))
+	if (error) {
+		console.error(`❌ 参数错误: ${error}\n`)
+		console.error(USAGE)
+		return 3
+	}
+	if (options.help) {
+		console.log(USAGE)
+		return 0
+	}
+
+	// 解析日志路径（不再有写死的绝对路径）
+	// 环境变量：CLINE_STUDENT_LOG 优先，兼容看板侧既有的 CLINE_LOG_PATH
+	const envVarName = process.env[STUDENT_LOG_ENV] ? STUDENT_LOG_ENV : process.env.CLINE_LOG_PATH ? "CLINE_LOG_PATH" : null
+	const envPath = envVarName ? (process.env[envVarName] as string) : null
+
+	const resolution = resolveLogPath({
+		logPathArg: options.logPath ?? null,
+		workspaceArg: options.workspace ?? null,
+		envPath,
+		cwd: process.cwd(),
+	})
+
+	console.log(`\n📖 正在读取日志文件: ${resolution.path}`)
+	const sourceLabel =
+		resolution.source === "env" && envVarName ? `环境变量 ${envVarName}` : describeLogSource(resolution.source)
+	console.log(`   （路径来源：${sourceLabel}）`)
+
+	if (!resolution.exists) {
+		console.error(`\n❌ 未找到日志文件: ${resolution.path}`)
+		if (resolution.candidates.length > 1) {
+			console.error("   已尝试以下路径（均不存在）：")
+			for (const candidate of resolution.candidates) {
+				console.error(`     - ${candidate}`)
+			}
+		}
+		console.error("\n   请确认：")
+		console.error(`     1) 是否在打开了学生工作区的目录下运行（默认读 <workspace>/${STUDENT_LOG_RELATIVE}）`)
+		console.error("     2) 或用 --workspace <工作区目录> 显式指定")
+		console.error("     3) 或直接传入日志文件路径：node scripts/analyze-student-log.ts <path>")
+		return options.strict ? 2 : 1
+	}
+
+	const { events, parseErrors, error: loadError } = loadLogs(resolution.path)
+	if (loadError) {
+		console.error(`\n❌ ${loadError}`)
+		return 1
+	}
+
+	console.log(`✅ 成功读取 ${events.length} 条日志记录${parseErrors > 0 ? `（${parseErrors} 行解析失败已跳过）` : ""}`)
+
+	if (events.length === 0) {
+		console.warn("\n⚠️ 日志文件存在但没有任何有效记录（0 条事件）—— 学生可能还没产生交互。")
+		if (options.strict) {
+			console.warn("   --strict 模式下视为失败（退出码 2）。")
+			return 2
+		}
+	}
 
 	// 分析日志
-	const result = analyzeLogs(logs)
+	const result = analyzeLogs(events)
 
-	// 打印报告
+	// 打印分析报告
 	printReport(result)
 
-	// 3.0 新增：生成学生画像
+	// 生成学生画像
 	console.log("\n🎓 正在生成学生能力画像...")
-	const profile = generateStudentProfile(logs)
+	const profile = generateStudentProfile(events)
 	printProfile(profile)
 
 	// 可选：导出 JSON
-	const exportJson = flags.has("--json") || flags.has("-j")
-	if (exportJson) {
-		const jsonOutputPath = logPath.replace(/\.log$/, "_analysis.json")
-		// 将画像一并写入 JSON
+	if (options.json || options.outPath) {
+		const jsonOutputPath = options.outPath
+			? path.resolve(process.cwd(), options.outPath)
+			: resolution.path.replace(/\.log$/i, "_analysis.json")
+
 		const output = {
 			generatedAt: new Date().toISOString(),
+			// 记录「这次分析的到底是哪个文件」，便于教学端与终端结果对账
+			logPath: resolution.path,
+			logSource: resolution.source,
+			logPathCandidates: resolution.candidates,
+			eventCount: events.length,
+			parseErrors,
 			analysis: result,
 			studentProfile: profile,
 		}
-		fs.writeFileSync(jsonOutputPath, JSON.stringify(output, null, 2), "utf8")
-		console.log(`📁 JSON 报告已导出到: ${jsonOutputPath}`)
+
+		try {
+			fs.mkdirSync(path.dirname(jsonOutputPath), { recursive: true })
+			fs.writeFileSync(jsonOutputPath, JSON.stringify(output, null, 2), "utf8")
+			console.log(`📁 JSON 报告已导出到: ${jsonOutputPath}`)
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e)
+			console.error(`❌ 写入 JSON 失败: ${msg}`)
+			return 1
+		}
 	}
+
+	return 0
 }
 
-// 运行主程序
-main()
+process.exitCode = main()

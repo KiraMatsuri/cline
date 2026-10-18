@@ -10,6 +10,7 @@ import { AssignmentErrorBoundary } from "./components/teaching/AssignmentErrorBo
 import AssignmentTab from "./components/teaching/AssignmentTab"
 import FeedbackForm from "./components/teaching/FeedbackForm"
 import LLMSettingsView from "./components/teaching/LLMSettingsView"
+import ThinkingQuestionsForm from "./components/teaching/ThinkingQuestionsForm"
 import WorktreesView from "./components/worktrees/WorktreesView"
 import { useClineAuth } from "./context/ClineAuthContext"
 import { useExtensionState } from "./context/ExtensionStateContext"
@@ -39,6 +40,12 @@ const AppContent = () => {
 	// 【v2.9.2 增量】编辑器区反馈面板（FeedbackPanelProvider 创建）：全页反馈表单
 	if (currentView === "clineFeedbackPanel") {
 		return <FeedbackForm />
+	}
+
+	// 【v2.13 增量】编辑器区答题面板（ThinkingQuestionsPanelProvider 创建）：
+	// 点击上传后先出题、答完确认才真正上传（需求 2 两段式提交）
+	if (currentView === "clineThinkingQuestionsPanel") {
+		return <ThinkingQuestionsForm />
 	}
 
 	const {

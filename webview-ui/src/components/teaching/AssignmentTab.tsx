@@ -397,6 +397,32 @@ const AssignmentTab: FC = () => {
 					setLoading(false)
 					break
 
+				// 【v2.13】两段式提交第一段的响应：材料收集完成 + 题目已生成，面板已打开
+				case "prepareSubmission": {
+					setSubmitting(false)
+					if (message.success) {
+						const info = (message.data ?? {}) as {
+							questions?: number
+							codeFiles?: number
+							logLineCount?: number
+							omittedFiles?: number
+						}
+						const skipped = info.omittedFiles && info.omittedFiles > 0 ? `，跳过 ${info.omittedFiles} 个文件` : ""
+						setStatusMessage({
+							type: "info",
+							text:
+								`📦 已收集 ${info.codeFiles ?? 0} 个代码文件、${info.logLineCount ?? 0} 行日志${skipped}。` +
+								`请在打开的答题面板完成 ${info.questions ?? 0} 道思考题后点「确认提交」。`,
+						})
+					} else {
+						setStatusMessage({
+							type: "error",
+							text: `❌ 准备提交失败: ${message.error || "未知错误"}`,
+						})
+					}
+					break
+				}
+
 				case "submitTask":
 					if (message.success) {
 						const aiDep = (message.data as Record<string, unknown>)?.ai_dependency as number | undefined
@@ -477,9 +503,7 @@ const AssignmentTab: FC = () => {
 				// 【v2.5】自动工作区日志路径响应
 				case "queryAutoLogPath":
 					if (message.success) {
-						const data = message.data as
-							| { path: string | null; created: boolean }
-							| undefined
+						const data = message.data as { path: string | null; created: boolean } | undefined
 						if (data?.path) {
 							setLogFilePath(data.path)
 							if (data.created) {
@@ -577,19 +601,18 @@ const AssignmentTab: FC = () => {
 	// ========================================================================
 
 	/**
-	 * 【IPC 消息：submitTask】
-	 * 向 Extension 后台发送"一键提交实验"请求。
+	 * 【IPC 消息：prepareSubmission】（v2.13 两段式提交 — 第一段）
+	 * 向 Extension 后台发送「准备提交」请求：本地收集材料 + 出题，**不上传**。
 	 *
 	 * 消息流转：
 	 *   AssignmentTab (Webview)
-	 *     → postMessage({ command: 'submitTask', payload: { assignmentId } })
-	 *     → AssignmentManager.handleMessage()
-	 *     → ① 读取当前编辑器代码
-	 *     → ② 读取 .cline-logs 行为日志
-	 *     → ③ 读取已保存的学生信息
-	 *     → ④ POST /api/v1/submissions
-	 *     → ⑤ showInformationMessage 弹出成功提示
-	 *     → postMessage() 返回提交结果
+	 *     → postMessage({ command: 'prepareSubmission', payload: { assignmentId } })
+	 *     → AssignmentManager.handlePrepareSubmission()
+	 *     → ① 读取学生信息 / 任务信息
+	 *     → ② 收集工作区代码文件
+	 *     → ③ 读取日志原文（resolver 解析，不再写死路径）
+	 *     → ④ 生成 3~5 道思考题
+	 *     → ⑤ 打开编辑器区答题面板（学生答完点确认才真正上传）
 	 */
 	const handleSubmitTask = useCallback(() => {
 		if (!selectedTask) {
@@ -601,12 +624,12 @@ const AssignmentTab: FC = () => {
 		setSubmitting(true)
 		setStatusMessage({
 			type: "info",
-			text: `⏳ 正在提交实验「${selectedTask.title}」...`,
+			text: `⏳ 正在收集「${selectedTask.title}」的代码与日志并生成思考题...`,
 		})
 
 		vscodeApi.postMessage({
 			type: "assignment_command",
-			command: "submitTask",
+			command: "prepareSubmission",
 			payload: { assignmentId: selectedTask.id },
 		})
 	}, [selectedTask, vscodeApi])
@@ -961,8 +984,7 @@ const AssignmentTab: FC = () => {
 					}}>
 					<span>✅ 已保存：</span>
 					<span>
-						{savedStudentInfo.studentName}（学号 {savedStudentInfo.studentId}，班级{" "}
-						{savedStudentInfo.classId}）
+						{savedStudentInfo.studentName}（学号 {savedStudentInfo.studentId}，班级 {savedStudentInfo.classId}）
 					</span>
 				</div>
 			)}
@@ -998,9 +1020,7 @@ const AssignmentTab: FC = () => {
 					</div>
 					{/* 【v2.5】日志路径输入：打开工作区时自动填入/创建 */}
 					<div style={styles.inputGroup}>
-						<label style={styles.label}>
-							📄 行为日志路径（自动检测）
-						</label>
+						<label style={styles.label}>📄 行为日志路径（自动检测）</label>
 						<input
 							onChange={(e) => setLogFilePath(e.target.value)}
 							placeholder="D:/your-workspace/.cline-logs/student_interactions.log"
@@ -1008,7 +1028,8 @@ const AssignmentTab: FC = () => {
 							value={logFilePath}
 						/>
 						<div style={{ fontSize: 10, color: "var(--vscode-descriptionForeground)", marginTop: 2 }}>
-							打开工作区时自动填入并创建空白日志文件（路径 <code>&lt;root&gt;/.cline-logs/student_interactions.log</code>）。
+							打开工作区时自动填入并创建空白日志文件（路径{" "}
+							<code>&lt;root&gt;/.cline-logs/student_interactions.log</code>）。
 							可手动修改为其他路径。提交实验时附带此 JSONL，看板可按学号/姓名/班级筛选。
 						</div>
 					</div>

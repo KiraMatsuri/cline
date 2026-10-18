@@ -5,7 +5,9 @@ import { handleGrpcRequest, handleGrpcRequestCancel } from "@/core/controller/gr
 import type { AssignmentMessage } from "@/core/teaching/AssignmentManager"
 import { AssignmentManager } from "@/core/teaching/AssignmentManager"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
+import { RunTraceCollector } from "@/core/teaching/submission/RunTraceCollector"
 import { HostProvider } from "@/hosts/host-provider"
+import { ThinkingQuestionsPanelProvider } from "@/hosts/vscode/ThinkingQuestionsPanelProvider"
 import { ExtensionRegistryInfo } from "@/registry"
 import type { ExtensionMessage } from "@/shared/ExtensionMessage"
 import { Logger } from "@/shared/services/Logger"
@@ -64,6 +66,35 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		// 能拿到同一份 cachedAutoLogPath（与 extension.ts 的独立实例隔离）。
 		m.startWatchingWorkspaceOpen()
 		return m
+	})()
+
+	/**
+	 * 【v2.13】提交前思考题面板（编辑器区单例）。
+	 *
+	 * 这里把「打开面板」注入给 AssignmentManager，而不是让 manager 自己 import
+	 * vscode 面板：manager 保持可单测（无 vscode 依赖的路径），面板生命周期
+	 * 也留在宿主这一层。答案回调直接落到 manager.confirmSubmission ——
+	 * 全系统只有这一条上传路径，不会出现重复上传。
+	 *
+	 * 注意字段顺序：必须在 assignmentManager 之后初始化。
+	 */
+	private thinkingQuestionsPanel = (() => {
+		const provider = ThinkingQuestionsPanelProvider.getInstance(this.context.extensionUri)
+		this.assignmentManager.attachPanelOpener((payload, onConfirm) => provider.reveal(payload, onConfirm))
+		return provider
+	})()
+
+	/**
+	 * 【v2.14】运行痕迹采集：学生自己跑代码时的命令/退出码/输出尾部，
+	 * 写进 `<工作区>/.cline-logs/run_traces.jsonl`，提交时由 SubmissionPackager 读走，
+	 * 出题时作为「调试过程」素材（P1-2）。
+	 *
+	 * 不可用时（旧 VS Code / 无 shell integration）只打日志，不影响任何提交路径。
+	 */
+	private runTraceCollector = (() => {
+		const collector = new RunTraceCollector()
+		collector.start()
+		return collector
 	})()
 
 	override getWebviewUrl(path: string) {
@@ -375,6 +406,9 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		}
 		// 释放 AssignmentManager 内部订阅（disposables 之外的资源）
 		this.assignmentManager.dispose()
+		// 关闭可能还开着的答题面板，避免扩展卸载后留下孤立 webview
+		this.thinkingQuestionsPanel.dispose()
+		this.runTraceCollector.dispose()
 		super.dispose()
 	}
 }

@@ -29,11 +29,37 @@
  * =============================================================================
  */
 
+import { buildApiHandler } from "@core/api"
+import { randomUUID } from "crypto"
 import * as fs from "fs"
 import * as path from "path"
 import * as vscode from "vscode"
+import { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
-import { ensureStudentLogFile } from "./workspaceLogPath"
+import type {
+	BundleAnswer,
+	BundleIngestResult,
+	BundleQuestion,
+	BundleRunTrace,
+	ThinkingConfirmResult,
+	ThinkingQuestionsPayload,
+} from "./submission/bundleTypes"
+import { sliceLogForUpload } from "./submission/logSlicer"
+import type { QuestionCountPolicy } from "./submission/QuestionCountPolicy"
+import { generateThinkingQuestions } from "./submission/QuestionGenerator"
+import {
+	buildBundleMeta,
+	type CollectedCodeFile,
+	type CollectedLog,
+	collectCodeFiles,
+	collectLog,
+	postBundle,
+	readRunTraces,
+	summarizeLogEvents,
+} from "./submission/SubmissionPackager"
+import { redactForFile } from "./submission/secrets"
+import type { QuestionSignals } from "./submission/thinkingQuestions"
+import { ensureStudentLogFile, resolveStudentLogFile } from "./workspaceLogPath"
 
 // ============================================================================
 //  类型定义
@@ -93,6 +119,10 @@ export interface AssignmentMessage {
 		| "loadStudentInfo"
 		| "exitToChat"
 		| "queryAutoLogPath"
+		// 【v2.13 两段式提交】点击上传 → 本地收集 + 出题（不上传）→ 答题面板确认后才真正上传
+		| "prepareSubmission"
+		| "confirmSubmission"
+		| "cancelSubmission"
 	payload?: Record<string, unknown>
 }
 
@@ -104,6 +134,66 @@ export interface AssignmentResponse {
 	error?: string
 	/** 【v2.3 增量】createOneFile 等需要回传任务标识时附带 */
 	assignmentId?: string
+}
+
+/**
+ * 【v2.13 两段式提交】点击上传后暂存在内存里的待提交内容。
+ * 只有在答题面板点「确认提交」时才真正上传（需求 2：「点击上传后先不上传」）。
+ */
+interface PendingSubmission {
+	assignment: Assignment
+	studentInfo: StudentInfo
+	codeFiles: CollectedCodeFile[]
+	log: CollectedLog
+	runTraces: BundleRunTrace[]
+	questions: BundleQuestion[]
+	/** 出题来源（llm / template / mixed）与降级提示，用于面板顶部说明 */
+	generatedBy: "llm" | "template" | "mixed"
+	questionWarning?: string
+	signals: QuestionSignals
+	submittedAt: string
+	idempotencyKey: string
+	workspaceRoot: string
+	/** BN-16：内容取自编辑器缓冲区、磁盘上还没保存的文件 */
+	unsavedFiles: string[]
+	/** 打码命中次数（面板与报告都要告知学生「已打码」） */
+	redactionHits: number
+}
+
+/** 面板打开回调：由宿主（VscodeWebviewProvider）注入，避免 AssignmentManager 直接依赖 vscode 面板 */
+export type ThinkingPanelOpener = (
+	payload: ThinkingQuestionsPayload,
+	onConfirm: (answers: BundleAnswer[]) => Promise<ThinkingConfirmResult>,
+) => void
+
+/** 统计文本行数（末尾换行不算空行），用于打码后重算 lineCount */
+function countTextLines(text: string): number {
+	if (!text) return 0
+	const lines = text.replace(/\r\n/g, "\n").split("\n")
+	if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop()
+	return lines.length
+}
+
+/**
+ * 从日志尾部倒查最近一条事件里的 taskId（Cline 内部任务 id）。
+ * 不引入 Task 依赖：日志本身就是「当前任务」的最权威记录，且缺失时可降级（slice_missing）。
+ */
+function pickLatestTaskId(logText: string): string | null {
+	if (!logText) return null
+	const lines = logText.split("\n")
+	const scanned = Math.min(lines.length, 200)
+	for (let i = lines.length - 1; i >= lines.length - scanned; i--) {
+		const line = lines[i]?.trim()
+		if (!line || !line.startsWith("{")) continue
+		try {
+			const parsed = JSON.parse(line) as { taskId?: unknown; task_id?: unknown }
+			const candidate = parsed.taskId ?? parsed.task_id
+			if (typeof candidate === "string" && candidate.length > 0) return candidate
+		} catch {
+			// 坏行跳过：日志里允许存在半行
+		}
+	}
+	return null
 }
 
 // ============================================================================
@@ -147,6 +237,12 @@ export class AssignmentManager {
 	 * 双击任务项触发 `createOneFile` 时优先查找本缓存，避免每次双击都重新请求后端。
 	 */
 	private cachedAssignmentsById: Map<string, Assignment> = new Map()
+
+	/** 【v2.13】待提交内容与答题面板回调（点击上传后暂存，确认后才上传） */
+	private pendingSubmission: PendingSubmission | null = null
+	private panelOpener: ThinkingPanelOpener | null = null
+	/** 上传互斥：面板连点/重复确认时只允许一个在飞 */
+	private uploadInFlight = false
 
 	constructor(apiBase?: string) {
 		// 若调用方未传值，使用默认兜底；后续可通过 refreshApiBaseFromConfig 或 setApiBase 覆盖
@@ -399,6 +495,33 @@ export class AssignmentManager {
 					break
 				}
 
+				// 【v2.13】点击上传（第一段）：本地收集代码/日志/运行痕迹 + 生成思考题，
+				// **不上传**；学生答完题在面板点确认后才走 confirmSubmission（第二段）。
+				case "prepareSubmission": {
+					const assignmentId = typeof payload["assignmentId"] === "string" ? (payload["assignmentId"] as string) : ""
+					await this.handlePrepareSubmission({ assignmentId }, postMessage)
+					break
+				}
+
+				// 面板内部走 onConfirm 回调；这里留一条 IPC 入口便于调试与后续复用
+				case "confirmSubmission": {
+					const answers = Array.isArray(payload["answers"]) ? (payload["answers"] as BundleAnswer[]) : []
+					const result = await this.confirmSubmission(answers)
+					postMessage({
+						command: "confirmSubmission",
+						success: result.success,
+						data: result.data,
+						error: result.error,
+					})
+					break
+				}
+
+				case "cancelSubmission": {
+					this.cancelPendingSubmission()
+					postMessage({ command: "cancelSubmission", success: true })
+					break
+				}
+
 				case "openFile": {
 					const filePath = typeof payload["filePath"] === "string" ? (payload["filePath"] as string) : ""
 					await this.handleOpenFile({ filePath }, postMessage)
@@ -472,6 +595,380 @@ export class AssignmentManager {
 				error: error instanceof Error ? error.message : String(error),
 			})
 		}
+	}
+
+	// ============================================================================
+	//  【v2.13】两段式提交：本地收集 → 生成思考题 → 面板答题 → 确认上传
+	//  需求 2：点击上传后先不上传，由助手分析代码/日志并出题，学生答完才上传。
+	// ============================================================================
+
+	/** 宿主注入答题面板（VscodeWebviewProvider 用 extensionUri 创建单例面板） */
+	public attachPanelOpener(opener: ThinkingPanelOpener | null): void {
+		this.panelOpener = opener
+	}
+
+	/** 是否存在等待答题的待提交内容（面板关闭/重新提交时用于清理） */
+	public hasPendingSubmission(): boolean {
+		return this.pendingSubmission !== null
+	}
+
+	public cancelPendingSubmission(): void {
+		this.pendingSubmission = null
+	}
+
+	/**
+	 * 读取出题相关配置（`teaching.thinkingQuestionAuto` / `teaching.thinkingQuestionCount`）。
+	 * 配置缺失时按裁定 R1 的默认值：开启自适应、默认 3 题。
+	 */
+	private readThinkingQuestionPolicy(): QuestionCountPolicy {
+		try {
+			const config = vscode.workspace.getConfiguration("teaching")
+			return {
+				auto: config.get<boolean>("thinkingQuestionAuto", true),
+				configuredCount: config.get<number>("thinkingQuestionCount", 3),
+			}
+		} catch {
+			return { auto: true, configuredCount: 3 }
+		}
+	}
+
+	/**
+	 * 构造一次性 LLM 调用器。
+	 *
+	 * 返回 undefined 表示「当前没有可用模型」——出题会自动退化成模板题，
+	 * 而不是让提交失败（Q-8）。这里刻意不缓存 apiHandler：用户可能中途换模型/改 key。
+	 */
+	private createQuestionLLMCaller(): ((systemPrompt: string, userPrompt: string) => Promise<string>) | undefined {
+		try {
+			const config = StateManager.get().getApiConfiguration()
+			const provider = (config as { apiProvider?: string } | undefined)?.apiProvider
+			if (!config || !provider) return undefined
+			const apiHandler = buildApiHandler(
+				{ ...config, actModeThinkingBudgetTokens: 0, planModeThinkingBudgetTokens: 0 },
+				"act",
+			)
+			return async (systemPrompt: string, userPrompt: string): Promise<string> => {
+				let text = ""
+				for await (const chunk of apiHandler.createMessage(systemPrompt, [{ role: "user", content: userPrompt }])) {
+					if (chunk.type === "text") text += chunk.text
+				}
+				return text
+			}
+		} catch (error) {
+			Logger.warn("[AssignmentManager] 无法初始化出题模型，将使用模板题", error as Error)
+			return undefined
+		}
+	}
+
+	/**
+	 * 第一段：点击「上传」时调用。
+	 *
+	 * 只做本地工作，全程零上传：
+	 *   ① 解析学生信息与任务信息（任务来自缓存或现拉一次列表）
+	 *   ② 收集工作区代码文件（活动编辑器优先，≤20 个 × 1MB）
+	 *   ③ 读取日志原文（路径由 resolver 决定，不再写死）+ 运行痕迹
+	 *   ④ 按「材料丰富度」自适应生成 3~5 道思考题
+	 *   ⑤ 打开答题面板，把答案回调接到 confirmSubmission
+	 *
+	 * 失败时只提示、不开面板，也不会污染待提交状态。
+	 */
+	private async handlePrepareSubmission(
+		{ assignmentId }: { assignmentId: string },
+		postMessage: (response: AssignmentResponse) => void,
+	): Promise<void> {
+		if (!assignmentId) {
+			postMessage({ command: "prepareSubmission", success: false, error: "缺少任务 ID" })
+			return
+		}
+
+		const studentInfo = await this.loadStudentInfo()
+		if (!studentInfo) {
+			const msg = "❌ 请先在设置中填写学生信息（学号/姓名/班级）后再提交"
+			vscode.window.showErrorMessage(msg)
+			postMessage({ command: "prepareSubmission", success: false, error: msg })
+			return
+		}
+
+		const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+		if (!workspaceRoot) {
+			const msg = "❌ 请先打开一个工作区文件夹：提交需要读取工作区里的代码与日志"
+			vscode.window.showErrorMessage(msg)
+			postMessage({ command: "prepareSubmission", success: false, error: msg })
+			return
+		}
+
+		const assignment = await this.resolveAssignmentById(assignmentId)
+		if (!assignment) {
+			const msg = `❌ 未找到任务「${assignmentId}」，请刷新任务列表后重试`
+			vscode.window.showErrorMessage(msg)
+			postMessage({ command: "prepareSubmission", success: false, error: msg })
+			return
+		}
+
+		try {
+			// ① 当前编辑器缓冲区（BN-16：未保存的内容也要能提交）
+			const activeDoc = vscode.window.activeTextEditor?.document
+			const activeFilePath = activeDoc?.uri.fsPath ?? null
+			const unsavedFiles: string[] = []
+			const collected = collectCodeFiles({ workspaceRoot, activeFilePath })
+
+			// ② 代码文件：密钥打码 + 未保存内容优先（内容在客户端还完整时才处理，BN-11/BN-12/BN-16）
+			let redactionHits = 0
+			const codeFiles = collected.files.map((file) => {
+				let content = file.buffer.toString("utf8")
+				if (activeDoc && activeDoc.isDirty && !activeDoc.isUntitled && file.absPath === activeFilePath) {
+					content = activeDoc.getText()
+					unsavedFiles.push(file.relPath)
+				}
+				const redacted = redactForFile(file.relPath, content)
+				if (redacted.hits === 0 && content === file.buffer.toString("utf8")) return file
+				redactionHits += redacted.hits
+				const buffer = Buffer.from(redacted.text, "utf8")
+				return {
+					...file,
+					buffer,
+					sizeBytes: buffer.byteLength,
+					lineCount: countTextLines(redacted.text),
+				}
+			})
+
+			// ③ 日志：切片（找不到 task_id 时降级为 run_result + 尾部 200 行，BN-06）
+			const logResolution = resolveStudentLogFile(workspaceRoot)
+			const rawLog = collectLog(logResolution?.path ?? null)
+			const rawLogText = rawLog.buffer ? rawLog.buffer.toString("utf8") : ""
+			const activeTaskId = pickLatestTaskId(rawLogText)
+			const sliced = sliceLogForUpload(rawLogText, { taskId: activeTaskId })
+			const log: CollectedLog = {
+				...rawLog,
+				buffer: Buffer.from(sliced.text, "utf8"),
+				lineCount: sliced.lineCount,
+				info: {
+					...rawLog.info,
+					line_count: sliced.lineCount,
+					bad_lines: sliced.badLines,
+					slice_missing: sliced.sliceMissing,
+					truncated: sliced.truncated || sliced.sliceMissing,
+				},
+			}
+			const runTraces = readRunTraces(workspaceRoot)
+			const logEvents = summarizeLogEvents(log.buffer)
+
+			// ④ 出题信号 → 自适应题数
+			const signals: QuestionSignals = {
+				codeLineCount: codeFiles.reduce((sum, file) => sum + file.lineCount, 0),
+				fileCount: codeFiles.length,
+				runCount: runTraces.length,
+				failureCount: runTraces.filter((trace) => typeof trace.exit_code === "number" && trace.exit_code !== 0).length,
+				descriptionChars: (assignment.description ?? "").length,
+				codeEditCount: logEvents.codeEdit,
+			}
+			// ④' 出题：优先 LLM，失败/不可用自动降级为模板题（Q-8：绝不阻断提交）
+			const generated = await generateThinkingQuestions(
+				{
+					signals,
+					assignment: { id: assignmentId, title: assignment.title, description: assignment.description },
+					codeFiles: codeFiles.map((file) => ({
+						relPath: file.relPath,
+						content: file.buffer.toString("utf8"),
+					})),
+					runTraces,
+					logLineCount: log.lineCount,
+					policy: this.readThinkingQuestionPolicy(),
+				},
+				{ callLLM: this.createQuestionLLMCaller() },
+			)
+			const questions = generated.questions
+			const submittedAt = new Date().toISOString()
+
+			this.pendingSubmission = {
+				assignment,
+				studentInfo,
+				codeFiles,
+				log,
+				runTraces,
+				questions,
+				generatedBy: generated.generatedBy,
+				questionWarning: generated.warning,
+				signals,
+				submittedAt,
+				idempotencyKey: randomUUID(),
+				workspaceRoot,
+				unsavedFiles,
+				redactionHits,
+			}
+
+			// ⑤ 开面板
+			if (!this.panelOpener) {
+				const msg = "❌ 答题面板未初始化，请重启 VS Code 后重试"
+				vscode.window.showErrorMessage(msg)
+				postMessage({ command: "prepareSubmission", success: false, error: msg })
+				return
+			}
+			const payload: ThinkingQuestionsPayload = {
+				assignmentId,
+				assignmentTitle: assignment.title,
+				assignmentDescription: assignment.description,
+				questions,
+				codeFiles: codeFiles.map((file) => ({ relPath: file.relPath, sizeBytes: file.sizeBytes })),
+				logPath: log.path,
+				logLineCount: log.lineCount,
+				runTraceCount: runTraces.length,
+				generatedBy: generated.generatedBy,
+				questionWarning: generated.warning,
+				questionCountReason: generated.decision.reason,
+				submittedAt,
+				redactionHits,
+				unsavedFiles,
+			}
+			this.panelOpener(payload, (answers) => this.confirmSubmission(answers))
+
+			vscode.window.showInformationMessage(
+				`📦 已收集 ${codeFiles.length} 个代码文件、${log.lineCount} 行日志` +
+					`${collected.omitted.length > 0 ? `（${collected.omitted.length} 个文件被跳过）` : ""}` +
+					`${redactionHits > 0 ? `（已打码 ${redactionHits} 处敏感信息）` : ""}，` +
+					`请完成 ${questions.length} 道思考题后提交。`,
+			)
+			postMessage({
+				command: "prepareSubmission",
+				success: true,
+				data: {
+					questions: questions.length,
+					codeFiles: codeFiles.length,
+					omittedFiles: collected.omitted.length,
+					logLineCount: log.lineCount,
+					logBadLines: sliced.badLines,
+					logTruncated: sliced.truncated,
+					logSliceMissing: sliced.sliceMissing,
+					runTraceCount: runTraces.length,
+					generatedBy: generated.generatedBy,
+					warning: generated.warning,
+					questionCountReason: generated.decision.reason,
+					redactionHits,
+					unsavedFiles: unsavedFiles.length,
+					panelOpened: true,
+				},
+			})
+		} catch (error) {
+			const msg = `❌ 收集提交材料失败: ${error instanceof Error ? error.message : String(error)}`
+			vscode.window.showErrorMessage(msg)
+			postMessage({ command: "prepareSubmission", success: false, error: msg })
+		}
+	}
+
+	/**
+	 * 第二段：面板里点「确认提交」时调用 —— 唯一真正上传的入口。
+	 *
+	 * 一次性 multipart 上传：meta（含题目与答案）+ 日志原文 + 代码文件。
+	 * 失败不清理待提交内容，学生可以直接重试（idempotency_key 保证重试不会重复入库）。
+	 */
+	public async confirmSubmission(answers: BundleAnswer[]): Promise<ThinkingConfirmResult> {
+		const pending = this.pendingSubmission
+		if (!pending) return { success: false, error: "提交上下文已失效，请回到任务列表重新点击上传" }
+		if (this.uploadInFlight) return { success: false, error: "正在上传，请稍候…" }
+		if (!Array.isArray(answers) || answers.length === 0) return { success: false, error: "请先完成所有思考题" }
+
+		this.uploadInFlight = true
+		try {
+			const meta = buildBundleMeta({
+				assignmentId: pending.assignment.id,
+				studentId: pending.studentInfo.studentId,
+				studentName: pending.studentInfo.studentName,
+				classId: pending.studentInfo.classId,
+				submittedAt: pending.submittedAt,
+				taskId: pending.assignment.id,
+				questions: pending.questions,
+				answers,
+				logInfo: pending.log.info,
+				runTraces: pending.runTraces,
+				clientVersion: this.getClientVersion(),
+				idempotencyKey: pending.idempotencyKey,
+				unsavedFiles: pending.unsavedFiles,
+			})
+
+			const response = await postBundle({
+				apiBase: this.apiBase,
+				meta,
+				logBuffer: pending.log.buffer,
+				logFileName: "student_interactions.log",
+				codeFiles: pending.codeFiles,
+			})
+
+			const body = response.body as { ok?: boolean; code?: string; error?: string }
+			if (!response.ok || body?.ok !== true) {
+				// P2-1：把服务端错误码翻译成学生能照做的中文（否则只会看到 HTTP 413）
+				if (response.status === 413) {
+					return {
+						success: false,
+						error: "提交包超过教师端单包上限（25 MB）。请清理工作区里的大文件（模型/数据集/压缩包）后再提交。",
+					}
+				}
+				if (response.status === 415) {
+					return { success: false, error: "提交包里有服务端不接受的文件类型，请检查工作区后重试。" }
+				}
+				const detail = body?.error ?? body?.code ?? "未知错误"
+				return { success: false, error: `上传失败 (HTTP ${response.status})：${detail}` }
+			}
+
+			const result = response.body as BundleIngestResult
+			this.pendingSubmission = null
+
+			const aiDependencyPercent = Math.round((result.metrics?.ai_dependency ?? 0) * 100)
+			vscode.window.showInformationMessage(
+				`✅ 实验「${pending.assignment.title}」提交成功（第 ${result.revision} 版）` +
+					`｜AI 依赖度 ${aiDependencyPercent}%｜代码文件 ${result.stored?.code_count ?? pending.codeFiles.length} 个`,
+			)
+			Logger.log(`[AssignmentManager] 提交包上传成功 submission_id=${result.submission_id} revision=${result.revision}`)
+			return { success: true, data: result }
+		} catch (error) {
+			const rawMsg = error instanceof Error ? error.message : String(error)
+			const isNetworkError = /fetch failed|ECONNREFUSED|ENOTFOUND|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(rawMsg)
+			const friendlyMsg = isNetworkError
+				? `无法连接教学服务器 ${this.apiBase}，请检查网络或服务器设置后重试`
+				: `上传失败：${rawMsg}`
+			Logger.warn(`[AssignmentManager] confirmSubmission 失败: ${rawMsg}`)
+			return { success: false, error: friendlyMsg }
+		} finally {
+			this.uploadInFlight = false
+		}
+	}
+
+	/**
+	 * 取任务详情：先查列表缓存，miss 则现拉一次 `/api/v1/assignments`。
+	 * 提交需要 title/description（出题用），所以不能只依赖 webview 传回的 payload。
+	 */
+	private async resolveAssignmentById(assignmentId: string): Promise<Assignment | null> {
+		const cached = this.cachedAssignmentsById.get(assignmentId)
+		if (cached) return cached
+
+		try {
+			const response = await this.fetchWithRetry(`${this.apiBase}/api/v1/assignments`, { method: "GET" })
+			if (!response.ok) return null
+			const result = (await response.json()) as { ok?: boolean; data?: Assignment[] }
+			const list = Array.isArray(result?.data) ? result.data : []
+			for (const item of list) {
+				if (item?.id) this.cachedAssignmentsById.set(item.id, item)
+			}
+			return this.cachedAssignmentsById.get(assignmentId) ?? null
+		} catch (error) {
+			Logger.warn(
+				`[AssignmentManager] resolveAssignmentById 失败: ${error instanceof Error ? error.message : String(error)}`,
+			)
+			return null
+		}
+	}
+
+	/** 客户端版本（写进 meta.client_version，便于排查"哪个版本的学生端传的包有问题"） */
+	private getClientVersion(): string {
+		const candidates = ["cline.cline", "saoudrizwan.claude-dev"]
+		for (const id of candidates) {
+			try {
+				const version = vscode.extensions.getExtension(id)?.packageJSON?.version
+				if (typeof version === "string" && version) return `cline-extension/${version}`
+			} catch {
+				// 忽略：取不到版本不影响上传
+			}
+		}
+		return "cline-extension/unknown"
 	}
 
 	/**

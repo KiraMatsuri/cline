@@ -396,6 +396,20 @@
 					"pattern": "^https?://[^\\s]+$",
 					"patternErrorMessage": "必须是形如 http(s)://host[:port] 的 URL（不带端口默认 80）"
 				},
+				"teaching.thinkingQuestionAuto": {
+					"type": "boolean",
+					"default": true,
+					"description": "提交实验时按本次材料丰富度自动决定思考题数量（3/4/5）；关闭后固定为 teaching.thinkingQuestionCount 题",
+					"scope": "window"
+				},
+				"teaching.thinkingQuestionCount": {
+					"type": "number",
+					"default": 3,
+					"minimum": 3,
+					"maximum": 5,
+					"description": "关闭自适应出题时使用的固定题数（3~5）；开启自适应时此值不生效",
+					"scope": "window"
+				},
 				"teaching.studentInfo": {
 					"type": "object",
 					"description": "学生信息（学号/姓名/班级），由插件内的【实验任务】设置面板写入并持久化。",
