@@ -144,6 +144,7 @@ import {
 	resolveInterventionCopyForDisplay,
 	toStudentVisibleBlockingText,
 } from "./student-analytics/interventionDisplay"
+import { decideHintLifetime } from "./student-analytics/interventionHintLifetime"
 import { planInterventionTurn } from "./student-analytics/interventionTurnPlan"
 import { dependencyWeightForQueryType, toQueryType } from "./student-analytics/queryType"
 import type { InterventionDecision } from "./student-analytics/TeachingInterventionManager"
@@ -952,6 +953,12 @@ export class Task {
 	 * 兜底模板会被重复投递并把 `T` 多记一次 ⇒ M9' ② `D ≥ C + T` 按构造失败（P3 复审 C1）。
 	 */
 	private interventionCopyDeliveredThisTurn = false
+	/**
+	 * 【P8/T6】该待投递提示是哪个**学生请求**下的决策（用于「同请求内一直有效」的判定）。
+	 * 实测（2026-10-18）：一条决策后模型连续 4 个工具轮才出正文，旧的「最多顺延 2 轮」
+	 * 把提示丢在正文到达之前 ⇒ 学生没看到、日志也没 `intervention_copy`。
+	 */
+	private interventionDecisionRequest: number | undefined
 	/**
 	 * 【P6/T2】阻断提示的幂等键 = 学生请求序号（**不含** `apiRequestCount`，否则每次重试都会变）。
 	 * 阻断回合现在以 `ask` 挂起（见阻断分支），同一学生请求内即便生成器被再次进入（恢复/重入），
@@ -3329,23 +3336,37 @@ export class Task {
 			// 实测（M1/M4）：模型连续 10+ 个回合只做工具调用 ⇒ 两条提示全部没送达，M9' ③ 因此不成立。
 			// 处理：把同一条干预**顺延到本轮重投**（最多 INTERVENTION_REDELIVERY_LIMIT 次），
 			// 且顺延回合**不**重新决策 —— 否则同一件事会被记成两次 `intervention_decision`。
-			const carryOverHint =
-				this.pendingInterventionText !== undefined &&
-				!this.interventionCopyDeliveredThisTurn &&
-				this.interventionRedeliveryLeft > 0
+			// 【P8/T6】生命周期判定抽成纯函数（`interventionHintLifetime.ts`）：同一学生请求内永远保留
+			// （工具轮再多也不丢 —— 本轮实测 4 个工具轮就把提示丢在正文到达之前），跨请求才受顺延上限约束。
+			const hintLifetime = decideHintLifetime({
+				hasPending: this.pendingInterventionText !== undefined,
+				delivered: this.interventionCopyDeliveredThisTurn,
+				decisionRequest: this.interventionDecisionRequest,
+				currentRequest: this.getBehaviorMonitor()?.getStudentRequestCount() ?? 0,
+				redeliveryLeft: this.interventionRedeliveryLeft,
+			})
+			const carryOverHint = hintLifetime.carryOver
 			this.interventionCopyDeliveredThisTurn = false
 			if (carryOverHint) {
-				this.interventionRedeliveryLeft--
+				if (hintLifetime.consumeRedelivery) {
+					this.interventionRedeliveryLeft--
+				}
 				Logger.info(
 					`[TeachingIntervention][${this.taskId}] re-delivering undelivered hint (remaining=${this.interventionRedeliveryLeft})`,
 				)
 			} else {
+				// 【P8/T6】诊断：真正被丢弃的未投递提示必须可见（本轮实测它就是静默消失的）
+				if (this.pendingInterventionText !== undefined) {
+					Logger.warn(
+						`[TeachingIntervention][${this.taskId}] dropping undelivered hint (request=${this.interventionDecisionRequest}→${this.getBehaviorMonitor()?.getStudentRequestCount() ?? 0}, redeliveryLeft=${this.interventionRedeliveryLeft})`,
+					)
+				}
 				this.pendingInterventionText = undefined
 				this.lastInjectionTemplate = undefined
 				this.lastInjectionMeta = undefined
+				this.interventionDecisionRequest = undefined
 				this.interventionRedeliveryLeft = INTERVENTION_REDELIVERY_LIMIT
 			}
-
 			const interventionManager = this.getInterventionManager()
 			if (interventionManager) {
 				const monitor = this.getBehaviorMonitor()
@@ -3437,6 +3458,8 @@ export class Task {
 				// 否则会出现"记的是新决策、学生看到的是旧文案"（Task 1 初审 Minor）。
 				if (decision && plan.overwritePending) {
 					this.pendingInterventionText = decision.injectionText
+					// 【P8/T6】记下这条提示属于哪个学生请求：同请求内一直有效（工具轮多也不丢）
+					this.interventionDecisionRequest = monitor?.getStudentRequestCount()
 					// 【F13】模型没按契约产出回执块（或被校验拒绝）时用它兜底：字段与 pendingInterventionText
 					// 同生命周期，只在回合入口重置（展示点提前清空会让同回合后续 text 块误记为「缺块」）。
 					this.lastInjectionTemplate = decision.templateText

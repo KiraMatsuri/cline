@@ -122,7 +122,11 @@ describe("G5 · 优先级综合（P5：计数单位 / 状态 / 记账 / 送达�
 		// T19-a：未送达的干预顺延重投，且有上限
 		expect(taskSrc).to.include("const INTERVENTION_REDELIVERY_LIMIT = 2")
 		expect(taskSrc).to.include("interventionRedeliveryLeft")
-		expect(taskSrc).to.include("!this.interventionCopyDeliveredThisTurn")
+		// 【P8/T6】判定已抽成纯函数 `decideHintLifetime`（同一学生请求内一直有效，跨请求才受上限约束）：
+		// 断言从"内联布尔表达式"改为"接线到该纯函数 + 仍然传入了两个关键输入"，语义不变。
+		expect(taskSrc).to.include("const hintLifetime = decideHintLifetime({")
+		expect(taskSrc).to.include("delivered: this.interventionCopyDeliveredThisTurn")
+		expect(taskSrc).to.include("hasPending: this.pendingInterventionText !== undefined")
 		// 【P6/T1】`needDecision` 门控已删除：顺延重投的回合也必须跑决策（否则计数达阈也不会阻断）
 		expect(taskSrc).to.not.include("const needDecision = !carryOverHint")
 		// 【P6/T2】内联的 `appliesDecision` 已抽成纯函数 `planInterventionTurn`（回合级编排可运行时单测）
