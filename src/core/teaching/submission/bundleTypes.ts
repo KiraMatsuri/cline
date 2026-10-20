@@ -153,6 +153,13 @@ export interface ThinkingQuestionsPayload {
 	redactionHits?: number
 	/** 内容取自编辑器缓冲区、磁盘未保存的文件（BN-16） */
 	unsavedFiles?: string[]
+	/**
+	 * 出题实际使用的模型提供方（来自 Cline 自带设置，例如 `openrouter`）。
+	 * 缺省表示没有可用模型、本次是通用题 —— 面板据此说明「为什么不是模型出的题」。
+	 */
+	llmProvider?: string
+	/** 出题实际使用的模型 id（可能为空：用 provider 默认模型） */
+	llmModel?: string
 }
 
 /** 面板确认提交后回传的答案 */

@@ -500,6 +500,12 @@ user:
 
 失败再兜底（离线/LLM 不可用）：3 道固定结构化题（实现思路 / 遇到的最大问题及定位过程 / 若数据量扩大 100 倍会改哪里），`source="template"` 落库，报告页可见但不影响提交。
 
+> **【实现 · 模型来源】**（2026-10-19 修订）出题调用**直接复用 Cline 自带设置里的 provider / API Key / 模型**：
+> 从 `StateManager.getApiConfiguration()` 取 `actModeApiProvider` + `actModeApiModelId`（未配置时回退 `planMode*`），
+> 交给 `buildApiHandler(config, mode)` —— 与主对话（`src/core/task/index.ts:473-519`）用同一份配置，学生配一次即可。
+> **不使用工作区 `.env`，也没有插件侧独立的 key 输入框**；401 / 缺 key 的错误在面板上翻译成「设置 → API 配置检查密钥」。
+> 早期实现误用 `config.apiProvider`（该字段在 `ApiConfiguration` 中不存在）导致出题恒降级为模板题，已修复，见实施计划 §5.1。
+
 ### 7.3.1 题数自适应规则（默认 3，自动 3/4/5）
 
 **为什么不用「任务难度」**：难度是老师侧的粗标签（现有 `assignments` 表没有难度列），而学生**实际写出来的东西**才是出题能用的料。因此题数只由「该学生这次提交的材料丰富度」决定——同一任务，写得多的学生被问得多，写得少的不会被硬凑题。
@@ -905,5 +911,6 @@ D:\web-dashboard
 | v1.2 | 2026-10-18 | **P0 实现回填**（以代码为准的三处修正）：①§6.1 解析链按实际 6 级重写，删掉「旧固定路径兼容兜底」；②报告接口包装键固化为 `/reports/current → {ok, report}`、`/reports/filters → {ok, assignments, students}`（前端曾误读 `.data` 导致报告永远空）；③前端顶部栏实际用「数据驱动 + 下拉子菜单」实现 4 项，子项复用 `publish`/`manage` 视图键。里程碑与闸门实测见实施计划 §4.1 |
 | v1.3 | 2026-10-18 | **P1 实现回填**：①看板数据源改为 **teaching-server 写 `<DATA_DIR>/dashboard/student_interactions.jsonl` + backend `LOG_SOURCE=bundles` 只读该文件**（否决让 backend 直连 SQLite：多一个驱动依赖、且需在容器间共享库文件）；②`meta` 新增 `source`/`emptyReason`/`assignmentFilter`/`totalLogCount`，bundles 模式**不回退 sample 日志**；③运行痕迹落 `.cline-logs/run_traces.jsonl`（非设计稿的 `run-traces.jsonl`），且缺 `onDidEndTerminalShellExecution` 时整体不采集；④版本裁剪在 `COMMIT` 后执行并显式按子表删（sqlite3 默认不开 `foreign_keys`）；⑤教学端新增 `dashboardFeed.ts`、`revisionPruner.ts`，前端看板新增任务下拉与两态空态。闸门实测见实施计划 §5.1 |
 | v1.4 | 2026-10-18 | **P2 实现回填**：①`req.destroyed` 不能用来判断「客户端已断开」（Node 在请求体读完后就置 true，曾导致**所有提交无响应**），改用 `res.writableEnded \|\| res.destroyed \|\| req.aborted`；②契约 v2：`run_traces` 统一为数组（原教学端写 `{available,count,items}` 导致运行次数恒 0），`log` 增 `bad_lines`/`slice_missing`，报告增 `unsaved_files` 与 `files[].missing`；③schema v2 新增 4 列；④采集侧新增 `logSlicer.ts`（2MB 切片、保留最新 taskId、绝不切半行）与 `secrets.ts`（三类密钥打码）；⑤并发改为**同学生同任务串行**（不再 409）；⑥看板新增 `DASHBOARD_MAX_EVENTS` 与 `emptyReason=out_of_range`；⑦部署补 `PRUNE_REVISIONS`/`DASHBOARD_MAX_EVENTS`、`env/teaching-server.env.example`、`DEPLOY.md` §3.3.1 与端口暴露告警；⑧新增人工验收单 `docs/manual-test-plan.md`（M-01~M-65） |
+| v1.5 | 2026-10-19 | **出题模型来源修正**：§7.3 增「模型来源」裁定——直接复用 Cline 自带设置的 `actModeApiProvider` / `actModeApiModelId` 与对应 API Key（经 `StateManager.getApiConfiguration()` + `buildApiHandler`），**不需要工作区 `.env`、也不再有独立 key 输入框**；早期代码误读不存在的 `config.apiProvider` 导致出题恒降级为模板题，已修复（`submission/questionLLM.ts` + 12 条单测） |
 
 实施顺序、任务拆解、边界测试矩阵见 **[teaching-submission-implementation-plan.md](./teaching-submission-implementation-plan.md)**。

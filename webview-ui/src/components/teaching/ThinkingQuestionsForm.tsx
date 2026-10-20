@@ -57,6 +57,9 @@ interface QuestionsPayload {
 	redactionHits?: number
 	/** 内容取自编辑器缓冲区、磁盘未保存的文件（BN-16） */
 	unsavedFiles?: string[]
+	/** 出题实际使用的 provider / 模型（来自 Cline 自带设置；缺省表示本次是通用题） */
+	llmProvider?: string
+	llmModel?: string
 }
 
 interface PanelResponse {
@@ -228,6 +231,12 @@ const ThinkingQuestionsForm: FC = () => {
 							? "🧠+🧩 混合出题"
 							: "🧩 通用题"}
 				</span>
+				{payload.llmProvider ? (
+					<span style={styles.chip} title="出题使用的模型与 API Key 直接取自 Cline 设置，无需另外填写">
+						🤖 {payload.llmProvider}
+						{payload.llmModel ? ` · ${payload.llmModel}` : ""}
+					</span>
+				) : null}
 				<span style={styles.chip}>
 					已答 {answeredCount}/{payload.questions.length}
 				</span>

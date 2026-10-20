@@ -179,6 +179,27 @@ SM-1…SM-8 的对应用例全部在上述脚本里覆盖：SM-2/SM-3（无日�
 - 版本裁剪：`pruneRevisions` 在 `COMMIT` 之后执行，**显式按 answers→questions→files→submissions 顺序删**（sqlite3 默认不开 `foreign_keys`，级联不生效），删库成功后再删 `r<n>` 目录。
 - 看板：`emptyReason ∈ null | no_submissions | filtered_out`；`meta.source ∈ bundles|file`；`LOG_SOURCE=bundles` 时**绝不回退 sample 日志**（否则空库会显示样例数据，比空更糟）。
 
+**2026-10-19 补充修复：出题复用 Cline 里已填好的 API Key**
+
+- 缺陷：`AssignmentManager.createQuestionLLMCaller()` 当时用 `config.apiProvider` 判断「是否配置了模型」，
+  但 `ApiConfiguration` 里**没有这个字段**（提供商分列在 `actModeApiProvider` / `planModeApiProvider`，
+  `buildApiHandler()` 也只读这两项）→ 永远判定为无模型 → 出题恒降级为模板题。学生观察到的
+  「工作区建 `.env` 填 key 才有模型题」其实是误判的副作用（仓库里没有任何代码读 `.env` 当 LLM 配置）。
+- 修复：新增纯函数模块 `src/core/teaching/submission/questionLLM.ts` ——
+  `resolveQuestionLLMTarget(config)`（act 优先、plan 回退、空串视为未配置）、`formatQuestionLLMTarget()`、
+  `describeLLMUnavailable()`、`describeLLMFailure()`（401/缺 key 翻译成「去 Cline 设置 → API 配置检查密钥」）。
+  `createQuestionLLMCaller()` 改用它，`buildApiHandler({...config, actModeThinkingBudgetTokens: 0,
+  planModeThinkingBudgetTokens: 0}, target.mode)`，与主对话（`src/core/task/index.ts:473`）用同一份配置。
+- 面板：`ThinkingQuestionsPayload` 增 `llmProvider` / `llmModel`，答题面板 chip 显示
+  `🤖 openrouter · deepseek/deepseek-chat`，让「这次到底谁出的题」可见。
+- 加固（同日）：`actModeApiProvider` 的**默认值就是 `openrouter`**（`src/shared/storage/state-keys.ts:224`），
+  所以「act 看着已配置、其实没填 key」很常见——只在 plan 里配过模型的学生会拿到 401 并继续退化成模板题。
+  于是新增 `resolveQuestionLLMTargets()`（act → plan 去重列表）与 `isAuthFailure()`，
+  `createQuestionLLMCaller().complete()` 按序尝试，**只对鉴权类失败换下一个**（网络错误换模型没意义），
+  成功时回写 `caller.provider/model`，因此面板徽标与提交包里的 `llmProvider` 一定是**真正成功**的那个。
+- 闸门：`--grep "questionLLM"` **20 passing**（12 → 20，新增 5 条 targets + 3 条 auth 判定）；
+  全量 `npx mocha` **1291 passing / 111 pending**；cline 与 webview-ui `tsc --noEmit` 均 0。
+
 **P1 闸门实测**
 
 | 命令 | 结果 |

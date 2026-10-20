@@ -162,7 +162,9 @@ export async function generateThinkingQuestions(
 	})
 
 	if (!deps.callLLM) {
-		return templateOutcome("当前没有可用的模型配置，已使用通用思考题")
+		// 出题直接复用 Cline 自带的模型配置（提供商 + API Key + 模型），
+		// 因此这里的「没有模型」意味着学生连聊天都还没配置好，提示要指向设置项。
+		return templateOutcome("尚未在 Cline 中启用可用模型（设置 → API 配置），已使用通用思考题")
 	}
 
 	const userPrompt = buildQuestionUserPrompt({

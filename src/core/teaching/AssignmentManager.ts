@@ -47,6 +47,7 @@ import type {
 import { sliceLogForUpload } from "./submission/logSlicer"
 import type { QuestionCountPolicy } from "./submission/QuestionCountPolicy"
 import { generateThinkingQuestions } from "./submission/QuestionGenerator"
+import { describeLLMFailure, isAuthFailure, resolveQuestionLLMTargets } from "./submission/questionLLM"
 import {
 	buildBundleMeta,
 	type CollectedCodeFile,
@@ -158,6 +159,22 @@ interface PendingSubmission {
 	unsavedFiles: string[]
 	/** 打码命中次数（面板与报告都要告知学生「已打码」） */
 	redactionHits: number
+	/** 出题使用的模型（直接来自 Cline 设置；缺省表示降级为通用题） */
+	llmProvider?: string
+	llmModel?: string
+}
+
+/**
+ * 出题用的模型调用器。
+ *
+ * 由 Cline 自带的模型配置（`StateManager.getApiConfiguration()`）构造 —— 也就是说
+ * 复用学生平时聊天用的那套 provider / API Key，**不再要求在工作区 `.env`
+ * 或任何插件侧输入框里重复填写 key**。
+ */
+interface QuestionLLMCaller {
+	provider: string
+	model?: string
+	complete: (systemPrompt: string, userPrompt: string) => Promise<string>
 }
 
 /** 面板打开回调：由宿主（VscodeWebviewProvider）注入，避免 AssignmentManager 直接依赖 vscode 面板 */
@@ -633,29 +650,73 @@ export class AssignmentManager {
 	}
 
 	/**
-	 * 构造一次性 LLM 调用器。
+	 * 构造一次性 LLM 调用器（出题用）。
+	 *
+	 * 【v2.13.1 修复】此前用 `config.apiProvider` 判断是否配置了模型，而 Cline 的
+	 * ApiConfiguration 里**没有这个字段** —— 提供商分列在 `actModeApiProvider` /
+	 * `planModeApiProvider`，`buildApiHandler()` 也只读这两项。于是「明明配好了模型」
+	 * 也永远判成未配置，每次出题都退化成通用题（有同学只好在工作区 .env 里另填 key）。
+	 * 现在直接走 `resolveQuestionLLMTargets()` 读真实字段，与主对话用同一份 provider /
+	 * API Key / 模型，学生配一次即可，无需重复填写。
+	 *
+	 * 为何是「一组」目标：`actModeApiProvider` 的默认值就是 `openrouter`，所以即便学生只在
+	 * plan 模式配好了别家模型，act 看上去也是「已配置」——直接用它只会拿到 401。这里按
+	 * act → plan 依次尝试，且**只对鉴权类失败换下一个**（网络错误换模型没意义）。
 	 *
 	 * 返回 undefined 表示「当前没有可用模型」——出题会自动退化成模板题，
 	 * 而不是让提交失败（Q-8）。这里刻意不缓存 apiHandler：用户可能中途换模型/改 key。
 	 */
-	private createQuestionLLMCaller(): ((systemPrompt: string, userPrompt: string) => Promise<string>) | undefined {
+	private createQuestionLLMCaller(): QuestionLLMCaller | undefined {
 		try {
 			const config = StateManager.get().getApiConfiguration()
-			const provider = (config as { apiProvider?: string } | undefined)?.apiProvider
-			if (!config || !provider) return undefined
-			const apiHandler = buildApiHandler(
-				{ ...config, actModeThinkingBudgetTokens: 0, planModeThinkingBudgetTokens: 0 },
-				"act",
-			)
-			return async (systemPrompt: string, userPrompt: string): Promise<string> => {
-				let text = ""
-				for await (const chunk of apiHandler.createMessage(systemPrompt, [{ role: "user", content: userPrompt }])) {
-					if (chunk.type === "text") text += chunk.text
-				}
-				return text
+			const targets = resolveQuestionLLMTargets(config)
+			const [primary] = targets
+			if (!primary) {
+				Logger.warn("[AssignmentManager] Cline 未配置模型提供商，出题将使用通用思考题")
+				return undefined
 			}
+
+			const caller: QuestionLLMCaller = {
+				provider: primary.provider,
+				model: primary.model,
+				complete: async (systemPrompt: string, userPrompt: string): Promise<string> => {
+					let lastError: unknown
+					let lastTarget = primary
+					for (const target of targets) {
+						lastTarget = target
+						try {
+							const apiHandler = buildApiHandler(
+								{ ...config, actModeThinkingBudgetTokens: 0, planModeThinkingBudgetTokens: 0 },
+								target.mode,
+							)
+							let text = ""
+							for await (const chunk of apiHandler.createMessage(systemPrompt, [
+								{ role: "user", content: userPrompt },
+							])) {
+								if (chunk.type === "text") text += chunk.text
+							}
+							// 记住真正成功的模型：面板徽标与提交包里的 llmProvider/llmModel 读的就是它
+							caller.provider = target.provider
+							caller.model = target.model
+							return text
+						} catch (error) {
+							lastError = error
+							const hasNext = target !== targets[targets.length - 1]
+							// 只有「鉴权类」失败值得换下一个模型：网络错误换模型也没用，只会让学生多等一轮
+							if (hasNext && isAuthFailure(error)) {
+								Logger.warn("[AssignmentManager] 出题模型调用被拒（疑似未配置密钥），改用下一个已配置的模型重试")
+								continue
+							}
+							break
+						}
+					}
+					// 把 401 / 缺 key 翻译成「去 Cline 设置里检查密钥」，其余保留原文
+					throw new Error(describeLLMFailure(lastError, lastTarget))
+				},
+			}
+			return caller
 		} catch (error) {
-			Logger.warn("[AssignmentManager] 无法初始化出题模型，将使用模板题", error as Error)
+			Logger.warn("[AssignmentManager] 无法读取 Cline 的模型配置，出题将使用通用思考题", error as Error)
 			return undefined
 		}
 	}
@@ -763,6 +824,9 @@ export class AssignmentManager {
 				codeEditCount: logEvents.codeEdit,
 			}
 			// ④' 出题：优先 LLM，失败/不可用自动降级为模板题（Q-8：绝不阻断提交）
+			// 模型与 API Key 直接取 Cline 自带设置（actModeApiProvider / actModeApiModelId），
+			// 学生平时聊天能用的配置就是出题能用的配置，无需另填 key。
+			const questionLLM = this.createQuestionLLMCaller()
 			const generated = await generateThinkingQuestions(
 				{
 					signals,
@@ -775,7 +839,7 @@ export class AssignmentManager {
 					logLineCount: log.lineCount,
 					policy: this.readThinkingQuestionPolicy(),
 				},
-				{ callLLM: this.createQuestionLLMCaller() },
+				{ callLLM: questionLLM?.complete },
 			)
 			const questions = generated.questions
 			const submittedAt = new Date().toISOString()
@@ -795,6 +859,8 @@ export class AssignmentManager {
 				workspaceRoot,
 				unsavedFiles,
 				redactionHits,
+				llmProvider: questionLLM?.provider,
+				llmModel: questionLLM?.model,
 			}
 
 			// ⑤ 开面板
@@ -819,6 +885,8 @@ export class AssignmentManager {
 				submittedAt,
 				redactionHits,
 				unsavedFiles,
+				llmProvider: questionLLM?.provider,
+				llmModel: questionLLM?.model,
 			}
 			this.panelOpener(payload, (answers) => this.confirmSubmission(answers))
 
@@ -843,6 +911,8 @@ export class AssignmentManager {
 					generatedBy: generated.generatedBy,
 					warning: generated.warning,
 					questionCountReason: generated.decision.reason,
+					llmProvider: questionLLM?.provider,
+					llmModel: questionLLM?.model,
 					redactionHits,
 					unsavedFiles: unsavedFiles.length,
 					panelOpened: true,

@@ -1,5 +1,70 @@
 # Changelog
 
+## [Unreleased] — 2026-10-18
+
+### Added
+
+- **实验提交改为「提交包」+ 两段式确认**：点「提交」后**不再直接上传**，而是先在本地收集当前工作区的
+  任务代码文件、行为日志与运行痕迹，生成 3–5 道思考题呈现在**编辑器区面板**
+  （`ThinkingQuestionsPanelProvider` + `ThinkingQuestionsForm`，交互与「问题反馈」面板一致，`data-view`
+  分派、单例、`retainContextWhenHidden`）；学生逐题作答、全部非空并确认后，才把
+  「思考题答案 + 代码文件 + 日志 + meta」打包成**一次 multipart** 提交到教师端。
+  目的：确认前不产生任何上传 —— 避免学生顺手点了提交、而日志与代码还是半成品，服务器上留一堆无效版本。
+- **思考题按材料丰富度自适应 3/4/5 题**（`QuestionCountPolicy`）：6 个特征（有效代码行数、文件数、
+  运行次数、报错次数、任务描述字数、`code_edit` 次数）计分决定题数；`teaching.thinkingQuestionAuto`
+  关闭后固定为 `teaching.thinkingQuestionCount`（3~5，默认 3）。出题优先交给模型（`QuestionGenerator`），
+  无模型配置 / 调用失败 / 返回不可解析 / 题数不足时**逐级降级**：模型题 + 通用题补齐 → 全通用题，
+  并在面板顶部说明降级原因。出题**永远不阻塞**提交链路。
+- **运行痕迹采集**（`RunTraceCollector`）：监听终端 shell integration 的
+  `onDidEndTerminalShellExecution`，把「命令 + 退出码 + 输出尾部」写入
+  `<工作区>/.cline-logs/run_traces.jsonl`（单文件 2 MB 封顶，超限只留最后 300 行），
+  作为思考题里「你调试时到底遇到了什么报错」的真实依据。缺 `onDidEnd…`（旧版 VS Code）时
+  **整体不采集** —— 没有退出码的痕迹会误导答疑，宁可不记。
+- **日志上传切片与密钥打码**：日志超过 2 MB 时按「最新 `taskId` 边界」切片（头 200 + 尾 1800 行，
+  **绝不把 JSON 事件截成半行**）；找不到 `taskId` 时保留 `run_result` 与最近 200 行并标记
+  `slice_missing`，报告页据此提示「未匹配到任务」。提交前对代码文件做三类打码
+  （厂商前缀密钥 / `KEY=value` 赋值 / 块状配置），`.env` 逐行打码且保留键名，命中数随提交包上报。
+- 新增 `resolveStudentLogFile()` / `resolveStudentLogDir()`（`workspaceLogPath.ts`），
+  让扩展侧与终端分析脚本共用同一条日志解析链。
+- 新增文档：`docs/design/teaching-submission-bundle-design.md`（方案 v1.4）、
+  `docs/design/teaching-submission-implementation-plan.md`（P0–P2 实施记录与闸门实测）、
+  `docs/manual-test-plan.md`（人工验收单 M-01~M-65）。
+
+### Changed
+
+- **AI 依赖度分析不再读固定路径**：`scripts/analyze-student-log.ts` 改为走新增的 `logPathResolver`
+  解析链（位置参数 / `--log` → `CLINE_STUDENT_LOG`（兼容 `CLINE_LOG_PATH`）→ `--workspace` →
+  当前工作区根 → cwd → 向上回溯 ≤4 层），**删除了写死的 `D:\cline-test` 默认路径与一切绝对路径兜底**。
+  不带参数即分析当前工作区日志，带参数则分析指定文件；新增 `--out` / `--json` / `--strict` / `--help`，
+  退出码 **0** 成功 / **1** 日志缺失或读取失败 / **2** 空日志 + `--strict` / **3** 参数错误。
+  工作区根是**权威信号**：指到没有日志的目录就报错退出，**绝不**回退到父目录或别的工作区 ——
+  否则会把 A 学生的日志当成 B 学生上传。
+- **提交入口语义变更**：侧栏「提交任务」由发 `submitTask` 改为发 `prepareSubmission`（只收集 + 出题），
+  真正上传由面板「确认提交」触发（`confirmSubmission`）；旧 `submitTask` JSON 提交保留，
+  供尚未升级的教师端继续可用。
+- 新增配置项 `teaching.thinkingQuestionAuto`（默认 `true`）与 `teaching.thinkingQuestionCount`
+  （默认 `3`，范围 3~5，仅自适应关闭时生效）。
+
+### Fixed
+
+- **思考题永远退化成通用题（出题读错了配置字段）**：`createQuestionLLMCaller()` 用
+  `config.apiProvider` 判断「是否配置了模型」，而 Cline 的 `ApiConfiguration` 里**没有这个字段** ——
+  提供商分列在 `actModeApiProvider` / `planModeApiProvider`，`buildApiHandler()` 也只读这两项。
+  于是即便「设置 → API 配置」里已经填好 provider、API Key 与模型，出题也永远判定为无模型、
+  直接走模板题（表现为「不建 `.env` 就只有通用题」，其实是误判）。
+  现改为经 `resolveQuestionLLMTarget()` 读真实字段：**出题复用 Cline 里已填好的 provider / API Key /
+  模型**，act 优先、未配置时退回 plan，学生配一次即可，不必在工作区 `.env` 或任何输入框里重复填 key。
+  同时把 401 / 缺 key 的错误翻译成「请到 Cline 设置 → API 配置检查密钥」，并在面板 chip 上显示
+  本次出题实际使用的模型（`openrouter · deepseek/deepseek-chat` 之类）。
+  另加一层加固：`actModeApiProvider` 的默认值就是 `openrouter`，所以「act 看着已配置、其实没填 key」
+  很常见 —— 只在 plan 模式下配过模型的学生会拿到 401 并继续退化成模板题。现在按
+  **act → plan** 依次尝试，且只对鉴权类失败换下一个（网络错误换模型没意义），
+  面板显示的是**真正成功**的那个模型。
+- 日志提示中的「路径来源」改为六种来源之一（命令行参数 / 环境变量 / `--workspace` / 当前工作区 /
+  当前目录 / 当前目录的上级工作区），排障时不必再猜脚本到底读了哪个文件。
+- 运行痕迹、代码文件、日志三者的采集失败都降级为**面板提示 + 继续提交**，不再让「日志文件不存在」
+  这类可预期情况把整次提交拦死。
+
 ## [Unreleased] — 2026-09-29
 
 ### Added
