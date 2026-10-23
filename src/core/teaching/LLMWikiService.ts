@@ -1,35 +1,33 @@
 /**
  * =============================================================================
- *  LLMWikiService — 进度感知 RAG 服务（v1.3 增量）
+ *  LLMWikiService — 课程资料索引与检索可用性服务（v3：去周数）
  *  基于 Cline 的编程学习行为分析与教学辅助系统
  * =============================================================================
  *
  * 【职责】
- * 1. 维护学生当前学习周数（currentWeek），根据周数渐进式拉取 Wiki 资料
- * 2. 提供 buildIndexGroups() / isWikiMcpAvailable() — 生成“周 → 标题”资料索引与检索可用性
+ * 1. 拉取**全部已发布**资料与教材章节（不再有「当前学习周」）
+ * 2. 提供 buildIndexTitles() / isWikiMcpAvailable() — 生成资料索引与检索可用性
+ *
+ * 【v3 变更（2026-10）】教学周概念整体移除：
+ *   - 删除「当前教学周」状态及其读写方法、周状态文件读写；
+ *   - `fetchWiki()` 不再传 `max_week`，索引即「资料库全貌」；
+ *   - 检索范围不再随周放宽 —— 一开始就是全部（由 `mcp-wiki-server` 转发、后端按相关度召回）。
  *
  * 【v2.13 变更】不再拼接资料全文注入 system prompt；正文改由本地 stdio MCP server
  *   （search_wiki / read_wiki_chunk / list_wiki_weeks）供模型按需检索。
  *
  * 【IPC 联动】
- *   - Webview → Extension: switchWeek / fetchWiki / saveLLMSettings ...
- *   - Extension → 后端:    GET ${serverUrl}/api/v1/wiki?max_week=N
+ *   - Webview → Extension: fetchWiki / saveLLMSettings ...
+ *   - Extension → 后端:    GET ${serverUrl}/api/v1/wiki
  *
  * 【配置兼容】
  *   优先读 clineTeaching.serverUrl（旧版 fallback teaching.apiBase）
- *
- * 【v1.3 决策】
- *   - 借鉴 karpathy llm-wiki 的"Markdown chunk 作 Primary Context"思路
- *   - chunk 拆分由 LLM 决定（8.D），上限 ≤5（8.E）
- *   - 资料检索开关在 VS Code 配置 clineTeaching.llmEnableTools
- *
  * =============================================================================
  */
 
 import * as vscode from "vscode"
 import { Logger } from "@/shared/services/Logger"
-import { writeWeekState } from "./weekStateFile"
-import { weekStateFilePath } from "./weekStatePath"
+import { buildRecallContext } from "./wikiPrompt"
 
 // ============================================================================
 //  类型定义
@@ -58,17 +56,19 @@ export interface WikiChunk {
 	}>
 }
 
-/** GET /api/v1/wiki?max_week=N 响应 */
+/** GET /api/v1/wiki 响应 */
 interface WikiListResponse {
 	ok: boolean
 	count: number
-	max_week?: number
+	max_week?: number | null
 	data: WikiChunk[]
+	/** v3：旧客户端仍可能带 max_week，后端回此标记说明已被忽略 */
+	meta?: { week_ignored?: boolean }
 }
 
 /**
  * 教材章节（v2.0 增量）
- * 由后端 GET /api/v1/wiki?max_week=N&textbook_id=... 返回
+ * 由后端 GET /api/v1/wiki?textbook_id=... 返回
  */
 export interface TextbookChapter {
 	id: string
@@ -97,9 +97,6 @@ export class LLMWikiService {
 	// --------------------------------------------------------------------------
 	//  内部状态
 	// --------------------------------------------------------------------------
-
-	/** 当前周数（从 VS Code 配置同步） */
-	private _currentWeek: number = 1
 
 	/** Wiki 资料缓存（按 baseId 分组） */
 	private _wikiCache: Map<string, WikiChunk[]> = new Map()
@@ -130,35 +127,23 @@ export class LLMWikiService {
 		this._configWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
 			if (
 				e.affectsConfiguration("clineTeaching.serverUrl") ||
-				e.affectsConfiguration("clineTeaching.currentWeek") ||
 				e.affectsConfiguration("clineTeaching.llmEnableTools") ||
 				e.affectsConfiguration("clineTeaching.currentTextbookId") ||
 				e.affectsConfiguration("teaching.apiBase")
 			) {
 				void this._refreshConfig()
-				Logger.log(`[LLMWikiService] 配置变更已同步: week=${this._currentWeek}, serverUrl=${this._serverUrl}`)
+				Logger.log(`[LLMWikiService] 配置变更已同步: serverUrl=${this._serverUrl}`)
 			}
 		})
 	}
 
-	/** 从 VS Code 配置同步 serverUrl / currentWeek / llmEnableTools */
+	/** 从 VS Code 配置同步 serverUrl / llmEnableTools */
 	private async _refreshConfig(): Promise<void> {
 		const ct = vscode.workspace.getConfiguration("clineTeaching")
 		const legacy = vscode.workspace.getConfiguration("teaching")
 
 		// serverUrl 优先级：clineTeaching.serverUrl → teaching.apiBase → "http://localhost:4001"
 		const newUrl = ct.get<string>("serverUrl")?.trim() || legacy.get<string>("apiBase")?.trim() || "http://localhost:4001"
-
-		const newWeek = ct.get<number>("currentWeek") ?? 1
-		this._currentWeek = clampWeek(newWeek)
-
-		// 【F7】直接改配置也要同步周状态文件，否则 MCP 进程热读到的仍是旧周（通知与检索不一致）。
-		// 【P2 复审修复】必须把 **路径解析** 也包进 catch：`weekStateFilePath()` 抛错时若只 `void` 掉 Promise，
-		// 会变成 unhandled rejection（Node 15+ 直接终止进程）。改用 .then/.catch 链后本方法不再有 await，
-		// 因此仍是纯同步执行 —— 调用方读到的 `_currentWeek` 语义与改造前逐字一致。
-		void weekStateFilePath()
-			.then((p) => writeWeekState(p, this._currentWeek))
-			.catch(() => {})
 
 		// 【v2.0】同步 currentTextbookId
 		const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""
@@ -184,21 +169,6 @@ export class LLMWikiService {
 	//  公共 API
 	// ============================================================================
 
-	/** 获取当前周数（供外部显示） */
-	public getCurrentWeek(): number {
-		return this._currentWeek
-	}
-
-	/** 设置当前周数（同时写 VS Code 配置全局） */
-	public async setCurrentWeek(week: number): Promise<void> {
-		const w = clampWeek(week)
-		await vscode.workspace.getConfiguration("clineTeaching").update("currentWeek", w, vscode.ConfigurationTarget.Global)
-		this._currentWeek = w
-		// 【F7】同步写共享文件（fire-and-forget），让 MCP 进程无需重启即可热读到新周数
-		void writeWeekState(await weekStateFilePath(), w).catch(() => {})
-		this.invalidateCache() // 周数变化 → 重新拉取
-	}
-
 	/** 获取当前生效的 serverUrl */
 	public getServerUrl(): string {
 		return this._serverUrl
@@ -218,46 +188,36 @@ export class LLMWikiService {
 	}
 
 	/**
-	 * 【v2.13】生成资料索引（周 → 标题列表），供注入 system prompt 使用。
-	 * **只取元数据，不含正文** —— 正文改由 MCP 工具按需检索（见 spec §D6）。
+	 * 【v3】生成资料索引（标题列表，去重后按周升序、周内保持服务端顺序），供注入 system prompt 使用。
+	 * **只取元数据，不含正文** —— 正文由 MCP 工具按需检索。
+	 *
+	 * 为什么保留 week 排序而不是打散：索引的用途是让模型知道「资料库里大概有哪些主题」，
+	 * 按教材/周的原始组织顺序排列最利于模型判断"这个提问属于哪一块知识"。
 	 */
-	public buildIndexGroups(): Array<{ week: number; titles: string[] }> {
-		const byWeek = new Map<number, string[]>()
+	public buildIndexTitles(): string[] {
+		const seen = new Set<string>()
+		const entries: Array<{ week: number; title: string }> = []
 		const push = (week: number, rawTitle: string): void => {
-			// 【F4】不再 `if (week > this._currentWeek) return`：模型需要知道"后面还有什么"，
-			//        否则只能说"未发布"，无法给出"这属于第 N 周"的定位。仍只注入标题元数据（无正文）。
 			const title = normalizeIndexTitle(rawTitle)
-			if (!title) {
-				return
-			}
-			let arr = byWeek.get(week)
-			if (!arr) {
-				arr = []
-				byWeek.set(week, arr)
-			}
-			if (!arr.includes(title)) {
-				arr.push(title)
-			}
+			if (!title || seen.has(title)) return
+			seen.add(title)
+			entries.push({ week, title })
 		}
 
 		for (const chunks of this._wikiCache.values()) {
-			for (const c of chunks) {
-				push(c.applicable_week, c.title)
-			}
+			for (const c of chunks) push(c.applicable_week, c.title)
 		}
 
-		// 【v2.13】教材章节也并入索引。
-		// 为什么必须并入：正文改由 MCP 检索，而 MCP 检索的是 `wiki_chunks`。
-		// 若教师尚未对某教材执行 publish-as-wiki，其正文根本不在 `wiki_chunks` 里
-		// —— 此时"索引里连章节目录都没有"会让教材内容对模型完全隐形。
-		// 只加"周 + 标题"（复用 normalizeIndexTitle 去重），不注入正文。
-		for (const ch of this._textbookChapters) {
-			push(ch.applicable_week, ch.title)
-		}
+		// 【v2.13】教材章节并入索引：正文由 MCP 检索 `wiki_chunks`，
+		// 若教师尚未 publish-as-wiki，其正文根本不在 `wiki_chunks` 里 ——
+		// 此时"索引里连章节目录都没有"会让教材内容对模型完全隐形。只加标题，不注入正文。
+		for (const ch of this._textbookChapters) push(ch.applicable_week, ch.title)
 
-		return Array.from(byWeek.entries())
-			.map(([week, titles]) => ({ week, titles }))
-			.sort((a, b) => a.week - b.week)
+		// 稳定排序：按原周次升序（相同时保持来源顺序），让索引呈现教材的组织顺序而不是 Map 的插入顺序
+		return entries
+			.map((e, i) => ({ ...e, i }))
+			.sort((a, b) => a.week - b.week || a.i - b.i)
+			.map((e) => e.title)
 	}
 
 	/**
@@ -284,28 +244,29 @@ export class LLMWikiService {
 
 	/**
 	 * 切换教材（写 VS Code 全局配置 + 失效缓存）。
-	 * 下次 fetchWikiForWeek / loadTextbookForWeek 会用新 ID。
+	 * 下次 fetchWiki / loadTextbook 会用新 ID。
 	 */
 	public async setCurrentTextbook(textbookId: string): Promise<void> {
 		const id = textbookId.trim()
-		await vscode.workspace
-			.getConfiguration("clineTeaching")
-			.update("currentTextbookId", id, vscode.ConfigurationTarget.Global)
+		await vscode.workspace.getConfiguration("clineTeaching").update("currentTextbookId", id, vscode.ConfigurationTarget.Global)
 		this._currentTextbookId = id
 		this.invalidateCache()
 	}
 
+	/** 拼 `GET /api/v1/wiki` 的 query（v3：不再有 max_week） */
+	private wikiUrl(): string {
+		const tbParam = this._currentTextbookId ? `?textbook_id=${encodeURIComponent(this._currentTextbookId)}` : ""
+		return `${this._serverUrl}/api/v1/wiki${tbParam}`
+	}
+
 	/**
-	 * 拉取教材章节（v2.0）。
-	 * 若 currentTextbookId 为空则跳过；否则请求 GET /api/v1/wiki?max_week=N&textbook_id=...。
-	 * 返回的章节缓存到 _textbookChapters（供教材切换与后续索引/展示使用）。
+	 * 拉取教材章节（v2.0 / v3 去周数）。
+	 * 若 currentTextbookId 为空则跳过；否则请求 GET /api/v1/wiki?textbook_id=...。
 	 */
-	public async loadTextbookForWeek(week: number): Promise<TextbookChapter[]> {
+	public async loadTextbook(): Promise<TextbookChapter[]> {
 		if (!this._currentTextbookId) return []
-		const targetWeek = clampWeek(week)
-		const url = `${this._serverUrl}/api/v1/wiki?max_week=${targetWeek}&textbook_id=${encodeURIComponent(this._currentTextbookId)}`
 		try {
-			const resp = await fetch(url)
+			const resp = await fetch(this.wikiUrl())
 			if (!resp.ok) {
 				Logger.warn(`[LLMWikiService] 拉取教材章节失败: ${resp.status}`)
 				return this._textbookChapters
@@ -321,34 +282,16 @@ export class LLMWikiService {
 	}
 
 	/**
-	 * 按周数渐进式拉取 Wiki 资料。
+	 * 拉取**全部**已发布 Wiki 资料（v3：不再按周渐进）。
 	 * 缓存策略：baseId 维度去重，相同 baseId 不重复请求。
-	 *
-	 * 【v2.0 增量】同时拉取教材章节（若 currentTextbookId 已设置）。
+	 * 返回全部 chunk（调用方不再需要按周二次过滤）。
 	 */
-	public async fetchWikiForWeek(week: number): Promise<WikiChunk[]> {
-		const targetWeek = clampWeek(week)
-		this._currentWeek = targetWeek
-		// 【F7】同步写共享文件（fire-and-forget），让 MCP 进程无需重启即可热读到新周数
-		void writeWeekState(await weekStateFilePath(), targetWeek).catch(() => {})
-		await vscode.workspace
-			.getConfiguration("clineTeaching")
-			.update("currentWeek", targetWeek, vscode.ConfigurationTarget.Global)
-
-		// 内存缓存中已有的 baseId
+	public async fetchWiki(): Promise<WikiChunk[]> {
 		const cached: WikiChunk[] = []
 		for (const arr of this._wikiCache.values()) cached.push(...arr)
 
-		// 找出未缓存的 baseId（调用后端 max_week 接口一次拿全）
-		// 这里简化：直接 GET /api/v1/wiki?max_week=N 全量拿，缓存里去重
-		// 【v2.0】附加 textbook_id 参数（若已设置），后端会 JOIN 返回 textbook_chapters
-		const tbParam = this._currentTextbookId ? `&textbook_id=${encodeURIComponent(this._currentTextbookId)}` : ""
-		// 【F4】按最大周拉取（后端硬过滤 applicable_week <= max_week，只按当前周请求会让
-		//        buildIndexGroups() 永远看不到后续周，F4 变成空操作）。
-		// ⚠️ 不得把返回值放宽：下面仍用 `applicable_week <= targetWeek` 过滤出"本周可见"集合。
-		const url = `${this._serverUrl}/api/v1/wiki?max_week=${INDEX_FETCH_MAX_WEEK}${tbParam}`
 		try {
-			const resp = await fetch(url)
+			const resp = await fetch(this.wikiUrl())
 			if (!resp.ok) {
 				Logger.warn(`[LLMWikiService] 拉取 Wiki 失败: ${resp.status}`)
 				return cached
@@ -374,15 +317,67 @@ export class LLMWikiService {
 				this._wikiCache.set(baseId, chunks)
 			}
 
-			// 返回本周数可见的所有 chunk
-			const visible = allChunks.filter((c) => c.applicable_week <= targetWeek)
 			Logger.log(
-				`[LLMWikiService] 拉取成功: fetchMaxWeek=${INDEX_FETCH_MAX_WEEK}, week=${targetWeek}, visibleChunks=${visible.length}, totalChunks=${allChunks.length}, baseIds=${grouped.size}`,
+				`[LLMWikiService] 拉取成功: chunks=${allChunks.length}, baseIds=${grouped.size}, textbookChapters=${this._textbookChapters.length}`,
 			)
-			return visible
+			return allChunks
 		} catch (e) {
 			Logger.error(`[LLMWikiService] 拉取异常:`, e)
 			return cached
+		}
+	}
+
+	/**
+	 * 【v3 · P0-3】按**提问内容**预召回资料片段。
+	 *
+	 * 为什么需要它（而不是只靠模型自己调 search_wiki）：
+	 *   - 学生端默认模型经常"不调工具就先答"，实测多数轮次里检索根本没发生；
+	 *   - 周数移除后，"能查到哪些资料"不再由进度决定，**只由问题内容决定**，
+	 *     于是这件事可以且应该在扩展侧确定性地做掉。
+	 *
+	 * 失败/无命中返回 null —— 调用方保持"只注入索引"的原有行为。
+	 *
+	 * @param userText 最近一条学生提问（内部截断到 300 字，避免长贴代码把 query 撑爆）
+	 * @param opts.limit 取前 N 条（默认 3）；`opts.hint` 可拼任务标题提升命中
+	 */
+	public async recallForQuestion(userText: string, opts: { limit?: number; hint?: string } = {}): Promise<string | null> {
+		const serverUrl = this._serverUrl?.trim()
+		const text = (userText ?? "").replace(/\s+/g, " ").trim()
+		if (!serverUrl || text.length < 2) return null
+
+		const limit = Math.max(1, Math.min(opts.limit ?? 8, 10))
+		const query = `${opts.hint ? `${opts.hint} ` : ""}${text}`.slice(0, 300)
+		const url = `${serverUrl}/api/v1/wiki/search?q=${encodeURIComponent(query)}&limit=${limit}`
+
+		try {
+			const ctrl = new AbortController()
+			const timer = setTimeout(() => ctrl.abort(), 3000)
+			const resp = await fetch(url, { signal: ctrl.signal })
+			clearTimeout(timer)
+			if (!resp.ok) {
+				Logger.warn(`[LLMWikiService] 预召回失败: ${resp.status}`)
+				return null
+			}
+			const json = (await resp.json()) as {
+				data?: Array<{ id?: string; title?: string; content?: string; snippet?: string }>
+			}
+			// 检索接口回的是 `snippet`（前 200 字摘要），不是 `content` —— 两者都要认，
+			// 否则会出现「后端命中 2 条、前端拿到 0 条」的静默失败（预召回直接失效）。
+			const items = (json.data ?? [])
+				.map((c) => ({
+					chunkId: c?.id ?? "",
+					title: c?.title ?? "",
+					content: (c?.content ?? c?.snippet ?? "").trim(),
+				}))
+				.filter((c) => c.content.length > 0)
+			const block = buildRecallContext(items)
+			Logger.log(
+				`[LLMWikiService] 预召回: query=${query.slice(0, 40)}… hits=${items.length} injected=${block ? block.length : 0}`,
+			)
+			return block
+		} catch (e) {
+			Logger.warn(`[LLMWikiService] 预召回异常:`, e instanceof Error ? e.message : e)
+			return null
 		}
 	}
 }
@@ -397,7 +392,7 @@ const MAX_INDEX_TITLE_CHARS = 60
 /**
  * 【v2.13】把 chunk 标题规范成"索引项"。
  *
- * 实测必要性（week=18 真实数据）：
+ * 实测必要性（真实数据）：
  *   - 标题来自教材解析，多为**整句话摘要**，直接拼进索引会立刻吃光预算；
  *   - 同一章节被拆成多个 chunk 时，标题只在结尾差一个 ` (1/3)` / ` (2/3)` 后缀，
  *     于是**按原样去重完全失效**，索引里塞满重复项；
@@ -407,14 +402,4 @@ function normalizeIndexTitle(raw: string): string {
 	const oneLine = raw.replace(/\s+/g, " ").trim()
 	const noChunkSuffix = oneLine.replace(/\s*\(\d+\/\d+\)$/, "")
 	return noChunkSuffix.length > MAX_INDEX_TITLE_CHARS ? `${noChunkSuffix.slice(0, MAX_INDEX_TITLE_CHARS)}…` : noChunkSuffix
-}
-
-/** 【F4】拉取用上界：目录索引需要"全 18 周可见"，故按后端允许的最大周拉取；
- *  "能取用"的边界不在这里收窄 —— 已发布资料的**检索**仍由 MCP server 的 `--week` + 后端 SQL 强制。 */
-const INDEX_FETCH_MAX_WEEK = 18
-
-function clampWeek(w: number): number {
-	if (Number.isNaN(w) || w < 1) return 1
-	if (w > 18) return 18
-	return Math.floor(w)
 }

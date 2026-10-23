@@ -12,27 +12,26 @@ import {
 const base = {
 	execPath: "C:/vscode/Code.exe",
 	scriptPath: "C:/ext/dist/mcp-wiki-server.js",
-	week: 5,
 	serverUrl: "http://a:4001",
 }
 
-describe("buildWikiServerEntry", () => {
-	it("生成 stdio 条目并把 week/server 放进 args", () => {
+describe("buildWikiServerEntry（v3：去周数）", () => {
+	it("生成 stdio 条目，args 只含脚本与 --server", () => {
 		const e = buildWikiServerEntry(base)
 		expect(e.type).to.equal("stdio")
 		expect(e.command).to.equal(base.execPath)
-		expect(e.args).to.deep.equal([base.scriptPath, "--week", "5", "--server", "http://a:4001"])
+		expect(e.args).to.deep.equal([base.scriptPath, "--server", "http://a:4001"])
 		expect(e.env?.ELECTRON_RUN_AS_NODE).to.equal("1")
+	})
+
+	it("★ args 里不得出现 --week / --week-file", () => {
+		const args = buildWikiServerEntry(base).args.join(" ")
+		expect(args.includes("--week")).to.equal(false)
 	})
 
 	it("预置 autoApprove 白名单（三个只读工具）", () => {
 		const e = buildWikiServerEntry(base)
 		expect(e.autoApprove).to.deep.equal(["search_wiki", "read_wiki_chunk", "list_wiki_weeks"])
-	})
-
-	it("week 越界被 clamp", () => {
-		expect(buildWikiServerEntry({ ...base, week: 99 }).args).to.contain("18")
-		expect(buildWikiServerEntry({ ...base, week: 0 }).args).to.contain("1")
 	})
 })
 
@@ -49,11 +48,11 @@ describe("mergeWikiServerEntry", () => {
 		expect(second.changed).to.equal(false)
 	})
 
-	it("week 变化 → 重写 args", () => {
+	it("★ serverUrl 变化 → 重写 args", () => {
 		const first = mergeWikiServerEntry({}, buildWikiServerEntry(base))
-		const r = mergeWikiServerEntry(first.next, buildWikiServerEntry({ ...base, week: 9 }))
+		const r = mergeWikiServerEntry(first.next, buildWikiServerEntry({ ...base, serverUrl: "http://b:4001" }))
 		expect(r.changed).to.equal(true)
-		expect(r.next.wiki.args).to.contain("9")
+		expect(r.next.wiki.args).to.contain("http://b:4001")
 	})
 
 	it("★ 尊重 disabled=true（不覆盖学生的禁用选择）", () => {
@@ -190,20 +189,15 @@ describe("isWikiServerConnected", () => {
 	})
 })
 
-describe("parseMcpArgs", () => {
-	it("★【F7】--week-file 可选；缺省为 undefined（向后兼容）", () => {
-		expect(parseMcpArgs(["--week", "5", "--server", "http://x"]).weekFile).to.equal(undefined)
-		expect(parseMcpArgs(["--week", "5", "--server", "http://x", "--week-file", "C:/a/b.json"]).weekFile).to.equal(
-			"C:/a/b.json",
-		)
-		// 空值视为未提供
-		expect(parseMcpArgs(["--week-file", "  "]).weekFile).to.equal(undefined)
+describe("parseMcpArgs（v3：去周数）", () => {
+	it("★ 只解析 --server，不再有 week / weekFile 字段", () => {
+		const a = parseMcpArgs(["--server", "http://x"])
+		expect(a).to.deep.equal({ serverUrl: "http://x" })
 	})
 
-	it("★【F7】--week-file 不得影响既有参数解析", () => {
+	it("★ 旧参数 --week / --week-file 被忽略且不影响 --server", () => {
 		const a = parseMcpArgs(["--week", "9", "--server", "http://h:4001/", "--week-file", "f.json"])
-		expect(a.week).to.equal(9)
 		expect(a.serverUrl).to.equal("http://h:4001")
-		expect(a.weekFile).to.equal("f.json")
+		expect(a).to.deep.equal({ serverUrl: "http://h:4001" })
 	})
 })

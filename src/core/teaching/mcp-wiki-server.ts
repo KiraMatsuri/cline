@@ -1,11 +1,15 @@
 /**
- * wiki-mcp-server — 课程资料检索的 MCP server（stdio）（v2.13）
+ * wiki-mcp-server — 课程资料检索的 MCP server（stdio）（v3：去周数）
  *
- * 职责（单一）：把插件注入的 currentWeek 拼到检索请求上，转发给教学后端。
- * 它**不做**回答生成、**不做**边界判定（边界由后端 SQL 强制）。
+ * 职责（单一）：把检索请求转发给教学后端，后端按**相关度**在**全部已发布资料**中检索。
+ * 它**不做**回答生成、**不做**边界判定。资料是否对当前提问有用，交给模型按召回结果自行判断。
  *
- * 启动：node dist/mcp-wiki-server.js --week 5 --server http://host:4001
- * 设计文档：docs/design/wiki-mcp-retrieval-design.md
+ * 启动：node dist/mcp-wiki-server.js --server http://host:4001
+ * 设计文档：docs/design/teaching-modes-and-behavior-metrics-design.md §3
+ *
+ * 【v3 变更】不再有 `--week` / `--week-file`：
+ *   - 「第 x 周」已从学生端整体移除，检索范围不再随周推进而放宽 —— 一开始就是全部；
+ *   - 旧的周状态文件（`teaching-week.json`）**不再被读取**，也不主动删除（不动学生文件）。
  *
  * ⚠️ stdio 传输下 **stdout 是协议通道**：任何调试输出都必须走 stderr，
  *    否则会污染 JSON-RPC 流导致客户端解析失败。
@@ -17,25 +21,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
 import { parseMcpArgs } from "./mcp/args"
 import { callListWeeks, callReadChunk, callSearchWiki } from "./mcp/wikiBackend"
-import { SEARCH_WIKI_DESCRIPTION } from "./mcp/wikiToolDescriptions"
-import { readWeekState } from "./weekStateFile"
+import { LIST_WIKI_WEEKS_DESCRIPTION, READ_WIKI_CHUNK_DESCRIPTION, SEARCH_WIKI_DESCRIPTION } from "./mcp/wikiToolDescriptions"
 
-const { week, serverUrl, weekFile } = parseMcpArgs(process.argv.slice(2))
+const { serverUrl } = parseMcpArgs(process.argv.slice(2))
 
 const server = new Server({ name: "wiki", version: "1.0.0" }, { capabilities: { tools: {} } })
-
-/**
- * 【F7】每次工具调用前热读周数文件 ⇒ 改周数**无需重启 MCP 进程**。
- * 文件缺失/损坏/越界 → 回退 spawn 时的 `--week`（向后兼容，永不抛错）。
- */
-async function effectiveWeek(): Promise<number> {
-	if (!weekFile) return week
-	try {
-		return (await readWeekState(weekFile)) ?? week
-	} catch {
-		return week
-	}
-}
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
 	tools: [
@@ -53,7 +43,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		},
 		{
 			name: "read_wiki_chunk",
-			description: "读取某个资料块的完整内容。仅当该资料在当前教学周或更早发布时才可读取。",
+			description: READ_WIKI_CHUNK_DESCRIPTION,
 			inputSchema: {
 				type: "object",
 				properties: { chunk_id: { type: "string", description: "search_wiki 返回的 id" } },
@@ -62,7 +52,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		},
 		{
 			name: "list_wiki_weeks",
-			description: "列出当前可访问的教学周及其资料数量。",
+			description: LIST_WIKI_WEEKS_DESCRIPTION,
 			inputSchema: { type: "object", properties: {} },
 		},
 	],
@@ -77,15 +67,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 			return { content: [{ type: "text", text: JSON.stringify({ error: "wiki_backend_not_configured" }) }] }
 		}
 		if (name === "search_wiki") {
-			const r = await callSearchWiki(serverUrl, await effectiveWeek(), String(args.query ?? ""), Number(args.limit ?? 5))
+			const r = await callSearchWiki(serverUrl, String(args.query ?? ""), Number(args.limit ?? 5))
 			return { content: [{ type: "text", text: JSON.stringify(r) }] }
 		}
 		if (name === "read_wiki_chunk") {
-			const r = await callReadChunk(serverUrl, await effectiveWeek(), String(args.chunk_id ?? ""))
+			const r = await callReadChunk(serverUrl, String(args.chunk_id ?? ""))
 			return { content: [{ type: "text", text: JSON.stringify(r) }] }
 		}
 		if (name === "list_wiki_weeks") {
-			const r = await callListWeeks(serverUrl, await effectiveWeek())
+			const r = await callListWeeks(serverUrl)
 			return { content: [{ type: "text", text: JSON.stringify(r) }] }
 		}
 		return { content: [{ type: "text", text: JSON.stringify({ error: `unknown_tool: ${name}` }) }] }

@@ -184,13 +184,10 @@ export async function activate(context: vscode.ExtensionContext) {
 	// 【v2.5】自动日志路径由 VscodeWebviewProvider.assignmentManager 统一处理
 	// （该实例已调用 startWatchingWorkspaceOpen，避免双实例导致 cachedAutoLogPath 不同步）
 
-	// 首次激活时若有 currentWeek 配置，预拉取一次 wiki 资料（让 Header 立即可用）
-	const initialWeek = vscode.workspace.getConfiguration("clineTeaching").get<number>("currentWeek", 1)
-	if (initialWeek >= 1) {
-		llmWikiService.fetchWikiForWeek(initialWeek).catch((e) => {
-			Logger.warn(`[extension.ts] 预拉取 Wiki 失败:`, e)
-		})
-	}
+	// 【v3 去周数】首次激活即预拉取一次 wiki 资料（资料库全量，索引立即可用）
+	llmWikiService.fetchWiki().catch((e) => {
+		Logger.warn(`[extension.ts] 预拉取 Wiki 失败:`, e)
+	})
 
 	const { commands } = ExtensionRegistryInfo
 

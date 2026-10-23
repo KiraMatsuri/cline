@@ -1,27 +1,14 @@
 import { expect } from "chai"
 import { afterEach, beforeEach } from "mocha"
 import * as sinon from "sinon"
-import * as vscode from "vscode"
 import { LLMWikiService } from "../LLMWikiService"
 
-describe("LLMWikiService.fetchWikiForWeek — 拉取上界（F4）", () => {
+describe("LLMWikiService.fetchWiki — v3 去周数", () => {
 	let sandbox: sinon.SinonSandbox
 	let fetchStub: sinon.SinonStub
 
 	beforeEach(() => {
 		sandbox = sinon.createSandbox()
-		// vscode-mock 未导出 ConfigurationTarget，而 fetchWikiForWeek 会读 vscode.ConfigurationTarget.Global。
-		// mock 带 __esModule，故 import * as vscode 拿到的是同一个模块对象，赋值即可被被测代码看到。
-		;(vscode as unknown as Record<string, unknown>).ConfigurationTarget = {
-			Global: 1,
-			Workspace: 2,
-			WorkspaceFolder: 3,
-		}
-		// vscode-mock 的 getConfiguration 只实现了 get()，fetchWikiForWeek 还要调 update()
-		sandbox.stub(vscode.workspace, "getConfiguration").returns({
-			get: () => undefined,
-			update: async () => {},
-		} as never)
 		fetchStub = sandbox.stub(globalThis, "fetch").resolves({
 			ok: true,
 			json: async () => ({
@@ -38,31 +25,38 @@ describe("LLMWikiService.fetchWikiForWeek — 拉取上界（F4）", () => {
 		;(svc as unknown as { _wikiCache: Map<string, unknown[]> })._wikiCache = new Map()
 		;(svc as unknown as { _textbookChapters: unknown[] })._textbookChapters = []
 		;(svc as unknown as { _serverUrl: string })._serverUrl = "http://localhost:4001"
+		;(svc as unknown as { _currentTextbookId: string })._currentTextbookId = ""
 	})
 
 	afterEach(() => {
 		sandbox.restore()
-		delete (vscode as unknown as Record<string, unknown>).ConfigurationTarget
 	})
 
-	it("★ 按后端允许的最大周拉取（否则索引永远看不到后续周，F4 是空操作）", async () => {
+	it("★ 拉取 URL 不再带 max_week（资料库全量）", async () => {
 		const svc = LLMWikiService.getInstance()
-		await svc.fetchWikiForWeek(5)
+		await svc.fetchWiki()
 		const url = String(fetchStub.firstCall.args[0])
-		expect(url).to.include("max_week=18")
+		expect(url).to.equal("http://localhost:4001/api/v1/wiki")
+		expect(url.includes("max_week")).to.equal(false)
 	})
 
-	it('★ 返回值仍只含本周可见的资料（"能取用"边界不得放宽）', async () => {
+	it("★ 返回值包含全部资料，不再按周裁剪", async () => {
 		const svc = LLMWikiService.getInstance()
-		const visible = await svc.fetchWikiForWeek(5)
-		expect(visible.map((c) => c.title)).to.deep.equal(["第3周标题"])
+		const all = await svc.fetchWiki()
+		expect(all.map((c) => c.title)).to.deep.equal(["第3周标题", "第9周标题"])
 	})
 
-	it("★ 拉取后索引可见后续周的标题（F4 的目标行为）", async () => {
+	it("★ 索引列出跨周标题（没有「当前周」这个概念了）", async () => {
 		const svc = LLMWikiService.getInstance()
-		await svc.fetchWikiForWeek(5)
-		const groups = svc.buildIndexGroups()
-		expect(groups.map((g) => g.week)).to.deep.equal([3, 9])
-		expect(groups[1].titles).to.deep.equal(["第9周标题"])
+		await svc.fetchWiki()
+		expect(svc.buildIndexTitles()).to.deep.equal(["第3周标题", "第9周标题"])
+	})
+
+	it("★ 配了教材时 URL 带 textbook_id，仍不带 max_week", async () => {
+		const svc = LLMWikiService.getInstance()
+		;(svc as unknown as { _currentTextbookId: string })._currentTextbookId = "tb_1"
+		await svc.fetchWiki()
+		const url = String(fetchStub.firstCall.args[0])
+		expect(url).to.equal("http://localhost:4001/api/v1/wiki?textbook_id=tb_1")
 	})
 })

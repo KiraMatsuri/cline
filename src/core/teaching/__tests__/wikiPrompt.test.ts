@@ -2,41 +2,38 @@ import { expect } from "chai"
 import { buildWikiSystemPrompt } from "../wikiPrompt"
 
 const opts = {
-	week: 5,
-	index: [
-		{ week: 3, titles: ["列表与字典", "函数基础"] },
-		{ week: 5, titles: ["装饰器"] },
-	],
+	index: ["列表与字典", "函数基础", "装饰器"],
 	mcpAvailable: true,
 }
 
-describe("buildWikiSystemPrompt", () => {
+describe("buildWikiSystemPrompt（v3：去周数）", () => {
 	it("★ 必须包含认知边界约束段", () => {
 		const s = buildWikiSystemPrompt(opts)
 		expect(s).to.include("认知边界约束")
-		expect(s).to.include("第 5 周及更早")
+		expect(s).to.include("search_wiki")
 	})
 
-	it("★【F4】检索为空时必须给出 A/B/C 三档策略，而不是一律拒答", () => {
+	it("★ 不再出现「第 N 周 / 进度内 / 超纲」这类教学进度口径", () => {
 		const s = buildWikiSystemPrompt(opts)
-		expect(s).to.include("不要一律拒答")
-		expect(s).to.include("【A 在进度内】")
-		expect(s).to.include("【B 超纲、无资料】")
-		expect(s).to.include("【C 超纲、可联网】")
-		// B 档的三个必须项
-		expect(s).to.include("这属于第 N 周内容")
-		expect(s).to.include("前置基础")
+		expect(s.includes("周")).to.equal(false)
+		expect(s.includes("超纲")).to.equal(false)
+		expect(s.includes("进度")).to.equal(false)
+	})
+
+	it("★ 检索为空时的口径：可讲通用知识、须说明、不给完整可运行实现", () => {
+		const s = buildWikiSystemPrompt(opts)
+		expect(s).to.include("课程资料中没有对应内容")
 		expect(s).to.include("不给完整可运行实现")
-		// 旧口径的拒答指令必须彻底消失（它是 M2' 失败的指令源）
-		expect(s).to.not.include("不要展开讲解其具体用法")
+		// 旧版"一律拒答 / 按周分档"的指令必须彻底消失
+		expect(s.includes("不要一律拒答")).to.equal(false)
+		expect(s.includes("【A 在进度内】")).to.equal(false)
 	})
 
-	it("包含资料索引且不含全文", () => {
+	it("包含资料索引标题，且不含正文", () => {
 		const s = buildWikiSystemPrompt(opts)
-		expect(s).to.include("列表与字典")
 		expect(s).to.include("资料索引")
-		expect(s).to.include("第 3 周")
-		// 索引模式不得塞入大段正文
+		expect(s).to.include("列表与字典")
+		expect(s).to.include("装饰器")
 		expect(s.length).to.be.lessThan(3000)
 		// ★ 下界：防止"返回空串"也算通过（空跑陷阱）
 		expect(s.length).to.be.greaterThan(200)
@@ -50,58 +47,33 @@ describe("buildWikiSystemPrompt", () => {
 	it("★ MCP 不可用时仍保留认知边界约束（不得随全文一起去掉）", () => {
 		const s = buildWikiSystemPrompt({ ...opts, mcpAvailable: false })
 		expect(s).to.include("认知边界约束")
-		expect(s).to.include("第 5 周及更早")
-	})
-
-	it("★ week 越界被 clamp 到 18", () => {
-		const s = buildWikiSystemPrompt({ ...opts, week: 99 })
-		expect(s).to.include("第 18 周")
-		// 索引仍应在（其周次 3/5 都 ≤ 18）
-		expect(s).to.include("第 3 周")
 	})
 
 	it("索引为空时给出占位而非崩掉", () => {
 		const s = buildWikiSystemPrompt({ ...opts, index: [] })
-		expect(s).to.include("暂无资料")
+		expect(s).to.include("资料库暂无资料")
 	})
 
-	it("★ 索引过长时被截断，不得退化成全文注入", () => {
-		const huge = Array.from({ length: 400 }, (_, i) => ({
-			week: (i % 18) + 1,
-			titles: [`很长的标题名称编号${i}`.repeat(3)],
-		}))
+	it("★ 索引过长时被截断并显式标注省略数，不得退化成全文注入", () => {
+		const huge = Array.from({ length: 400 }, (_, i) => `很长的标题名称编号${i}`.repeat(3))
 		const s = buildWikiSystemPrompt({ ...opts, index: huge })
-		expect(s).to.include("后续索引已省略")
+		expect(s).to.include("未列出")
+		expect(s).to.include("可用 search_wiki 检索")
 		expect(s.length).to.be.lessThan(4000)
 	})
 
-	it("★【裁定 b】分级截断：18 周长标题下，后续周次不得消失，且长度有界", () => {
-		const index = Array.from({ length: 18 }, (_, i) => ({
-			week: i + 1,
-			titles: Array.from({ length: 8 }, (_, j) => `第${i + 1}周标题摘要编号${j}${"补".repeat(40)}`),
-		}))
-		const s = buildWikiSystemPrompt({ week: 5, index, mcpAvailable: true })
-		// F4 的目标：模型必须知道"后面还有什么" ⇒ 18 周全部都要出现
-		for (let w = 1; w <= 18; w++) {
-			expect(s, `第 ${w} 周应出现在索引里`).to.include(`第 ${w} 周`)
-		}
-		// 超纲周走简略形态（周号 + 主题数）
-		expect(s).to.include("（8 个主题）")
-		// 长度有界：不得退化成全文注入
-		expect(s.length).to.be.lessThan(4000)
+	it("★ 索引按传入顺序输出（服务端已按周升序组织）", () => {
+		const s = buildWikiSystemPrompt({ index: ["甲", "乙", "丙"], mcpAvailable: true })
+		const ia = s.indexOf("- 甲")
+		const ib = s.indexOf("- 乙")
+		const ic = s.indexOf("- 丙")
+		expect(ia).to.be.lessThan(ib)
+		expect(ib).to.be.lessThan(ic)
 	})
 
-	it("★【裁定 b】进度内列标题、超纲只列主题数", () => {
-		const s = buildWikiSystemPrompt({
-			week: 5,
-			index: [
-				{ week: 5, titles: ["装饰器"] },
-				{ week: 9, titles: ["生成器"] },
-			],
-			mcpAvailable: true,
-		})
-		expect(s).to.include("第 5 周：装饰器") // 进度内 → 标题
-		expect(s).to.include("第 9 周：（1 个主题）") // 超纲 → 只给主题数
-		expect(s).to.not.include("生成器") // 超纲周不得泄露标题
+	it("★ 空白标题被跳过，不会产生空 `- ` 行", () => {
+		const s = buildWikiSystemPrompt({ index: ["  ", "", "变量"], mcpAvailable: true })
+		expect(s).to.include("- 变量")
+		expect(s.includes("- \n")).to.equal(false)
 	})
 })

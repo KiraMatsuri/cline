@@ -1,35 +1,29 @@
 import { expect } from "chai"
-import { clampWeek, parseMcpArgs } from "../args"
+import { parseMcpArgs } from "../args"
 
-describe("parseMcpArgs", () => {
-	it("解析 --week 与 --server", () => {
-		const r = parseMcpArgs(["node", "srv.js", "--week", "7", "--server", "http://localhost:4001"])
-		expect(r.week).to.equal(7)
+describe("parseMcpArgs（v3：去周数）", () => {
+	it("解析 --server", () => {
+		const r = parseMcpArgs(["node", "srv.js", "--server", "http://localhost:4001"])
 		expect(r.serverUrl).to.equal("http://localhost:4001")
 	})
 
-	it("缺少参数时回退为保守值", () => {
+	it("缺少 --server 时回退为空串", () => {
 		const r = parseMcpArgs(["node", "srv.js"])
-		expect(r.week).to.equal(1)
 		expect(r.serverUrl).to.equal("")
 	})
 
-	it("week 越界被 clamp", () => {
-		expect(parseMcpArgs(["--week", "99", "--server", "x"]).week).to.equal(18)
-		expect(parseMcpArgs(["--week", "0", "--server", "x"]).week).to.equal(1)
-		expect(parseMcpArgs(["--week", "abc", "--server", "x"]).week).to.equal(1)
+	it("★ 旧参数 --week / --week-file 被静默忽略，且不会把其值当成 serverUrl", () => {
+		const r = parseMcpArgs(["node", "srv.js", "--week", "7", "--week-file", "/tmp/w.json", "--server", "http://a:4001"])
+		expect(r.serverUrl).to.equal("http://a:4001")
+		// 返回值里不得再有 week 字段
+		expect(Object.keys(r)).to.deep.equal(["serverUrl"])
 	})
 
 	it("serverUrl 去掉结尾斜杠", () => {
 		expect(parseMcpArgs(["--server", "http://a:4001/"]).serverUrl).to.equal("http://a:4001")
 	})
-})
 
-describe("clampWeek", () => {
-	it("收紧到 [1,18]", () => {
-		expect(clampWeek(5)).to.equal(5)
-		expect(clampWeek(0)).to.equal(1)
-		expect(clampWeek(19)).to.equal(18)
-		expect(clampWeek("x")).to.equal(1)
+	it("★ 只有 --week 时 serverUrl 仍为空（旧配置不崩）", () => {
+		expect(parseMcpArgs(["--week", "3"]).serverUrl).to.equal("")
 	})
 })

@@ -42,16 +42,17 @@ async function getJson(url: string): Promise<unknown> {
 	}
 }
 
-export async function callSearchWiki(serverUrl: string, week: number, query: string, limit: number) {
+export async function callSearchWiki(serverUrl: string, query: string, limit: number) {
 	const q = encodeURIComponent(query.slice(0, 200))
 	const lim = Math.min(Math.max(Math.floor(limit) || 5, 1), 10)
-	return getJson(`${serverUrl}/api/v1/wiki/search?week=${week}&q=${q}&limit=${lim}`)
+	// 【v3】不再带 week：后端按相关度检索全部已发布资料
+	return getJson(`${serverUrl}/api/v1/wiki/search?q=${q}&limit=${lim}`)
 }
 
-export async function callReadChunk(serverUrl: string, week: number, chunkId: string) {
-	return getJson(`${serverUrl}/api/v1/wiki/chunk?chunk_id=${encodeURIComponent(chunkId)}&week=${week}`)
+export async function callReadChunk(serverUrl: string, chunkId: string) {
+	return getJson(`${serverUrl}/api/v1/wiki/chunk?chunk_id=${encodeURIComponent(chunkId)}`)
 }
 
-export async function callListWeeks(serverUrl: string, week: number) {
-	return getJson(`${serverUrl}/api/v1/wiki/weeks?week=${week}`)
+export async function callListWeeks(serverUrl: string) {
+	return getJson(`${serverUrl}/api/v1/wiki/weeks`)
 }

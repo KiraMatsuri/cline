@@ -442,13 +442,6 @@
 					"pattern": "^https?://[^\\s]+$",
 					"patternErrorMessage": "必须是形如 http(s)://host[:port] 的 URL（不带端口默认 80）"
 				},
-				"clineTeaching.currentWeek": {
-					"type": "number",
-					"default": 1,
-					"minimum": 1,
-					"maximum": 18,
-					"description": "学生当前学习周数（影响 Wiki 资料可见范围与 LLM 认知边界）"
-				},
 				"clineTeaching.llmEnableTools": {
 					"type": "boolean",
 					"default": true,

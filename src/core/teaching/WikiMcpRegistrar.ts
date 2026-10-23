@@ -27,9 +27,6 @@ import * as vscode from "vscode"
 import { HostProvider } from "@/hosts/host-provider"
 import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
-import { clampWeek } from "./mcp/args"
-import { writeWeekState } from "./weekStateFile"
-import { weekStateFilePath } from "./weekStatePath"
 
 /** McpHub 的最小结构依赖（便于单测，避免 teaching 层绑定 McpHub 实现） */
 export interface McpHubLike {
@@ -51,21 +48,9 @@ export type McpServersMap = Record<string, McpServerEntry>
 export const WIKI_SERVER_NAME = "wiki"
 export const WIKI_TOOL_NAMES = ["search_wiki", "read_wiki_chunk", "list_wiki_weeks"]
 
-export function buildWikiServerEntry(opts: {
-	execPath: string
-	scriptPath: string
-	week: number
-	serverUrl: string
-	/**
-	 * 【F7】周状态文件绝对路径（由插件侧 `weekStateFilePath()` 算好传入）。
-	 * 可选：仅在提供时追加 `--week-file`，保持旧 args 逐字不变（向后兼容）。
-	 */
-	weekStateFile?: string
-}): McpServerEntry {
-	const args = [opts.scriptPath, "--week", String(clampWeek(opts.week)), "--server", opts.serverUrl]
-	if (opts.weekStateFile) {
-		args.push("--week-file", opts.weekStateFile)
-	}
+export function buildWikiServerEntry(opts: { execPath: string; scriptPath: string; serverUrl: string }): McpServerEntry {
+	// 【v3 去周数】只传后端地址：检索范围 = 教师发布的全部资料，不再有「当前第几周」
+	const args = [opts.scriptPath, "--server", opts.serverUrl]
 	return {
 		type: "stdio",
 		command: opts.execPath,
@@ -170,7 +155,6 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 	try {
 		const cfg = vscode.workspace.getConfiguration("clineTeaching")
 		const enabled = cfg.get<boolean>("llmEnableTools") ?? true
-		const week = cfg.get<number>("currentWeek") ?? 1
 		const serverUrl = (cfg.get<string>("serverUrl") ?? "").trim()
 
 		// 必须与 McpHub 用同一个函数取目录（它是 `<globalStorage>/settings`）。
@@ -199,16 +183,10 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 		}
 
 		const scriptPath = path.join(context.extensionPath, "dist", "mcp-wiki-server.js")
-		// 【F7】周状态文件路径由插件侧算好（MCP 进程内没有 vscode，无法自行推导）。
-		// 顺手先写一次，保证 server 首次读到文件时它已存在。
-		const weekStateFile = await weekStateFilePath()
-		await writeWeekState(weekStateFile, clampWeek(week))
 		const entry = buildWikiServerEntry({
 			execPath: process.execPath,
 			scriptPath,
-			week,
 			serverUrl,
-			weekStateFile,
 		})
 
 		const { filePath, map, raw, outcome } = await readMcpSettings(settingsDir)
@@ -234,14 +212,10 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 	}
 }
 
-/** 监听周数/服务地址/检索开关变化 → 重写或移除条目 */
+/** 监听服务地址/检索开关变化 → 重写或移除条目 */
 export function registerWikiMcpConfigWatcher(context: vscode.ExtensionContext): vscode.Disposable {
 	const disposable = vscode.workspace.onDidChangeConfiguration((e) => {
-		if (
-			!e.affectsConfiguration("clineTeaching.currentWeek") &&
-			!e.affectsConfiguration("clineTeaching.serverUrl") &&
-			!e.affectsConfiguration("clineTeaching.llmEnableTools")
-		) {
+		if (!e.affectsConfiguration("clineTeaching.serverUrl") && !e.affectsConfiguration("clineTeaching.llmEnableTools")) {
 			return
 		}
 		void ensureWikiMcpServer(context).then(() => probeWikiMcpAvailability())
@@ -298,7 +272,7 @@ export function watchWikiServerDisabled(context: vscode.ExtensionContext): vscod
 			}
 			lastMap = map
 			// 【v2.13】顺带刷新连接状态。
-			// 为什么不能只在激活时探测：MCP server 是**异步**拉起并重载的（改 week 会重启进程），
+			// 为什么不能只在激活时探测：MCP server 是**异步**拉起并重载的，
 			// 激活瞬间往往还是 connecting —— 只探一次会把“尚未连接”误当成“不可用”并一直错下去。
 			await probeWikiMcpAvailability()
 		} catch {
