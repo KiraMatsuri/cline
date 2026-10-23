@@ -295,8 +295,6 @@ export const ExtensionStateContextProvider: React.FC<{
 		nativeToolCallSetting: false,
 		enableParallelToolCalling: false,
 		behaviorMonitorEnabled: true,
-			// 【教学】阻隔式干预实时状态
-		teachingBlocking: null,
 	})
 	const [expandTaskHeader, setExpandTaskHeader] = useState(true)
 	const [didHydrateState, setDidHydrateState] = useState(false)

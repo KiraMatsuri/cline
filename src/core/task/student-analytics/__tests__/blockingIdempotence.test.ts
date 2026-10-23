@@ -1,66 +1,85 @@
 /**
- * 【P6/T2】阻断回合的幂等与挂起语义。
+ * 【P2-2】阻断式干预已整体移除 —— 本文件守护「不存在阻断路径」。
  *
- * 背景（实测证据）：阻断回合原本以 `return false` 结束 ⇒ `initiateTaskLoop` 把它当成“模型没用工具”
- * ⇒ `consecutiveMistakeCount++` ⇒ 重新进入生成器 ⇒ 再展示一次阻断、再记一对 D/T；3 次后还会冒出
- * 「AI 连续 3 次没能正确调用工具」。实测 13:01:18–13:01:28 与 13:07:04–13:07:05 各 3 对 D/T（会话共 9 对）。
+ * 原文件（P6/T2）断言「阻断分支以 ask 挂起 + return true 结束、幂等键 = 学生请求序号」；
+ * P2-2 删除阻断后，同一份测试改为**反向断言**：
+ * - `task/index.ts` 不再有阻断回合（`isBlockingActive` / `blockingNoticeRequestKey` / 阻断 ask / `return true` 早退）；
+ * - `student-analytics` 四个模块不再有 `*blocking*` 成员/文案/白名单；
+ * - 回合编排纯函数不再接受 `isBlocking`（旧「阻断例外」已删）；
+ * - 前端不再有 `TeachingBlockingBanner` / `teachingBlocking` 横幅渲染路径。
  *
- * 现行为：阻断分支用 `ask("followup")` **挂起**（通知交付给学生 + 学生这条消息当场被收下），
- * 随后 `return true` 结束本轮。幂等键 = 学生请求序号（不含 `apiRequestCount`）。
+ * 注意：`types.ts` 的 `InterventionType = "normal" | "blocking"` 仍保留（旧日志读取兼容），
+ * 本文件只断言**代码路径**不存在，不要求历史日志字段消失。
  */
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { expect } from "chai"
 import { planInterventionTurn } from "../interventionTurnPlan"
 
-// 【P6/T2 fix】回到仓库惯例 `__dirname`。本文件有无扩展名的相对导入（上一行）⇒ ESM 解析
-// `ERR_MODULE_NOT_FOUND` ⇒ mocha 回落到 `require`（ts-node CJS）⇒ `__dirname` 可用。
 const taskSrc = fs.readFileSync(path.join(__dirname, "..", "..", "index.ts"), "utf-8")
+const analyticsDir = path.join(__dirname, "..")
+const repoRoot = path.join(__dirname, "..", "..", "..", "..", "..")
+const readAnalytics = (file: string): string => fs.readFileSync(path.join(analyticsDir, file), "utf-8")
+const readRepo = (...segments: string[]): string => fs.readFileSync(path.join(repoRoot, ...segments), "utf-8")
 
-describe("【P6/T2】阻断回合幂等", () => {
-	it("★ 结构：阻断分支以 ask 挂起 + return true 结束，并有幂等键", () => {
-		expect(taskSrc).to.include("blockingNoticeRequestKey")
-		// 【P6/T2 fix2】按**分支边界**取切片，切片严格限制在阻断分支内：
-		// 末端锚取阻断分支之后**紧跟**的普通提醒分支注释 `// 普通干预：`（不再取远在 catch 之后的 `// 【F7】`，
-		// 那会让否定断言面横跨普通分支与 catch ⇒ 普通分支新增 `return false` 就会造成假失败）。
-		const start = taskSrc.indexOf("if (interventionManager.isBlockingActive()) {")
-		expect(start, "阻断分支必须存在").to.be.greaterThan(-1)
-		const end = taskSrc.indexOf("// 普通干预：", start)
-		expect(end, "阻断分支之后必须紧跟普通提醒分支的注释锚点").to.be.greaterThan(start)
+/** 被 P2-2 清理的四个模块（阻断相关成员/常量/文案都必须消失） */
+const PURGED_MODULES = [
+	"TeachingInterventionManager.ts",
+	"InterventionMessageGenerator.ts",
+	"rulePolicy.ts",
+	"BehaviorMonitor.ts",
+]
+
+describe("【P2-2】阻断式干预已移除（blocking / intervention）", () => {
+	it("★ 结构：task/index.ts 不存在阻断回合与阻断文案（blocking）", () => {
+		expect(taskSrc, "阻断态检查分支必须删除").to.not.include("isBlockingActive")
+		expect(taskSrc, "阻断幂等键必须删除").to.not.include("blockingNoticeRequestKey")
+		expect(taskSrc, "阻断文案脱敏函数必须不再被引用").to.not.include("toStudentVisibleBlockingText")
+		expect(taskSrc, "阻断挂起回合必须删除").to.not.include('await this.ask("followup", blockingText)')
+		expect(taskSrc, "阻断日志必须删除").to.not.include("BLOCKING ENFORCED")
+	})
+
+	it("★ 结构：教学干预段不存在 return true 早退（intervention）", () => {
+		const start = taskSrc.indexOf("// ========== 教学干预检查 ==========")
+		expect(start, "教学干预检查段必须存在").to.be.greaterThan(-1)
+		const end = taskSrc.indexOf("} catch (error) {", start)
+		expect(end, "教学干预检查段必须仍有 catch 收口").to.be.greaterThan(start)
 		const block = taskSrc.slice(start, end)
-		expect(block).to.include('await this.ask("followup", blockingText)')
-		expect(block).to.include("return true")
-		expect(block).to.not.include("return false")
+		expect(block, "干预段不得存在阻断式 return true（结束回合）").to.not.include("return true")
+		expect(block, "干预段不得存在阻断式 ask 挂起").to.not.include('ask("followup"')
 	})
 
-	it("★ 结构：阻断文案展示前脱敏；幂等键取自学生请求序号（不含 apiRequestCount）", () => {
-		expect(taskSrc).to.include("toStudentVisibleBlockingText(rawBlockingText)")
-		// 键若含 apiRequestCount 就会随每次助手重试而变 ⇒ 又变回“一条消息展示多次”
-		expect(taskSrc, "阻断幂等键必须来自学生请求序号").to.include(
-			"const requestKey = String(monitor?.getStudentRequestCount() ?? 0)",
-		)
+	it("★ 结构：student-analytics 四个模块不再有 *blocking* 成员/文案/白名单（blocking）", () => {
+		for (const file of PURGED_MODULES) {
+			const source = readAnalytics(file)
+			expect(source, `${file} 不得再出现 blocking（成员/常量/文案）`).to.not.match(/blocking/i)
+		}
 	})
 
-	it("★ 结构：顺延回合不覆盖待投递文案（普通分支以 plan.overwritePending 门控）", () => {
-		expect(taskSrc).to.include("if (decision && plan.overwritePending)")
-	})
-
-	it("★ 纯函数：回合级编排矩阵", () => {
-		expect(planInterventionTurn({ carryOverHint: false, hasDecision: true, isBlocking: false })).to.deep.equal({
+	it("★ 纯函数：回合级编排矩阵不再接受 isBlocking（intervention）", () => {
+		expect(planInterventionTurn({ carryOverHint: false, hasDecision: true })).to.deep.equal({
 			inject: true,
 			overwritePending: true,
 		})
-		expect(planInterventionTurn({ carryOverHint: true, hasDecision: true, isBlocking: false })).to.deep.equal({
+		expect(planInterventionTurn({ carryOverHint: true, hasDecision: true })).to.deep.equal({
 			inject: true,
 			overwritePending: false,
 		})
-		expect(planInterventionTurn({ carryOverHint: true, hasDecision: true, isBlocking: true })).to.deep.equal({
-			inject: true,
-			overwritePending: true,
-		})
-		expect(planInterventionTurn({ carryOverHint: false, hasDecision: false, isBlocking: false })).to.deep.equal({
+		expect(planInterventionTurn({ carryOverHint: false, hasDecision: false })).to.deep.equal({
 			inject: false,
 			overwritePending: false,
 		})
+		// 纯函数源码层面也不得再保留阻断例外
+		expect(readAnalytics("interventionTurnPlan.ts")).to.not.include("isBlocking")
+	})
+
+	it("★ 前端：不存在阻断横幅组件与 teachingBlocking 状态渲染路径（blocking banner）", () => {
+		expect(fs.existsSync(path.join(repoRoot, "webview-ui", "src", "components", "chat", "TeachingBlockingBanner.tsx"))).to.equal(
+			false,
+			"TeachingBlockingBanner.tsx 必须整文件删除",
+		)
+		expect(readRepo("webview-ui", "src", "components", "chat", "ChatView.tsx")).to.not.include("TeachingBlockingBanner")
+		expect(readRepo("src", "shared", "ExtensionMessage.ts")).to.not.include("teachingBlocking")
+		expect(readRepo("webview-ui", "src", "context", "ExtensionStateContext.tsx")).to.not.include("teachingBlocking")
 	})
 })

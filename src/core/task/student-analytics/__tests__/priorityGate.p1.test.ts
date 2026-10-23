@@ -4,10 +4,11 @@
  * 覆盖 plan-2 §0 要求的四类检查：正常路径 / 边界条件 / 回归 / 核心流程可跑通。
  * 对应 plan-2 §4 的「统一模板」6 例 + G1 专项断言 ①–⑤。
  * P1 范围：F4（全周索引 + 三档应答）、F5（分类粘性 + 词边界）、F6（干预不进对话历史）。
+ *
+ * 【P2-2】阻断式干预已删除：干预只产生软提示文本，不存在阻断态/阻断倒计时接口。
  */
 import { expect } from "chai"
 import * as fs from "fs"
-import { after, beforeEach } from "mocha"
 import * as path from "path"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
@@ -18,25 +19,14 @@ import { TaskClassifier } from "../TaskClassifier"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
 import { editEv, ev } from "./__fixtures__/events"
 
-// 【测试卫生】同 priorityGate.p0.test.ts：阻断态是进程级全局静态，进来先存快照、每例前归零、跑完还原。
-const managerStaticState = TeachingInterventionManager as unknown as {
-	globalBlockingEndsAt: number
-	globalLastBlockingIntervention: unknown
-}
-const savedBlockingEndsAt = managerStaticState.globalBlockingEndsAt
-const savedLastBlockingIntervention = managerStaticState.globalLastBlockingIntervention
+const ruleIds = (m: BehaviorMonitor): string[] => m.getPendingAlerts().map((a) => a.ruleId)
+const runtimeProp = (obj: object, key: string): unknown => (obj as unknown as Record<string, unknown>)[key]
 
 describe("G1 · 优先级综合（可跑通 + 边界）", () => {
-	beforeEach(() => {
-		managerStaticState.globalBlockingEndsAt = 0
-		managerStaticState.globalLastBlockingIntervention = null
-	})
-
 	// ---------------- 统一模板（6 例） ----------------
 	// 与 G0 同形，仅改 describe 名；用于守护「每个优先级都从端到端可跑通」这一不变量。
 
-	it("★ 核心流程端到端：AI 真实落盘 3 次 → 计数 → 升级 → 阻断文本 → 阻断态生效", () => {
-		// 【P6/T6】阻断的唯一入口是独立通道 `ai_coding_rounds`
+	it("★ 核心流程端到端：AI 真实落盘 3 次 → 计数 → 只产生软提示文本（无阻断）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 3; i++) {
 			m.ingest(
@@ -45,13 +35,14 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 			m.ingest(editEv({ editor: "ai" }))
 		}
 		expect(m.getAiCodingCount()).to.equal(3)
-		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+		const mgr = new TeachingInterventionManager("t1")
 		const text = mgr.checkAndGenerateIntervention(m, 3)
-		expect(text).to.be.a("string").and.to.include("阻断模式")
-		expect(mgr.isBlockingActive()).to.equal(true)
+		expect(text).to.be.a("string").and.to.not.be.empty
+		expect(text).to.not.include("阻断模式")
+		expect(runtimeProp(mgr, "isBlockingActive")).to.equal(undefined)
 	})
 
-	it("★ 边界：阈值前一次不阻断、恰好阈值阻断（独立通道 ai_coding_rounds）", () => {
+	it("★ 边界：阈值前 2 次只计数、第 3 次计数达 3 并产生软提示（独立通道 ai_coding_rounds）", () => {
 		const m2 = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 2; i++) {
 			m2.ingest(
@@ -60,11 +51,11 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 			m2.ingest(editEv({ editor: "ai" }))
 		}
 		expect(m2.getAiCodingCount()).to.equal(2)
-		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
 		m2.ingest(ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: "第 3 次" }))
 		m2.ingest(editEv({ editor: "ai" }))
 		expect(m2.getAiCodingCount()).to.equal(3)
-		expect(m2.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+		expect(ruleIds(m2)).to.include("ai_coding_rounds")
+		expect(runtimeProp(m2, "shouldEscalateToBlocking")).to.equal(undefined)
 	})
 
 	it("★ 边界：概念问答下规则被门控停用（rulePolicy）", () => {
@@ -73,7 +64,7 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 	})
 
 	it("★ 边界：冷却不影响计数、只影响提示条数", () => {
-		const m3 = new BehaviorMonitor("t1", { cooldownMs: 120_000, escalationBlockingThreshold: 3 })
+		const m3 = new BehaviorMonitor("t1", { cooldownMs: 120_000 })
 		m3.ingest(ev({}))
 		m3.ingest(ev({}))
 		m3.ingest(ev({}))
@@ -82,7 +73,7 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 		expect(m3.getPendingAlerts().filter((a) => a.ruleId === "consecutive_code_generation").length).to.equal(1)
 	})
 
-	it("★ 兜底路径：警报队列被清空后，阻断仍生效且文本非空", () => {
+	it("★ 决策依赖警报队列：队列被消费后不再产出干预文本（返回 null）", () => {
 		const m4 = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 3; i++) {
 			m4.ingest(
@@ -90,69 +81,61 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 			)
 			m4.ingest(editEv({ editor: "ai" }))
 		}
-		// 必须先消费掉队列，否则这条用例只是例 ① 的重复：命中阈值时阻断分支在
-		// `hasPendingAlerts()` 之前就已 return，队列里有没有警报都看不出来。
 		m4.consumePendingAlerts()
 		expect(m4.hasPendingAlerts()).to.equal(false)
-		const mgr4 = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
-		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.be.a("string").and.to.not.be.empty
+		const mgr4 = new TeachingInterventionManager("t1")
+		expect(mgr4.checkAndGenerateIntervention(m4, 3)).to.equal(null)
 	})
 
-	it("★【P6/T6】原可升级的代码规则改为只提示：计数照旧、阻断恒 false", () => {
-		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+	it("★【P2-2】代码规则只提示：计数照旧、不产生阻断", () => {
+		const m6 = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m6.ingest(ev({}))
 		m6.ingest(ev({}))
-		expect(m6.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 		m6.ingest(ev({}))
 		expect(m6.getEscalationCount("consecutive_code_generation")).to.equal(3)
-		expect(m6.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
+		expect(ruleIds(m6)).to.include("consecutive_code_generation")
+		expect(runtimeProp(m6, "shouldEscalateToBlocking")).to.equal(undefined)
 	})
 
 	it("★ 关掉特性开关后行为回到旧口径（enabled=false）", () => {
-		const m5 = new BehaviorMonitor("t1", { enabled: false, cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const m5 = new BehaviorMonitor("t1", { enabled: false, cooldownMs: 0 })
 		m5.ingest(ev({}))
 		m5.ingest(ev({}))
 		m5.ingest(ev({}))
 		expect(m5.getPendingAlerts()).to.have.length(0)
-		expect(m5.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 	})
 
 	// ---------------- G1 专项断言 ①–⑤ ----------------
 
-	it("【G1-①】buildIndexGroups() 放行全部周次（含 > 当前周）", () => {
+	it("【G1-①'】buildIndexTitles() 列出全部标题（v3 起没有「当前周」这条边界）", () => {
 		const svc = LLMWikiService.getInstance()
-		type Internals = { _wikiCache: Map<string, unknown[]>; _textbookChapters: unknown[]; _currentWeek: number }
+		type Internals = { _wikiCache: Map<string, unknown[]>; _textbookChapters: unknown[] }
 		const internals = svc as unknown as Internals
-		const prev = { w: internals._wikiCache, t: internals._textbookChapters, c: internals._currentWeek }
+		const prev = { w: internals._wikiCache, t: internals._textbookChapters }
 		try {
 			internals._wikiCache = new Map([
 				["a", [{ id: "a", title: "第1周标题", applicable_week: 1, content: "x" }]],
 				["b", [{ id: "b", title: "第18周标题", applicable_week: 18, content: "y" }]],
 			])
 			internals._textbookChapters = []
-			internals._currentWeek = 1
-			const groups = svc.buildIndexGroups()
-			expect(groups.map((g) => g.week)).to.deep.equal([1, 18])
-			expect(groups[1].titles).to.deep.equal(["第18周标题"])
+			expect(svc.buildIndexTitles()).to.deep.equal(["第1周标题", "第18周标题"])
 		} finally {
 			internals._wikiCache = prev.w
 			internals._textbookChapters = prev.t
-			internals._currentWeek = prev.c
 		}
 	})
 
-	it("【G1-②】buildWikiSystemPrompt 命中 A/B/C 三档策略", () => {
+	it("【G1-②'】buildWikiSystemPrompt 不再按「进度/超纲」分档", () => {
 		const s = buildWikiSystemPrompt({
-			week: 5,
-			index: [{ week: 5, titles: ["装饰器"] }],
+			index: ["装饰器"],
 			mcpAvailable: true,
 		})
-		const tierA = s.includes("【A 在进度内】")
-		const tierB = s.includes("【B 超纲、无资料】")
-		const tierC = s.includes("【C 超纲、可联网】")
-		expect({ tierA, tierB, tierC }).to.deep.equal({ tierA: true, tierB: true, tierC: true })
-		expect(s).to.include("不要一律拒答")
-		expect(s).to.not.include("不要展开讲解其具体用法")
+		expect(s).to.include("认知边界约束")
+		expect(s).to.include("不给完整可运行实现")
+		// 旧的三档口径（按教学周判定）必须彻底消失
+		const legacyTiers = ["【A 在进度内】", "【B 超纲、无资料】", "【C 超纲、可联网】"].filter((t) => s.includes(t))
+		expect(legacyTiers).to.deep.equal([])
+		expect(s.includes("第 ")).to.equal(false)
 	})
 
 	it("【G1-③】分类粘性：弱信号短消息不得覆盖已确立的 code_generation", () => {
@@ -171,8 +154,6 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 
 	it("【G1-④】干预只进本轮 system prompt，不得进入对话内容数组", () => {
 		// ⚠️ 这是**结构契约断言 + 纯函数断言**的组合，不是端到端验证。
-		//    「apiConversationHistory 中不出现 <teaching_intervention」的真正验证
-		//    需要真实 Task + 一次真实请求，留给人工验收 M9'。
 		const text = '<teaching_intervention rule="no_edit_streak" severity="gentle">x</teaching_intervention>'
 		const injected = appendEphemeralIntervention("BASE_PROMPT", text)
 		expect(injected.applied).to.equal(true)
@@ -201,10 +182,5 @@ describe("G1 · 优先级综合（可跑通 + 边界）", () => {
 		// 且不得再被子串误命中
 		expect(cls.classify("algorithm")).to.equal("other")
 		expect(cls.classify("这段 json 怎么解析")).to.equal("other")
-	})
-
-	after(() => {
-		managerStaticState.globalBlockingEndsAt = savedBlockingEndsAt
-		managerStaticState.globalLastBlockingIntervention = savedLastBlockingIntervention
 	})
 })

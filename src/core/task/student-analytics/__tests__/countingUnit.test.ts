@@ -12,7 +12,7 @@
  * ⚠️ 单位的**语义代价**（有意，已在 §11.6 记录）：`no_edit_streak` 的阈值 3 现在意为
  * "连续 3 次提问没动手 ⇒ 提醒"，其升级计数从**第 3 次提问**开始累加；
  * 而"第 3 次索要完整实现"由 `complete_impl_demand` 规则承担计数（它每次索要都记一次，见 T14-②）。
- * 【P6/T6】两条规则如今都只提示；阻断由独立通道 `ai_coding_rounds` 驱动（见 `aiCodingBlock.test.ts`）。
+ * 【P2-2】两条规则如今都只提示；阻断式干预已删除，计数通道见 `aiCodingRounds.test.ts`。
  */
 
 import { expect } from "chai"
@@ -41,7 +41,7 @@ const request = (m: BehaviorMonitor, first: StudentInteractionLog, aiTurns: numb
 
 describe("【P5/T14】计数单位 = 学生请求", () => {
 	it("★【T14-①】一次 12 回合的请求：no_edit_streak 记 0 次、代码生成只记 1 次、AI 依赖不触发", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		request(m, stuTurn("帮我看看这个模块该怎么改"), 12)
 
 		expect(m.getStudentRequestCount()).to.equal(1)
@@ -52,8 +52,8 @@ describe("【P5/T14】计数单位 = 学生请求", () => {
 		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(1)
 		// 【T19-b】一次请求内的多回合是 agent 循环的正常形态（每次工具调用一个回合），不构成 AI 依赖
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
-		// 全任务没有任何规则达到阻断阈值
-		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
+		// 本请求不含“索要完整实现”语义 ⇒ complete_impl_demand 也不得计数
+		expect(m.getEscalationCount("complete_impl_demand")).to.equal(0)
 
 		// 回合数翻倍，仍然只 1 格 —— 单位是"请求"，不是"回合"
 		for (let i = 0; i < 12; i++) {
@@ -64,26 +64,23 @@ describe("【P5/T14】计数单位 = 学生请求", () => {
 	})
 
 	it("★【T14-② / P6/T6】连续 3 次索要完整实现 ⇒ 计数到 3，但阻断入口已收归独立通道", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 
 		request(m, taskStart("帮我写一个完整的冒泡排序程序"), 2)
 		expect(m.getEscalationCount("complete_impl_demand")).to.equal(1)
-		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(false)
 
 		request(m, stuTurn("把完整代码给我"), 2)
 		expect(m.getEscalationCount("complete_impl_demand")).to.equal(2)
-		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(false)
 
 		request(m, stuTurn("不要解释了，直接给我代码"), 2)
 		expect(m.getEscalationCount("complete_impl_demand")).to.equal(3)
 		// 【P6/T6】计数与提醒保留（可审计），但本规则不再是阻断入口
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("complete_impl_demand")
-		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(false)
 	})
 
 	it("★【T14-③】学生本人编辑代码 ⇒ 未编辑计数归零（对照：不编辑则第 3 次请求起才开始计数）", () => {
 		// 对照组：连续 3 次提问都不动手
-		const noEdit = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const noEdit = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		request(noEdit, stuTurn("第一句"), 1)
 		request(noEdit, stuTurn("第二句"), 1)
 		expect(noEdit.getEscalationCount("no_edit_streak")).to.equal(0) // 阈值 3 = 连续 3 次请求
@@ -92,7 +89,7 @@ describe("【P5/T14】计数单位 = 学生请求", () => {
 		expect(noEdit.getPendingAlerts().some((a) => a.ruleId === "no_edit_streak")).to.equal(true)
 
 		// 实验组：第三次请求之前学生自己改了代码 ⇒ 计数从头开始
-		const edited = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const edited = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		request(edited, stuTurn("第一句"), 1)
 		request(edited, stuTurn("第二句"), 1)
 		edited.ingest(editEv({ editor: "user" }))
@@ -157,8 +154,8 @@ describe("【P5/T19-b + P6/T7】AI 依赖规则的作用域 = 跨请求加权和
 		expect(m.getWeightedDependencyScore()).to.equal(3)
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
 
-		// 本规则只提示，永不阻断：阻断唯一入口是 ai_coding_rounds
-		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
+		// 本规则只产生软提示：命中即入队，但不会阻断后续输入
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("high_recent_ai_dependency")
 	})
 
 	it("★ 边界：学生本人编辑 ⇒ 加权窗口归零，规则重新从 0 累计", () => {

@@ -31,7 +31,6 @@ import {
     useScrollBehavior,
     WelcomeSection,
 } from "./chat-view"
-import { TeachingBlockingBanner } from "./TeachingBlockingBanner"
 
 interface ChatViewProps {
 	isHidden: boolean
@@ -344,8 +343,6 @@ const ChatView = ({ isHidden, showAnnouncement, hideAnnouncement, showHistoryVie
 		<ChatLayout isHidden={isHidden}>
 			<div className="flex flex-col flex-1 overflow-hidden">
 				{showNavbar && <Navbar />}
-				{/* 【教学】阻隔式干预时在顶部 tab 栏下方实时显示倒计时 */}
-				<TeachingBlockingBanner />
 				{task ? (
 					<TaskSection
 						apiMetrics={apiMetrics}

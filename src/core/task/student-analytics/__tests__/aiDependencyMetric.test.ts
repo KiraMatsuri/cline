@@ -8,7 +8,7 @@
  *   ② 概念问答只记 50%（6 次概念提问 ≈ 3 次编码类提问）；
  *   ③ 学生本人编辑 ⇒ 归零；AI 落盘**不**归零；
  *   ④ 单次请求仍然零提示（M1' 的通过条件）；
- *   ⑤ 无论攒到多少都**永不阻断**（阻断唯一入口是 `ai_coding_rounds`）。
+ *   ⑤ 阻断式干预已删除：任何分数都只产生软提示（hint/question）。
  */
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
@@ -80,7 +80,6 @@ describe("【P6/T7】ai_dependency = 学生请求加权和", () => {
 		expect(m.getWeightedDependencyScore()).to.equal(0.5)
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(0)
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
-		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 
 	it("★ reset() 后加权窗口与计数一并归零", () => {
@@ -96,8 +95,8 @@ describe("【P6/T7】ai_dependency = 学生请求加权和", () => {
 		expect(m.getCurrentRequestDependencyWeight()).to.equal(1)
 	})
 
-	it("★【P5-A/T19-b】一次提问内的多回合不再计入（M1' 的通过条件），且永不阻断", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+	it("★【P5-A/T19-b】一次提问内的多回合不再计入（M1' 的通过条件），只产生软提示", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		// 一次提问（task_start）+ 12 个助手回合：实测 M1' 就是这种形态（一提问即误报"AI 独占"）
 		m.ingest(ev({ eventType: "task_start", role: "user", category: "code_generation" }))
 		for (let i = 0; i < 12; i++) m.ingest(ev({ role: "assistant" }))
@@ -110,18 +109,16 @@ describe("【P6/T7】ai_dependency = 学生请求加权和", () => {
 		m.ingest(ask("code_generation", "第三句"))
 		expect(m.getWeightedDependencyScore()).to.equal(3)
 		expect(m.getEscalationCount("high_recent_ai_dependency")).to.equal(1)
-		// 但**永不得**进入阻断候选
-		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
-		expect(m.getRuleIdsAtBlockingThreshold()).to.not.include("high_recent_ai_dependency")
+		// 但只产生软提示（阻断能力已删除）
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("high_recent_ai_dependency")
 	})
 
-	it("★【P6/T6】原可升级的代码规则现只提示（对照）：计数照旧、阻断恒 false", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+	it("★ 代码规则的计数仍保留（对照）：3 个代码回合 ⇒ 计数 3", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(ev({}))
 		m.ingest(ev({}))
 		m.ingest(ev({}))
 		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(3)
-		expect(m.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
 	})
 
 	it("★【修复】学生编辑代码（code_edit）也把加权窗口清空", () => {

@@ -70,7 +70,7 @@ describe("【P8/T3】学生编辑清零：请求边界结算（裁定 3-B）", (
 		expect(m.getAiCodingCount()).to.equal(0)
 	})
 
-	it("★ 连续 4 次写盘 + 3 次伪学生编辑 ⇒ 计数到 4，第 3 次即达阻断阈值（本轮失效的复现）", () => {
+	it("★ 连续 4 次写盘 + 3 次伪学生编辑 ⇒ 计数到 4，第 3 次即达干预阈值 3（本轮失效的复现）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		const files = ["bubble_sort.py", "selection_sort.py", "quick_sort.py", "insertion_sort.py"]
 		files.forEach((file, i) => {
@@ -79,7 +79,7 @@ describe("【P8/T3】学生编辑清零：请求边界结算（裁定 3-B）", (
 			m.ingest(aiWriteTo(file))
 		})
 		expect(m.getAiCodingCount()).to.equal(4)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
+		expect(m.getPendingAlerts().some((a) => a.ruleId === "ai_coding_rounds")).to.equal(true)
 	})
 
 	it("★ 依赖度窗口同样受保护（同一误判的连带项）", () => {

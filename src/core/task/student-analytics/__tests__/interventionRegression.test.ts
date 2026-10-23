@@ -1,6 +1,12 @@
+/**
+ * 场景回归（P2-2 删除阻断后重写）。
+ *
+ * 保留的仍是“干预确实发生”的端到端回归：真实依赖要出提醒、概念问答不得误触发、
+ * 分类翻转后代码类规则重新生效。阻断式干预已删除，因此不再有“升级为阻断”的场景；
+ * 相应主题由 noBlocking.test.ts 的「不存在 blocking 能力」断言承担。
+ */
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
-import { generateBlockingInterventionMessage } from "../InterventionMessageGenerator"
 import { refineStudentCategory } from "../RequestIntentRefiner"
 import { getRulePolicy } from "../rulePolicy"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
@@ -48,51 +54,20 @@ describe("场景 2 — 真实依赖必须仍然干预", () => {
 		}
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("no_edit_streak")
 	})
-})
 
-describe("场景 3 — 阻断仍可升级（独立通道 ai_coding_rounds），且时长与文案一致", () => {
-	it("★ 助手真实落盘累计 6 次触发 → 阻断，冷却为 60s", () => {
-		// 【P6/T6】阻断的唯一入口 = 独立通道 `ai_coding_rounds`（助手真实落盘）。
-		// 本用例验证的仍是"阻断能否升级 + 时长与文案一致"，只是入口换了规则：
-		// 原先走 consecutive_code_generation（现已只提示）的写法已随白名单反转失效。
-		const m = new BehaviorMonitor("s4", { cooldownMs: 0, aiCodingBlockingThreshold: 6 })
-		// 显式抬高单任务限额、并放宽循环轮数：让这个用例只验证“阻断能否升级”，
-		// 不因限额/轮数这类无关参数而假失败。
-		const mgr = new TeachingInterventionManager("s4", {
-			globalCooldownMs: 0,
-			blockingCooldownMs: 60_000,
-			maxInterventionsPerTask: 30,
-		})
-
+	it("★ 真实依赖命中后只产生软提示：决策类型恒为 normal，不阻断后续请求", () => {
+		const m = new BehaviorMonitor("s4", { cooldownMs: 0 })
 		m.ingest({ ...ev("s4", "user", 0, "code_generation"), eventType: "task_start" })
-
-		let blockingText: string | null = null
-		let turn = 1
-		for (let round = 0; round < 20 && blockingText === null; round++) {
-			// 【P6/T6】违规单位 = **一个学生请求内至多 1 次助手落盘**：
-			// 每轮先发一条学生提问，再产生一次"AI 真的写了文件"的 code_edit 事件。
-			m.ingest(ev("s4", "user", turn++, "code_generation", { hasCode: false, hasCodeBlock: false }))
-			m.ingest({
-				...ev("s4", "assistant", turn++, "code_generation"),
-				eventType: "code_edit",
-				hasCode: false,
-				hasCodeBlock: false,
-				editor: "ai",
-			})
-			const text = mgr.checkAndGenerateIntervention(m, turn)
-			if (text && text.includes('interventionType="blocking"')) {
-				blockingText = text
-			}
+		for (let i = 1; i <= 3; i++) {
+			m.ingest(ev("s4", "assistant", i, "code_generation", { hasCode: true, hasCodeBlock: true }))
 		}
-
-		expect(m.getAiCodingCount()).to.equal(6)
-		expect(blockingText, "阻断未能在合理轮次内触发").to.not.equal(null)
-		expect(blockingText).to.include("冷却倒计时: 1 分钟")
-		expect(blockingText).to.not.include("3 分钟")
-		expect(mgr.isBlockingActive()).to.equal(true)
-		// 剩余时间应在 60s 以内（允许执行耗时）
-		expect(mgr.getBlockingEndsAt() - Date.now()).to.be.at.most(60_000)
-		expect(mgr.getBlockingEndsAt() - Date.now()).to.be.greaterThan(55_000)
+		const mgr = new TeachingInterventionManager("s4", { globalCooldownMs: 0 })
+		const decision = mgr.checkAndGenerateInterventionDecision(m, 10)
+		expect(decision, "真实依赖必须仍然出提示").to.not.equal(null)
+		expect(decision?.interventionType).to.equal("normal")
+		expect(decision?.severity).to.be.oneOf(["gentle", "moderate", "strong"])
+		expect(decision?.injectionText).to.be.a("string")
+		expect(decision?.injectionText).to.not.include("阻断")
 	})
 })
 
@@ -155,25 +130,5 @@ describe("场景 1 — 概念问答不得误触发（原始 bug 的回归）", (
 			ctrl.ingest(ev("s1c", "assistant", i, "code_generation", { hasCode: true, hasCodeBlock: true }))
 		}
 		expect(ctrl.getPendingAlerts().map((a) => a.ruleId)).to.include("consecutive_code_generation")
-	})
-})
-
-describe("场景 4 — 阻断消息的结构与反射问题不得丢失", () => {
-	it("★ generateBlockingInterventionMessage 仍带反思问题与禁用功能声明", () => {
-		const msg = generateBlockingInterventionMessage(
-			{
-				ruleId: "no_edit_streak",
-				message: "x",
-				triggeredAt: new Date().toISOString(),
-				metricValue: 8,
-				threshold: 8,
-				escalationCount: 6,
-			},
-			60_000,
-		)
-		expect(msg.interventionType).to.equal("blocking")
-		expect(msg.severity).to.equal("strong")
-		expect(msg.reflectionQuestions?.length ?? 0).to.be.greaterThan(0)
-		expect(msg.disabledFeatures ?? []).to.include("code_generation")
 	})
 })

@@ -33,14 +33,13 @@ describe("【P6/T7】询问类型 → 依赖度加权", () => {
 		expect(m.getPendingAlerts().some((a) => a.ruleId === "high_recent_ai_dependency")).to.equal(false)
 	})
 
-	it("★ 6 次概念提问 ⇒ 加权和 3.0 ⇒ 出现提示（且永不阻断）", () => {
+	it("★ 6 次概念提问 ⇒ 加权和 3.0 ⇒ 出现软提示", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 6; i++) {
 			m.ingest(ask(`第 ${i + 1} 个概念问题`, "explanation"))
 		}
 		expect(m.getWeightedDependencyScore()).to.be.closeTo(3, 1e-9)
 		expect(m.getPendingAlerts().some((a) => a.ruleId === "high_recent_ai_dependency")).to.equal(true)
-		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 
 	it("★ 3 次编码类提问 ⇒ 加权和 3.0 ⇒ 出现提示；学生本人编辑 ⇒ 清零", () => {

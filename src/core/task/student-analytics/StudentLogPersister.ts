@@ -15,14 +15,54 @@ const LOG_DIR_NAME = ".cline-logs"
 const LOG_FILE_NAME = "student_interactions.log"
 
 /**
+ * 持久化上下文（P1-1）：把模式与实验 id 盖到每条记录上，并据此决定是否落盘。
+ *
+ * 门控放在持久化器内部而不是各个调用点：调用点有 7 处以上（学生消息、助手回合、
+ * 工具调用、运行痕迹、干预结构事件…），逐处判断必然漏掉一两个，而"自由模式仍在记日志"
+ * 是需求明确禁止的。
+ */
+export interface LogPersistContext {
+	mode: "free" | "experiment"
+	experimentId?: string
+}
+
+/**
  * StudentLogPersister - 学生日志持久化服务
  */
 export class StudentLogPersister {
 	private readonly cwd: string
 	private turnIndexMap: Map<string, number> = new Map()
+	private enabled = true
+	private context: LogPersistContext | null = null
 
 	constructor(cwd: string) {
 		this.cwd = cwd
+	}
+
+	/** 是否落盘（自由模式为 false） */
+	public setEnabled(enabled: boolean): void {
+		this.enabled = enabled
+	}
+
+	public isEnabled(): boolean {
+		return this.enabled
+	}
+
+	/** 设置模式上下文；为 null 表示不盖章（测试旧行为用） */
+	public setContext(context: LogPersistContext | null): void {
+		this.context = context
+	}
+
+	/** 把模式字段盖到记录上（不改动调用方传入的对象） */
+	private decorate(log: StudentInteractionLog): StudentInteractionLog {
+		if (!this.context) {
+			return log
+		}
+		const stamped: StudentInteractionLog = { ...log, mode: this.context.mode }
+		if (this.context.experimentId) {
+			stamped.experimentId = this.context.experimentId
+		}
+		return stamped
 	}
 
 	/**
@@ -67,9 +107,12 @@ export class StudentLogPersister {
 	 * @param log 学生交互日志对象
 	 */
 	public async persist(log: StudentInteractionLog): Promise<void> {
+		if (!this.enabled) {
+			return
+		}
 		try {
 			await this.ensureLogDirExists()
-			const logLine = JSON.stringify(log) + "\n"
+			const logLine = JSON.stringify(this.decorate(log)) + "\n"
 			await fs.appendFile(this.getLogPath(), logLine, "utf8")
 		} catch (error) {
 			Logger.error("Failed to persist student interaction log", error as Error)
@@ -81,13 +124,13 @@ export class StudentLogPersister {
 	 * @param logs 日志数组
 	 */
 	public async persistBatch(logs: StudentInteractionLog[]): Promise<void> {
-		if (logs.length === 0) {
+		if (logs.length === 0 || !this.enabled) {
 			return
 		}
 
 		try {
 			await this.ensureLogDirExists()
-			const logLines = logs.map((log) => JSON.stringify(log)).join("\n") + "\n"
+			const logLines = logs.map((log) => JSON.stringify(this.decorate(log))).join("\n") + "\n"
 			await fs.appendFile(this.getLogPath(), logLines, "utf8")
 		} catch (error) {
 			Logger.error("Failed to persist student interaction logs batch", error as Error)

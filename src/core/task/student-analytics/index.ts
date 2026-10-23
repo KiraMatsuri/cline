@@ -9,7 +9,6 @@ export { CodeEditTracker } from "./CodeEditTracker"
 export { ContentAnalyzer, contentAnalyzer } from "./ContentAnalyzer"
 export {
 	formatInterventionForInjection,
-	generateBlockingInterventionMessage,
 	generateInterventionMessage,
 } from "./InterventionMessageGenerator"
 export { StudentLogPersister } from "./StudentLogPersister"

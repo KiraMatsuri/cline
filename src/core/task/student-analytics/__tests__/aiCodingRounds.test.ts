@@ -1,24 +1,31 @@
 /**
- * 【P6/T5】阻断改为独立通道：只有**助手真实编码文件**才计数，阈值 3，学生本人编辑清零。
+ * ai_coding_rounds · 计数通道（P2-2 删除阻断后的现行契约）。
  *
- * 实测依据（第二轮人工验收）：9 条阻断全部发生在助手**从未落盘**的会话里
- * （该日志 `code_edit` 事件数 = 0）—— 计数与被计数的行为完全脱钩。
- * 计数必须用"AI 真的写了文件"这个信号（`code_edit` + `editor === "ai"`，
- * 由 F2/F11 保证归属正确，等价于 write_to_file / replace_in_file / apply_patch 成功）。
+ * 原 `aiCodingBlock.test.ts` 的主题「阻断改独立通道」已随阻断能力删除；
+ * 本文件只保留仍然生效的计数语义：
+ *   ① 计数单位 = 助手**真实编码**：落盘（code_edit + editor=ai）或给出完整实现（hasFullImpl）；
+ *   ② 每个学生请求至多 +1（同请求多文件 / 落盘+完整实现都只算 1 次）；
+ *   ③ 学生本人编辑 ⇒ 计数清零（缺省 editor 也按人工处理）；
+ *   ④ reset() 清空。
+ * 阻断相关断言（shouldEscalateToBlocking / getRuleIdsAtBlockingThreshold / 阻断文案）已随 API 删除，
+ * 由 noBlocking.test.ts 统一做「不存在」守卫。
  */
 import { expect } from "chai"
 import { BehaviorMonitor } from "../BehaviorMonitor"
-import { generateBlockingInterventionMessage, TEMPLATE_REGISTRY } from "../InterventionMessageGenerator"
-import type { BehaviorAlert, BehaviorRuleId, StudentInteractionLog } from "../types"
+import { TEMPLATE_REGISTRY } from "../InterventionMessageGenerator"
+import type { StudentInteractionLog } from "../types"
 import { editEv, ev } from "./__fixtures__/events"
 
 const stu = (raw: string): StudentInteractionLog =>
 	ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: raw })
-
 /** 助手真实落盘（AI 写文件 / 改文件） */
 const aiWrite = (): StudentInteractionLog => editEv({ editor: "ai" })
+const fullImplTurn = (): StudentInteractionLog =>
+	ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true, hasFullImpl: true })
+const skeletonTurn = (): StudentInteractionLog =>
+	ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true, hasFullImpl: false })
 
-describe("【P6/T5】ai_coding_rounds", () => {
+describe("ai_coding_rounds · 计数通道（助手真实编码）", () => {
 	it("★ 助手落盘才计数：普通助手回合（含 fenced 代码块）不计", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("帮我看看这个模块"))
@@ -37,20 +44,19 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		expect(m.getAiCodingCount()).to.equal(1)
 	})
 
-	it("★ 跨 3 个学生请求各写一次 ⇒ 达阈值并触发阻断", () => {
+	it("★ 跨 3 个学生请求各写一次 ⇒ 计数到 3，并产生提醒（只提示，不阻断）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 3; i++) {
 			m.ingest(stu(`第 ${i + 1} 次请你直接写`))
 			m.ingest(aiWrite())
 		}
 		expect(m.getAiCodingCount()).to.equal(3)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
-		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal(["ai_coding_rounds"])
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("ai_coding_rounds")
+		// 计数通道不再有升级能力
+		expect((m as unknown as Record<string, unknown>).shouldEscalateToBlocking).to.equal(undefined)
 	})
 
-	it("★ 概念分类（algorithm）下同样可阻断（策略白名单与分类无关）", () => {
-		// 【P6/T6 Step 3b】Task 6 只把「只有 ai_coding_rounds 可阻断」写到了**策略级**，
-		// 而运行期用例全在 undefined / code_generation 下构造 ⇒ 概念分类这条路径此前无覆盖。
+	it("★ 概念分类（algorithm）下同样计数（计数不受分类门控影响）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		const askConcept = (raw: string): StudentInteractionLog =>
 			ev({
@@ -66,11 +72,9 @@ describe("【P6/T5】ai_coding_rounds", () => {
 			m.ingest(editEv({ editor: "ai" }))
 		}
 		expect(m.getAiCodingCount()).to.equal(3)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
-		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal(["ai_coding_rounds"])
 	})
 
-	it("★ 学生本人编辑代码 ⇒ 计数清零（未达阈值前）", () => {
+	it("★ 学生本人编辑代码 ⇒ 计数清零", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("第一句"))
 		m.ingest(aiWrite())
@@ -80,7 +84,6 @@ describe("【P6/T5】ai_coding_rounds", () => {
 
 		m.ingest(editEv({ editor: "user" })) // 学生自己动手
 		expect(m.getAiCodingCount()).to.equal(0)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
 
 		m.ingest(stu("第三句"))
 		m.ingest(aiWrite())
@@ -122,7 +125,7 @@ describe("【P6/T5】ai_coding_rounds", () => {
 		expect(m.getAiCodingCount()).to.equal(0)
 	})
 
-	it("★ 文案：三档模板齐备、风格正确、不留未填充占位符", () => {
+	it("★ 文案：ai_coding_rounds 三档模板齐备、风格正确、不留未填充占位符", () => {
 		const reg = TEMPLATE_REGISTRY.ai_coding_rounds
 		expect(reg.gentle[0].style).to.equal("hint")
 		expect(reg.moderate[0].style).to.equal("question")
@@ -134,72 +137,9 @@ describe("【P6/T5】ai_coding_rounds", () => {
 			expect(t).to.not.include("{")
 		}
 	})
-
-	it("★【P6/T6 Step 3b】阈值按规则取：aiCodingBlockingThreshold=2 时第 2 次落盘即阻断，其它规则仍读 escalationBlockingThreshold", () => {
-		// 为什么需要这条：两个阈值默认都是 3，"按规则取值"和"写死一个统一值"在默认配置下**不可区分**。
-		// 把独立通道阈值下调到 2，就能把两种实现区分开。
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, aiCodingBlockingThreshold: 2, escalationBlockingThreshold: 5 })
-		expect(m.getBlockingThresholdFor("ai_coding_rounds")).to.equal(2)
-		expect(m.getBlockingThresholdFor("consecutive_code_generation")).to.equal(5)
-
-		// 2 次学生请求，各落盘 1 次 ⇒ ai_coding_rounds = 2 ≥ 2 ⇒ 立即达到阻断阈值
-		for (let i = 0; i < 2; i++) {
-			m.ingest(stu(`第 ${i + 1} 次请你直接写`))
-			m.ingest(aiWrite())
-		}
-		expect(m.getAiCodingCount()).to.equal(2)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
-
-		// 对照：同为"2 次命中"的代码规则不得升级 —— 它读的是 escalationBlockingThreshold=5
-		// （若实现写死了统一阈值，这里会因 2 ≥ 2 而误判为 true）。
-		const m2 = new BehaviorMonitor("t2", { cooldownMs: 0, aiCodingBlockingThreshold: 2, escalationBlockingThreshold: 5 })
-		m2.ingest(stu("第一句"))
-		m2.ingest(ev({ taskId: "t2" }))
-		m2.ingest(stu("第二句"))
-		m2.ingest(ev({ taskId: "t2" }))
-		expect(m2.getEscalationCount("consecutive_code_generation")).to.equal(2)
-		expect(m2.shouldEscalateToBlocking("consecutive_code_generation")).to.equal(false)
-	})
-
-	it("★ 阻断文案：本规则有自己的阻断模板，主语是「我（AI）」而非指控学生", () => {
-		// 生产入口 `generateBlockingInterventionMessage()` 就是按 `BLOCKING_TEMPLATE_REGISTRY[ruleId]` 取文案
-		//（注册表未导出，所以"注册表含该键"只能透过这个函数断言：缺键会落到 `?? consecutive_code_generation`）。
-		const alert = (ruleId: BehaviorRuleId): BehaviorAlert => ({
-			ruleId,
-			message: "我已经替你写了 3 次完整代码。",
-			triggeredAt: new Date().toISOString(),
-			metricValue: 3,
-			threshold: 3,
-			escalationCount: 3,
-		})
-		const own = generateBlockingInterventionMessage(alert("ai_coding_rounds"), 60_000)
-		const fallback = generateBlockingInterventionMessage(alert("consecutive_code_generation"), 60_000)
-
-		// ① 注册表含 `ai_coding_rounds` 键 ⇒ 取到的是本规则模板，而不是兜底模板
-		expect(own.content).to.not.equal(fallback.content)
-		// ② 不得复用兜底文案里"指控学生"的字句
-		expect(own.content).to.not.include("直接请求 AI 生成代码")
-		expect(fallback.content).to.include("直接请求 AI 生成代码") // 反向对照：证明上面那句不是恒真
-		// ③ 主语必须是「我（AI）」，且阻断结构（标题 / 禁用功能 / 反思问题）齐备
-		expect(own.content).to.include("我")
-		expect(own.content).to.include("🚫 【教学干预 — 阻断模式】")
-		expect(own.disabledFeatures).to.deep.equal(["code_generation", "tool_execution"])
-		expect(own.reflectionQuestions?.length ?? 0).to.be.greaterThan(0)
-	})
 })
 
-/**
- * 【P7/T3（裁定 2）】第二个信号：助手在**回复里**给出了可直接运行的完整实现。
- *
- * 实测依据（2026-10-18）：在「学生反复索要完整实现」这个目标场景里，拒答约束让助手一次也不落盘
- * （全会话 `code_edit` = 0）⇒ 只认落盘的通道结构性不可达、阻断永不触发。
- */
-describe("【P7/T3】ai_coding_rounds · 完整实现信号", () => {
-	const fullImplTurn = (): StudentInteractionLog =>
-		ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true, hasFullImpl: true })
-	const skeletonTurn = (): StudentInteractionLog =>
-		ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true, hasFullImpl: false })
-
+describe("ai_coding_rounds · 完整实现信号", () => {
 	it("★ 给出完整实现即计 1 次（即使没有落盘）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("帮我写完整的冒泡排序"))
@@ -214,7 +154,6 @@ describe("【P7/T3】ai_coding_rounds · 完整实现信号", () => {
 			m.ingest(skeletonTurn())
 		}
 		expect(m.getAiCodingCount()).to.equal(0)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(false)
 	})
 
 	it("★ 同一请求内「落盘 + 完整实现」只算 1 次（≤1/请求 的全局约束）", () => {
@@ -243,14 +182,13 @@ describe("【P7/T3】ai_coding_rounds · 完整实现信号", () => {
 		expect(m.getAiCodingCount()).to.equal(0)
 	})
 
-	it("★ 跨 3 个学生请求各给一次完整实现 ⇒ 达阈值、可阻断（M4'' 的新可测形态）", () => {
+	it("★ 跨 3 个学生请求各给一次完整实现 ⇒ 计数到 3（提醒仍在队，不阻断）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 3; i++) {
 			m.ingest(stu(`第 ${i + 1} 次：直接给我完整代码`))
 			m.ingest(fullImplTurn())
 		}
 		expect(m.getAiCodingCount()).to.equal(3)
-		expect(m.shouldEscalateToBlocking("ai_coding_rounds")).to.equal(true)
-		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal(["ai_coding_rounds"])
+		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.include("ai_coding_rounds")
 	})
 })

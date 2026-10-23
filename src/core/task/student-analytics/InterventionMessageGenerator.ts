@@ -7,6 +7,12 @@
  */
 
 import { buildCopyTaskSheet } from "./InterventionCopyContract"
+import {
+	FULL_IMPL_DEMAND_RELEASE_COUNT,
+	isSoftInterventionRule,
+	SOFT_INTERVENTION_COOLDOWN_MS,
+	type SoftInterventionRuleId,
+} from "./rulePolicy"
 import type { BehaviorAlert, BehaviorRuleId, InterventionMessage, InterventionSeverity, InterventionStyle } from "./types"
 
 /** 单条消息模板 */
@@ -16,21 +22,17 @@ interface MessageTemplate {
 	template: string
 }
 
-/** 阻断式干预模板 */
-interface BlockingTemplate {
-	/** 阻断模式消息内容 */
-	content: string
-	/** 禁用的功能列表 */
-	disabledFeatures: string[]
-	/** 反思引导问题列表 */
-	reflectionQuestions: string[]
-}
+/**
+ * 旧六条规则的 ID（`BehaviorRuleId` 去掉【P2-3】六条软提示规则）。
+ * `TEMPLATE_REGISTRY` 只服务旧规则，软规则有自己的 `SOFT_TEMPLATE_REGISTRY`。
+ */
+type LegacyBehaviorRuleId = Exclude<BehaviorRuleId, SoftInterventionRuleId>
 
 /**
  * 每条规则对应的模板库
  * 按严重等级分组，每个等级包含多种风格的模板
  */
-export const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeverity, MessageTemplate[]>> = {
+export const TEMPLATE_REGISTRY: Record<LegacyBehaviorRuleId, Record<InterventionSeverity, MessageTemplate[]>> = {
 	consecutive_code_generation: {
 		gentle: [
 			{
@@ -197,57 +199,135 @@ export const TEMPLATE_REGISTRY: Record<BehaviorRuleId, Record<InterventionSeveri
 	},
 }
 
+// =============================================
+// 【P2-3】六条软提示规则模板（只提示、永不阻断）
+// =============================================
+
 /**
- * 阻断式干预模板库
- * 每个规则 ID 对应一组阻断模板，在累计触发次数达到阈值时使用
+ * 【P2-3】六条软提示规则的模板库。
+ *
+ * 与旧六条规则不同，软提示只有一种「力度」（gentle）与两种风格（hint / question），
+ * 因为它们的定位是「轻轻推一下、把学生推回动手路径」，而不是纠正或施压：
+ * 永远不阻断、不发起提问回合、不结束任务。
+ *
+ * 文案约束（`InterventionCopyContract.validateCopy`）：≤ 120 字、不含代码块、
+ * 不含「系统/检测/自动」等机械词、必须给学生留白（先/试/想/写/改…）。
  */
-const BLOCKING_TEMPLATE_REGISTRY: Partial<Record<BehaviorRuleId, BlockingTemplate>> = {
-	consecutive_code_generation: {
-		content:
-			"🚫 【教学干预 — 阻断模式】\n\n系统检测到你已经连续多次直接请求 AI 生成代码而未进行自主编辑。为保障学习效果，代码生成与工具执行功能已被暂时禁用。\n\n请完成以下反思练习后，系统将自动恢复功能。",
-		disabledFeatures: ["code_generation", "tool_execution"],
-		reflectionQuestions: [
-			"你最近连续请求了代码生成，请回顾：这些代码的核心逻辑是什么？你能独立写出其中的哪些部分？",
-			"请用自然语言描述你当前要解决的问题，以及你尝试过的方案。",
-			"如果让你独立修改一处代码逻辑，你会从哪里入手？为什么？",
-		],
+export const SOFT_TEMPLATE_REGISTRY: Record<SoftInterventionRuleId, readonly MessageTemplate[]> = {
+	// 连续 3 次停在 design（期间无 self_code）→ 先写 3 行伪代码猜一猜
+	design_stall: [
+		{
+			style: "hint",
+			template:
+				"💡 学习提示：你已经连续 {streak} 次停在设计上了。先用 3 行伪代码写下你的猜测，再来问下一步怎么走。",
+		},
+		{
+			style: "question",
+			template: "🤔 先别急着问方案：你能用 3 行伪代码写出自己的猜测，再对照我的建议吗？",
+		},
+	],
+	// 同一 exit_code + 同一首行错误出现 2 次 → 缩到最小复现
+	same_error_twice: [
+		{
+			style: "hint",
+			template: "💡 同一个报错出现了 {count} 次。先把最小复现代码缩到能稳定复现的那 5 行，再看看变量。",
+		},
+		{
+			style: "question",
+			template: "🤔 这次报错和上次是同一处吗？先从能复现的 5 行代码里找出第一处异常，再动手改。",
+		},
+	],
+	// 本轮直接索要完整实现 → 拒绝 + 给方向；第 4 次起改用「放行」模板
+	full_impl_demand: [
+		{
+			style: "hint",
+			template: "💡 这是第 {streak} 次直接要完整实现了。先写出你的思路和伪代码，我再按你的方向补细节。",
+		},
+		{
+			style: "question",
+			template: "🤔 如果这段代码由你来写，第一步会先做什么？先写下 3 行思路，我们再一起看哪里会出错。",
+		},
+	],
+	// 连续 2 次 ai_code（期间无 self_code）→ 读懂后自己改 3 行
+	ai_code_streak: [
+		{
+			style: "hint",
+			template: "💡 我已经连续 {streak} 次替你写完整代码了。读懂这段后，试着自己改 3 行（改注释也算）。",
+		},
+		{
+			style: "question",
+			template: "🤔 刚给的完整实现里，哪一行是关键？试着自己改 3 行，再运行看看结果。",
+		},
+	],
+	// 连续 3 次 concept（期间无 self_code）→ 先动手试一行
+	concept_streak: [
+		{
+			style: "hint",
+			template: "💡 你已经连续 {streak} 次问概念了。先动手写一行试试，再来问为什么。",
+		},
+		{
+			style: "question",
+			template: "🤔 先试着写一行最小示例，看看会发生什么；然后再问这个概念为什么会这样？",
+		},
+	],
+	// error_help 后 5 轮无 file_save / 新运行痕迹 → 加一行 print 或断点
+	error_no_progress: [
+		{
+			style: "hint",
+			template: "💡 报错求助后还没看到新的保存或运行。先加一行 print 看看变量，再动手改。",
+		},
+		{
+			style: "question",
+			template: "🤔 报错之后你试过加一行 print 或断点吗？先看看变量，再决定改哪里。",
+		},
+	],
+}
+
+/**
+ * 【P2-3】`full_impl_demand` 的「放行」模板：第 `FULL_IMPL_DEMAND_RELEASE_COUNT` 次起
+ * 不再直接拒绝，改为给伪代码方向（完整逻辑由学生自己落成代码）。
+ */
+const SOFT_DEMAND_RELEASED_TEMPLATES: readonly MessageTemplate[] = [
+	{
+		style: "hint",
+		template: "💡 这是第 {streak} 次要完整实现了。这次给你伪代码：先读懂控制流，再自己翻译成代码。",
 	},
-	no_edit_streak: {
-		content:
-			"🚫 【教学干预 — 阻断模式】\n\n系统检测到你已连续多轮未进行代码编辑。编程是实践技能，仅阅读代码无法达到学习效果。代码生成与工具执行功能已被暂时禁用。\n\n请动手完成以下实践任务后，系统将自动恢复功能。",
-		disabledFeatures: ["code_generation", "tool_execution"],
-		reflectionQuestions: [
-			"请在编辑器中打开当前讨论的文件，尝试修改至少 3 处代码（如变量命名、逻辑简化、添加注释）。",
-			"你刚才阅读的代码中，哪一部分让你觉得最难理解？请尝试用自己的话解释它。",
-			"尝试运行当前代码并观察输出。有什么意料之外的行为吗？",
-		],
+	{
+		style: "question",
+		template: "🤔 我先把实现写成伪代码，你能先读懂每一行，再自己动手翻译成代码吗？",
 	},
-	high_recent_ai_dependency: {
-		content:
-			"🚫 【教学干预 — 阻断模式】\n\n系统检测到最近几轮基本由 AI 输出、缺少你自己的动手环节。过度依赖 AI 会削弱独立编程能力。代码生成与工具执行功能已被暂时禁用。\n\n请完成以下自主练习后，系统将自动恢复功能。",
-		disabledFeatures: ["code_generation", "tool_execution"],
-		reflectionQuestions: [
-			"请先关闭 AI 助手，尝试独立写出当前功能的核心逻辑（伪代码或真实代码均可）。",
-			"你最近依赖 AI 完成了哪些任务？哪些是你其实可以独立完成的？",
-			"制定一个本周的独立编程练习计划，每天至少 30 分钟不看 AI 建议编码。",
-		],
-	},
-	/**
-	 * 【P6/T5】独立阻断通道：阻断的**原因是「我（AI）一直在替你写代码」**，不是学生索要代码。
-	 * 因此文案主语必须是「我」—— 若沿用 `?? consecutive_code_generation` 的兜底文案
-	 * （"你已经连续多次直接请求 AI 生成代码而未进行自主编辑"），就会把责任推给学生，
-	 * 与本规则的度量口径（数的是**助手真实落盘**）自相矛盾。
-	 */
-	ai_coding_rounds: {
-		content:
-			"🚫 【教学干预 — 阻断模式】\n\n这次不是你的问题：是我（AI）已经连续替你写了多次完整代码 —— 最近几轮真正落笔编码的都是我。我不想让代码写出来了、你的手感却一直没长起来，所以代码生成与工具执行功能已被暂时禁用。\n\n这一版请先由你自己动手写（不完整也算），并回答下面的反思问题；完成后系统将自动恢复功能。",
-		disabledFeatures: ["code_generation", "tool_execution"],
-		reflectionQuestions: [
-			"回顾我刚替你写完的那几段代码：哪一部分你现在可以不看答案自己写出来？先把它写出来。",
-			"你原本打算怎么实现？先说出第一步，然后动手把这一步写出来。",
-			"下次遇到同类函数，哪些部分你可以先自己写、哪些部分才值得来问我？",
-		],
-	},
+]
+
+/** 【P2-3】按规则挑选软提示模板；`full_impl_demand` 达放行档位后改用伪代码模板 */
+function pickSoftTemplates(alert: BehaviorAlert): readonly MessageTemplate[] {
+	if (alert.ruleId === "full_impl_demand" && alert.metricValue >= FULL_IMPL_DEMAND_RELEASE_COUNT) {
+		return SOFT_DEMAND_RELEASED_TEMPLATES
+	}
+	return SOFT_TEMPLATE_REGISTRY[alert.ruleId as SoftInterventionRuleId] ?? []
+}
+
+/**
+ * 生成软提示消息（【P2-3】）。
+ *
+ * 与 `generateInterventionMessage` 的区别：力度恒为 `gentle`、风格从 hint/question 模板里取，
+ * `interventionType` 恒为 `"normal"`（不存在阻断式软提示）。模板缺失时退回 `alert.message`，
+ * 保证 BN-38「文案校验不过 → 模板兜底仍展示」。
+ */
+export function generateSoftInterventionMessage(
+	alert: BehaviorAlert,
+	cooldownMs: number = SOFT_INTERVENTION_COOLDOWN_MS,
+): InterventionMessage {
+	const candidates = pickSoftTemplates(alert)
+	const selected = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : undefined
+	return {
+		content: selected ? fillTemplate(selected.template, alert) : `💡 学习提示：${alert.message}`,
+		ruleId: alert.ruleId,
+		severity: "gentle",
+		style: selected?.style ?? "hint",
+		interventionType: "normal",
+		generatedAt: new Date().toISOString(),
+		cooldownUntil: new Date(Date.now() + cooldownMs).toISOString(),
+	}
 }
 
 /**
@@ -294,8 +374,14 @@ export function generateInterventionMessage(
 	preferredStyle?: InterventionStyle,
 	cooldownMs: number = 180_000,
 ): InterventionMessage {
+	// 【P2-3】六条软提示规则走独立模板库：力度恒 gentle、风格只有 hint/question，永不阻断
+	if (isSoftInterventionRule(alert.ruleId)) {
+		return generateSoftInterventionMessage(alert, cooldownMs)
+	}
+
+	const legacyRuleId = alert.ruleId as LegacyBehaviorRuleId
 	const severity = determineSeverity(alert.metricValue, alert.threshold)
-	const templates = TEMPLATE_REGISTRY[alert.ruleId]?.[severity] ?? TEMPLATE_REGISTRY[alert.ruleId]?.gentle ?? []
+	const templates = TEMPLATE_REGISTRY[legacyRuleId]?.[severity] ?? TEMPLATE_REGISTRY[legacyRuleId]?.gentle ?? []
 
 	// 根据偏好风格筛选模板，如果没有匹配则使用全部可用模板
 	let candidates = preferredStyle ? templates.filter((t) => t.style === preferredStyle) : templates
@@ -343,11 +429,6 @@ export function generateInterventionMessage(
  * @param recentCopies 最近已展示过的文案（要求模型「换一种说法」）；缺省为空
  */
 export function formatInterventionForInjection(intervention: InterventionMessage, recentCopies: readonly string[] = []): string {
-	// 阻断式干预使用专用格式化
-	if (intervention.interventionType === "blocking") {
-		return formatBlockingInterventionForInjection(intervention)
-	}
-
 	return buildCopyTaskSheet({
 		ruleId: intervention.ruleId,
 		severity: intervention.severity,
@@ -357,75 +438,3 @@ export function formatInterventionForInjection(intervention: InterventionMessage
 	})
 }
 
-/**
- * 格式化阻断式干预消息（包含禁用功能列表、倒计时、反思问题）
- */
-function formatBlockingInterventionForInjection(intervention: InterventionMessage): string {
-	const lines: string[] = [
-		`<teaching_intervention rule="${intervention.ruleId}" severity="${intervention.severity}" style="blocking" interventionType="blocking">`,
-		intervention.content,
-		"",
-	]
-
-	if (intervention.disabledFeatures && intervention.disabledFeatures.length > 0) {
-		lines.push(`⚠️ 已禁用功能: ${intervention.disabledFeatures.join(", ")}`)
-	}
-
-	if (intervention.countdownSeconds) {
-		const minutes = Math.floor(intervention.countdownSeconds / 60)
-		const seconds = intervention.countdownSeconds % 60
-		const countdownText = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
-		lines.push(`⏳ 冷却倒计时: ${countdownText}`)
-	}
-
-	if (intervention.reflectionQuestions && intervention.reflectionQuestions.length > 0) {
-		lines.push("")
-		lines.push("📝 反思练习:")
-		intervention.reflectionQuestions.forEach((q, i) => {
-			lines.push(`  ${i + 1}. ${q}`)
-		})
-	}
-
-	lines.push("")
-	lines.push("请在你的回复中严格执行以下要求:")
-	lines.push("1. 首先显示上述阻断通知和禁用信息")
-	lines.push("2. 然后呈现反思练习问题")
-	lines.push("3. 不要提供任何代码生成或工具执行的帮助")
-	lines.push("4. 只回答反思相关的问题，鼓励学生独立思考和实践")
-	lines.push("</teaching_intervention>")
-
-	return lines.join("\n")
-}
-
-/**
- * 生成阻断式干预消息
- * @param alert 行为风险警报（含 escalationCount）
- * @param preferredStyle 忽略（阻断统一使用 blocking 风格）
- * @param blockingCooldownMs 阻断冷却时长（毫秒）
- * @returns 阻断式干预消息对象
- */
-export function generateBlockingInterventionMessage(
-	alert: BehaviorAlert,
-	blockingCooldownMs: number = 60_000,
-): InterventionMessage {
-	const template = BLOCKING_TEMPLATE_REGISTRY[alert.ruleId] ?? BLOCKING_TEMPLATE_REGISTRY.consecutive_code_generation!
-
-	const now = new Date()
-	const cooldownDate = new Date(now.getTime() + blockingCooldownMs)
-
-	return {
-		content: template.content,
-		ruleId: alert.ruleId,
-		severity: "strong",
-		style: "blocking",
-		interventionType: "blocking",
-		generatedAt: now.toISOString(),
-		cooldownUntil: cooldownDate.toISOString(),
-		disabledFeatures: template.disabledFeatures,
-		// ★ 由实际冷却时长推导，不再沿用模板里写死的 180 —— 否则注入文本会说"3 分钟"，
-		// 而横幅按 blockingEndAt 从 1 分钟倒数，同屏两个数字互相矛盾。
-		countdownSeconds: Math.round(blockingCooldownMs / 1000),
-		blockingEndAt: cooldownDate.toISOString(),
-		reflectionQuestions: template.reflectionQuestions,
-	}
-}

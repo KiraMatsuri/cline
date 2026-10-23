@@ -5,13 +5,14 @@
  * 当检测到高依赖或单一行为趋势时，输出温和提醒。
  */
 
+import { resolveBehaviorType, type MetricsEvent } from "@/core/teaching/behavior/metricsSpec"
 import { normalizePathKey } from "@/shared/pathKeys"
 import { Logger } from "@/shared/services/Logger"
 import { type ConceptModeState, INITIAL_CONCEPT_MODE_STATE, nextConceptMode } from "./ConceptModeGate"
 import { isCompleteImplDemand } from "./demandDetect"
 import { isInabilityStatement } from "./inabilityDetect"
 import { dependencyWeightForQueryType, type QueryType, toQueryType } from "./queryType"
-import { getRulePolicy } from "./rulePolicy"
+import { FULL_IMPL_DEMAND_RELEASE_COUNT, getRulePolicy, SOFT_INTERVENTION_PRIORITY, type SoftInterventionRuleId } from "./rulePolicy"
 import type { BehaviorAlert, BehaviorRuleId, DemandComplianceState, StudentInteractionLog, TaskCategory } from "./types"
 
 export interface BehaviorMonitorOptions {
@@ -27,10 +28,6 @@ export interface BehaviorMonitorOptions {
 	adoptionRateThreshold?: number
 	selfModificationThreshold?: number
 	minAdoptionSamples?: number
-	/** 触发阻断式干预的同规则累计次数阈值（默认 3 次） */
-	escalationBlockingThreshold?: number
-	/** 【P6/T5】助手真实落盘的阻断阈值（默认 3） */
-	aiCodingBlockingThreshold?: number
 	/** 【P6/T7】依赖度加权和的命中阈值（默认 3 = 3 次编码类提问 或 6 次概念提问） */
 	dependencyWeightedThreshold?: number
 }
@@ -62,11 +59,6 @@ export const DEFAULT_OPTIONS: Readonly<Required<BehaviorMonitorOptions>> = Objec
 	adoptionRateThreshold: 0.7,
 	selfModificationThreshold: 0.25,
 	minAdoptionSamples: 2,
-	// 【F1】6 → 3：对齐「第 3 次违规即阻断」的验收口径。★ 权威值在本文件：升级判定走
-	// shouldEscalateToBlocking()，TeachingInterventionManager 里那份同名配置从未被读取。
-	escalationBlockingThreshold: 3,
-	// 【P6/T5】独立阻断通道的阈值 = 3：与告知学生的文案（"连续 3 次直接编码会触发阻断"）逐字一致。
-	aiCodingBlockingThreshold: 3,
 	// 【P6/T7】依赖度按**询问类型加权**后，加权和的命中阈值 = 3。
 	// 权重含义：概念问答 0.5 / 其余 1.0 ⇒ 3 次编码类提问 或 6 次概念提问命中（用户 2026-10-14 裁定）。
 	dependencyWeightedThreshold: 3,
@@ -82,6 +74,24 @@ const STRONG_SIGNAL_CATEGORIES: ReadonlySet<TaskCategory> = new Set<TaskCategory
 	"refactoring",
 	"testing",
 ])
+
+/** 【P2-3】软提示判定阈值（设计 §5.2；单位 = 学生请求或事件次数） */
+const DESIGN_STALL_THRESHOLD = 3
+const CONCEPT_STREAK_THRESHOLD = 3
+const AI_CODE_STREAK_THRESHOLD = 2
+const SAME_ERROR_TWICE_THRESHOLD = 2
+const ERROR_NO_PROGRESS_REQUESTS = 5
+
+/** 【P2-2】同规则累计计数的告警阈值（旧阻断阈值退役后仅用于力度换算与可审计计数） */
+const ESCALATION_COUNT_THRESHOLD = 3
+
+/** 【P2-3】软提示候选（同一事件命中多条时按 `SOFT_INTERVENTION_PRIORITY` 只出一条，BN-37） */
+interface SoftCandidate {
+	ruleId: SoftInterventionRuleId
+	message: string
+	metricValue: number
+	threshold: number
+}
 
 export class BehaviorMonitor {
 	private readonly taskId: string
@@ -140,11 +150,31 @@ export class BehaviorMonitor {
 	/** 【F3】概念问答模式的粘性状态（任务级；反复索要完整代码也不退出） */
 	private conceptModeState: ConceptModeState = INITIAL_CONCEPT_MODE_STATE
 
-	/** 同规则累计触发次数（用于阻断式干预升级判定） */
+	/** 同规则累计触发次数（用于可审计计数与力度换算） */
 	private escalationCounter: Partial<Record<BehaviorRuleId, number>> = {}
 
-	/** 阻断式干预是否已触发（同一任务内仅触发一次） */
-	private blockingTriggered = false
+	// ===== 【P2-3】六条软提示状态（只提示、永不阻断） =====
+
+	/** 本学生请求内已产出提示的软规则（每条规则每请求至多 1 次） */
+	private softFiredThisRequest = new Set<SoftInterventionRuleId>()
+	/** 连续「设计/思路」类学生请求数（期间无 self_code） */
+	private softDesignStreak = 0
+	/** 连续「概念问答」类学生请求数（期间无 self_code） */
+	private softConceptStreak = 0
+	/** 连续出现 ai_code 的学生请求数（期间无 self_code） */
+	private softAiCodeStreak = 0
+	/** 本请求是否已计过 ai_code（同一请求内多个 ai_code 事件只推进一格） */
+	private softAiCodeCountedThisRequest = false
+	/** 上一学生请求内是否出现过 ai_code（请求边界结算 ai_code 连续性） */
+	private softPrevRequestHadAiCode = false
+	/** 完整实现索要次数（学生请求口径） */
+	private softDemandCount = 0
+	/** 相同报错签名出现次数（key = `exit_code|首行错误`） */
+	private softErrorSignatureCounts = new Map<string, number>()
+	/** error_help 之后经过的学生请求数（null = 当前没有未解决的报错求助） */
+	private softErrorPendingRequests: number | null = null
+	/** 最近一次软提示的规则（测试/日志审计用） */
+	private softLastRuleId: SoftInterventionRuleId | null = null
 
 	constructor(taskId: string, options?: BehaviorMonitorOptions) {
 		this.taskId = taskId
@@ -205,6 +235,14 @@ export class BehaviorMonitor {
 			this.aiWrittenFilesThisRequest.clear()
 			this.studentEditedFilesThisRequest.clear()
 			this.bumpedRulesThisRequest.clear()
+			// 【P2-3】软提示同样以「学生请求」为节流单位：每请求清空去重集合；
+			// 同时结算上一请求的 ai_code 连续性（上一请求没有 ai_code ⇒ 连续计数中断）
+			this.softFiredThisRequest.clear()
+			if (this.studentRequestCount > 0 && !this.softPrevRequestHadAiCode) {
+				this.softAiCodeStreak = 0
+			}
+			this.softPrevRequestHadAiCode = false
+			this.softAiCodeCountedThisRequest = false
 			this.studentRequestCount++
 			this.currentRequestIsDemand = isCompleteImplDemand(event.rawContent)
 			// 【P6/T9】服从态仅本轮：新的学生请求一律复位。
@@ -361,6 +399,10 @@ export class BehaviorMonitor {
 		if (policy("complete_impl_demand")) {
 			this.checkCompleteImplDemandRule(event)
 		}
+
+		// 【P2-3】六条软提示：不受任务分类门控（见 rulePolicy.getSoftRulePolicy），
+		// 但只产出 hint/question，绝不阻断任务。
+		this.evaluateSoftRules(event)
 	}
 
 	/**
@@ -443,7 +485,7 @@ export class BehaviorMonitor {
 			"complete_impl_demand",
 			`这是本任务第 ${count} 次直接索要完整实现。先自己写一版（哪怕只有循环骨架），再让 AI 对照，学得最快。`,
 			count,
-			this.options.escalationBlockingThreshold,
+			ESCALATION_COUNT_THRESHOLD,
 		)
 	}
 
@@ -473,7 +515,7 @@ export class BehaviorMonitor {
 			"ai_coding_rounds",
 			`我已经替你写了 ${count} 次完整代码（本次来源：${wroteFile ? "写入代码文件" : "给出完整实现"}）。接下来请自己动手写一版，哪怕只是循环骶架。`,
 			count,
-			this.options.aiCodingBlockingThreshold,
+			ESCALATION_COUNT_THRESHOLD,
 		)
 	}
 
@@ -589,6 +631,184 @@ export class BehaviorMonitor {
 		)
 	}
 
+	// =============================================
+	// 【P2-3】六条软提示：只提示、永不阻断
+	// =============================================
+
+	/**
+	 * 软提示统一入口（设计 §5.2）。
+	 *
+	 * 六条规则的触发语义：
+	 * - design_stall：连续 3 个「设计/思路」类学生请求且期间无 self_code；
+	 * - same_error_twice：同一 exit_code + 同一首行错误出现 2 次；
+	 * - full_impl_demand：本轮直接索要完整实现（第 4 次起文案放行为伪代码）；
+	 * - ai_code_streak：连续 2 个学生请求里都有 ai_code 且期间无 self_code；
+	 * - concept_streak：连续 3 个「概念问答」类学生请求且期间无 self_code；
+	 * - error_no_progress：error_help 之后 5 个学生请求内没有 file_save/self_code 进展。
+	 *
+	 * 节流：每规则每学生请求 ≤ 1 条 + 120s 冷却（沿用 `notify` 的 `cooldownMs`）；
+	 * 同一事件命中多条时按 `SOFT_INTERVENTION_PRIORITY` 只出一条（BN-37）。
+	 */
+	private evaluateSoftRules(event: StudentInteractionLog): void {
+		const isStudentIntent =
+			event.eventType === "task_start" || (event.eventType === "turn_message" && event.role === "user")
+		// 优先读 P2-1 写入的 behaviorType；旧日志没有该字段时由 resolveBehaviorType 按
+		// code_edit/file_save/queryType 回退推断（Lead 在 task/index.ts 接入分类器前也能工作）。
+		const behaviorType = resolveBehaviorType(event as unknown as MetricsEvent)
+
+		// ① self_code = 学生真的动手：打断所有「连续…且无 self_code」计数，并视为 error_help 有进展
+		if (behaviorType === "self_code") {
+			this.softDesignStreak = 0
+			this.softConceptStreak = 0
+			this.softAiCodeStreak = 0
+			this.softErrorPendingRequests = null
+		}
+
+		// ② ai_code 连续性：按学生请求计数，同一请求内多个 ai_code 事件只推进一格
+		if (behaviorType === "ai_code") {
+			this.softPrevRequestHadAiCode = true
+			if (!this.softAiCodeCountedThisRequest) {
+				this.softAiCodeCountedThisRequest = true
+				this.softAiCodeStreak++
+			}
+		}
+
+		const candidates: SoftCandidate[] = []
+
+		if (behaviorType === "ai_code" && this.softAiCodeStreak >= AI_CODE_STREAK_THRESHOLD) {
+			candidates.push({
+				ruleId: "ai_code_streak",
+				message: `连续 ${this.softAiCodeStreak} 个学生请求里都由我（AI）给出了代码，建议读懂后自己改 3 行。`,
+				metricValue: this.softAiCodeStreak,
+				threshold: AI_CODE_STREAK_THRESHOLD,
+			})
+		}
+
+		if (isStudentIntent) {
+			// ③ design / concept 连续计数（两类互斥：出现任意其它类型即打断「连续」）
+			if (behaviorType === "design") {
+				this.softDesignStreak++
+				this.softConceptStreak = 0
+			} else if (behaviorType === "concept") {
+				this.softConceptStreak++
+				this.softDesignStreak = 0
+			} else {
+				this.softDesignStreak = 0
+				this.softConceptStreak = 0
+			}
+
+			if (this.softDesignStreak >= DESIGN_STALL_THRESHOLD) {
+				candidates.push({
+					ruleId: "design_stall",
+					message: `连续 ${this.softDesignStreak} 次停在设计阶段，建议先用 3 行伪代码写下你的猜测。`,
+					metricValue: this.softDesignStreak,
+					threshold: DESIGN_STALL_THRESHOLD,
+				})
+			}
+			if (this.softConceptStreak >= CONCEPT_STREAK_THRESHOLD) {
+				candidates.push({
+					ruleId: "concept_streak",
+					message: `连续 ${this.softConceptStreak} 次概念提问，建议先动手写一行最小示例再回来问。`,
+					metricValue: this.softConceptStreak,
+					threshold: CONCEPT_STREAK_THRESHOLD,
+				})
+			}
+
+			// ④ 完整实现索要：本轮索要即提示；第 4 次起文案层放行为伪代码（见 generator）
+			if (this.currentRequestIsDemand) {
+				this.softDemandCount++
+				candidates.push({
+					ruleId: "full_impl_demand",
+					message: `第 ${this.softDemandCount} 次直接索要完整实现，建议先写出思路与伪代码，再要代码。`,
+					metricValue: this.softDemandCount,
+					threshold: FULL_IMPL_DEMAND_RELEASE_COUNT,
+				})
+			}
+
+			// ⑤ same_error_twice：同一 exit_code + 同一首行错误出现 2 次
+			const errorSignature = this.extractSoftErrorSignature(event.rawContent)
+			if (errorSignature) {
+				const signatureCount = (this.softErrorSignatureCounts.get(errorSignature) ?? 0) + 1
+				if (signatureCount >= SAME_ERROR_TWICE_THRESHOLD) {
+					this.softErrorSignatureCounts.set(errorSignature, 0)
+					candidates.push({
+						ruleId: "same_error_twice",
+						message: `同一个报错出现了 ${signatureCount} 次，建议把最小复现代码缩到能复现的那 5 行。`,
+						metricValue: signatureCount,
+						threshold: SAME_ERROR_TWICE_THRESHOLD,
+					})
+				} else {
+					this.softErrorSignatureCounts.set(errorSignature, signatureCount)
+				}
+			}
+
+			// ⑥ error_no_progress：error_help 后 5 个学生请求内没有保存/自主编码进展
+			if (behaviorType === "error_help") {
+				this.softErrorPendingRequests = 0
+			} else if (this.softErrorPendingRequests !== null) {
+				this.softErrorPendingRequests++
+				if (this.softErrorPendingRequests >= ERROR_NO_PROGRESS_REQUESTS) {
+					this.softErrorPendingRequests = null
+					candidates.push({
+						ruleId: "error_no_progress",
+						message: `报错求助后 ${ERROR_NO_PROGRESS_REQUESTS} 个请求都没有新的保存/运行痕迹，建议加一行 print 看变量。`,
+						metricValue: ERROR_NO_PROGRESS_REQUESTS,
+						threshold: ERROR_NO_PROGRESS_REQUESTS,
+					})
+				}
+			}
+		}
+
+		// ⑦ BN-37：同一事件最多一条软提示，按优先级取最高（被冷却/去重拦下则顺延下一条）
+		for (const ruleId of SOFT_INTERVENTION_PRIORITY) {
+			const candidate = candidates.find((item) => item.ruleId === ruleId)
+			if (candidate && this.pushSoftAlert(candidate)) {
+				return
+			}
+		}
+	}
+
+	/** 【P2-3】记录并产出一条软提示；false = 被「本请求去重」或「规则冷却」拦下 */
+	private pushSoftAlert(candidate: SoftCandidate): boolean {
+		if (this.softFiredThisRequest.has(candidate.ruleId)) {
+			return false
+		}
+		const now = Date.now()
+		const lastShownAt = this.lastReminderAt[candidate.ruleId] ?? 0
+		if (now - lastShownAt < this.options.cooldownMs) {
+			return false
+		}
+		this.softFiredThisRequest.add(candidate.ruleId)
+		this.softLastRuleId = candidate.ruleId
+		this.notify(candidate.ruleId, candidate.message, candidate.metricValue, candidate.threshold)
+		return true
+	}
+
+	/** 【P2-3】最近一次软提示的规则 ID（null = 尚未触发；测试与日志审计用） */
+	public getLastSoftRuleId(): SoftInterventionRuleId | null {
+		return this.softLastRuleId
+	}
+
+	/**
+	 * 【P2-3】提取「同一个报错」的签名：`exit_code|首行错误`。
+	 * 轻量正则启发式，不追求完备；同一 exit_code 且首行错误文本相同即视为同一个报错。
+	 */
+	private extractSoftErrorSignature(rawContent: string | undefined): string | null {
+		const text = (rawContent ?? "").trim()
+		if (text.length === 0) {
+			return null
+		}
+		const exitCodeMatch = /exit[_\s-]?code\s*[:=：]?\s*(-?\d+)/i.exec(text)
+		const errorLineMatch =
+			/([A-Za-z_$][\w.$]*(?:Error|Exception|ExitStatus)\b[^\n]{0,100})/.exec(text) ??
+			/(?:报错|错误|异常|失败)[：:]\s*([^\n]{0,100})/.exec(text)
+		const errorLine = (errorLineMatch?.[1] ?? "").replace(/\s+/g, " ").trim()
+		if (!exitCodeMatch && errorLine.length === 0) {
+			return null
+		}
+		return `${exitCodeMatch?.[1] ?? "?"}|${errorLine.slice(0, 100)}`
+	}
+
 	/** 【P6/T7】当前滚动窗口的加权依赖度 */
 	public getWeightedDependencyScore(): number {
 		return this.recentRequestWeights.reduce((sum, w) => sum + w, 0)
@@ -618,7 +838,7 @@ export class BehaviorMonitor {
 		const escalationCount = this.getEscalationCount(ruleId)
 
 		Logger.info(
-			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount}/${this.getBlockingThresholdFor(ruleId)})`,
+			`[BehaviorMonitor][${this.taskId}][${ruleId}] ${message} (escalationCount=${escalationCount})`,
 		)
 
 		// 生成结构化警报，附带回退计数，供 TeachingInterventionManager 消费
@@ -756,57 +976,6 @@ export class BehaviorMonitor {
 	}
 
 	/**
-	 * 【F1】列出当前已达到阻断升级阈值的规则 ID（供 TeachingInterventionManager 使用）。
-	 * 阻断判定不依赖 pendingAlerts，因此提醒队列为空时仍可升级。
-	 */
-	public getRuleIdsAtBlockingThreshold(): BehaviorRuleId[] {
-		return (Object.keys(this.escalationCounter) as BehaviorRuleId[]).filter((ruleId) => this.shouldEscalateToBlocking(ruleId))
-	}
-
-	/**
-	 * 检查是否已达到阻断式干预的升级阈值
-	 * @param ruleId 要检查的规则 ID
-	 * @returns 是否应触发阻断式干预
-	 */
-	public shouldEscalateToBlocking(ruleId: BehaviorRuleId): boolean {
-		if (this.blockingTriggered) {
-			return false // 同一任务内阻断仅触发一次
-		}
-		// 【方案 C-1】概念问答场景下不允许升级为阻断
-		if (!getRulePolicy(ruleId, this.currentTaskCategory).canEscalateToBlocking) {
-			return false
-		}
-		const count = this.getEscalationCount(ruleId)
-		return count >= this.getBlockingThresholdFor(ruleId)
-	}
-
-	/**
-	 * 【P6/T5】某规则的阻断阈值 —— **唯一来源**。
-	 * `ai_coding_rounds` 走独立通道阈值（`aiCodingBlockingThreshold`），其余规则沿用 `escalationBlockingThreshold`。
-	 * 生效门（`shouldEscalateToBlocking`）、`notify()` 的日志行，以及
-	 * `TeachingInterventionManager` 合成阻断 alert 时的 `threshold` 字段都读这里，
-	 * 避免出现"日志/展示/合成阈值 ≠ 生效阈值"的多轨漂移（P6/T6 Step 3b 收口）。
-	 */
-	public getBlockingThresholdFor(ruleId: BehaviorRuleId): number {
-		return ruleId === "ai_coding_rounds" ? this.options.aiCodingBlockingThreshold : this.options.escalationBlockingThreshold
-	}
-
-	/**
-	 * 标记阻断式干预已触发（防止重复触发）
-	 */
-	public markBlockingTriggered(): void {
-		this.blockingTriggered = true
-		Logger.info(`[BehaviorMonitor][${this.taskId}] blocking intervention marked as triggered`)
-	}
-
-	/**
-	 * 获取阻断触发阈值
-	 */
-	public getEscalationBlockingThreshold(): number {
-		return this.options.escalationBlockingThreshold
-	}
-
-	/**
 	 * 重置所有状态（通常在任务重启时调用）
 	 */
 	public reset(): void {
@@ -831,7 +1000,17 @@ export class BehaviorMonitor {
 		this.escalationCounter = {}
 		// 【P6/T5】`ai_coding_rounds` 的计数就存在 `escalationCounter` 里，随上面一行一并清空
 		//（原先紧跟一行 `delete this.escalationCounter.ai_coding_rounds` 是 no-op 死代码，已删）。
-		this.blockingTriggered = false
+		// 【P2-3】软提示状态一并复位（跨任务不得残留上一任务的连续计数/去重）
+		this.softFiredThisRequest = new Set<SoftInterventionRuleId>()
+		this.softDesignStreak = 0
+		this.softConceptStreak = 0
+		this.softAiCodeStreak = 0
+		this.softAiCodeCountedThisRequest = false
+		this.softPrevRequestHadAiCode = false
+		this.softDemandCount = 0
+		this.softErrorSignatureCounts = new Map<string, number>()
+		this.softErrorPendingRequests = null
+		this.softLastRuleId = null
 		this.currentTaskCategory = undefined
 		this.conceptModeState = INITIAL_CONCEPT_MODE_STATE
 	}

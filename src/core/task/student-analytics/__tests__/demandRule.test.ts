@@ -7,8 +7,7 @@
  *   - 提示词级护栏模型可以不听（M6' 实测：直接给了完整实现，且全程零干预）。
  * 本规则只看**学生原文**，因此不受分类门控影响；每次索要记一次。
  *
- * 【P6/T6】阻断白名单反转后，本规则的定位是**只提示、不阻断**（阻断唯一入口 = 助手真实落盘的
- * 独立通道 `ai_coding_rounds`）—— 计数与提醒仍全量保留（可审计、可提示）。
+ * 【P2-2】阻断式干预已删除，本规则的定位是**只提示** —— 计数与提醒仍全量保留（可审计、可提示）。
  *
  * ⚠️ 诚实声明：本规则只解决"能计数、能提示"，不解决"模型是否遵守提示词"
  * （`buildDemandRefusalConstraint()` 仍是提示词级，见 conceptModeConstraint 的模块注释）。
@@ -31,26 +30,23 @@ const stu = (
 const DEMANDS = ["帮我写一个完整的冒泡排序程序", "把完整代码给我", "不要解释了，直接给我代码"]
 
 describe("【P5/T16】complete_impl_demand · 策略与计数", () => {
-	it("★ rulePolicy：在**所有**分类下都启用（含把代码类规则整体停用的概念分类），但已不可升级为阻断", () => {
+	it("★ rulePolicy：在**所有**分类下都启用（含把代码类规则整体停用的概念分类），且策略对象只含 enabled", () => {
 		for (const category of [undefined, "other", "explanation", "algorithm", "code_generation"] as Array<
 			TaskCategory | undefined
 		>) {
 			const p = getRulePolicy("complete_impl_demand", category)
 			expect(p.enabled, `${category}`).to.equal(true)
-			// 【P6/T6】阻断白名单反转：本规则保留“计数 + 提示”，但不再是阻断入口
-			expect(p.canEscalateToBlocking, `${category}`).to.equal(false)
+			// 【P2-2】阻断能力已删除：策略对象只有 enabled 一个字段
+			expect(Object.keys(p), `${category}`).to.deep.equal(["enabled"])
 		}
 		// 对照：同一分类下代码类规则确实是停用的（证明上面断言不是因为"门控整体失效"）
 		expect(getRulePolicy("no_edit_streak", "explanation").enabled).to.equal(false)
-		// 对照：唯一可阻断的规则是独立通道 ai_coding_rounds
-		expect(getRulePolicy("ai_coding_rounds", "explanation")).to.deep.equal({
-			enabled: true,
-			canEscalateToBlocking: true,
-		})
+		// 对照：ai_coding_rounds 在所有分类下都启用（仅计数/提示）
+		expect(getRulePolicy("ai_coding_rounds", "explanation")).to.deep.equal({ enabled: true })
 	})
 
 	it("★【T16-①】概念型任务里索要完整实现：代码类规则仍停用，但本规则开始计数", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("什么是装饰器", "task_start"))
 		expect(m.getTaskCategory()).to.equal("explanation")
 		expect(m.isCurrentRequestDemand()).to.equal(false)
@@ -66,25 +62,23 @@ describe("【P5/T16】complete_impl_demand · 策略与计数", () => {
 		expect(m.getEscalationCount("consecutive_code_generation")).to.equal(0)
 	})
 
-	it("★【T16-② / P6/T6】第 3 次索要：计数到 3 且出提醒，但**不再**进入阻断候选", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+	it("★【T16-②】第 3 次索要：计数到 3 且出提醒（只提示，不阻断）", () => {
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu(DEMANDS[0], "task_start"))
 		m.ingest(stu(DEMANDS[1]))
 		expect(m.getEscalationCount("complete_impl_demand")).to.equal(2)
-		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(false)
 
 		m.ingest(stu(DEMANDS[2]))
 		expect(m.getEscalationCount("complete_impl_demand")).to.equal(3)
-		// 【P6/T6】阻断的唯一入口是 ai_coding_rounds ⇒ 本规则见顶也只提示
-		expect(m.shouldEscalateToBlocking("complete_impl_demand")).to.equal(false)
-		expect(m.getRuleIdsAtBlockingThreshold()).to.deep.equal([])
+		// 【P2-2】阻断已删除：本规则见顶也只产生软提示
+		expect(m.getPendingAlerts().filter((a) => a.ruleId === "complete_impl_demand")).to.have.length.greaterThan(0)
 
 		const alerts = m.getPendingAlerts().filter((a) => a.ruleId === "complete_impl_demand")
 		expect(alerts.map((a) => a.escalationCount)).to.deep.equal([1, 2, 3])
 		expect(alerts[2].message).to.include("完整实现")
 	})
 
-	it("★【T16-③】零误报：普通概念提问不得被误计（本规则是唯一可升级入口，误报代价最高）", () => {
+	it("★【T16-③】零误报：普通概念提问不得被误计（误报会直接产生噪声提示）", () => {
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("什么是冒泡排序", "task_start"))
 		m.ingest(stu("帮我解释一下装饰器"))
@@ -95,7 +89,7 @@ describe("【P5/T16】complete_impl_demand · 策略与计数", () => {
 	})
 
 	it("★【T16-④】计数单位仍是学生请求：同一请求内的多个事件只记一次", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 0, escalationBlockingThreshold: 3 })
+		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		m.ingest(stu("把完整代码给我"))
 		for (let i = 0; i < 5; i++) {
 			m.ingest(ev({})) // 助手回合

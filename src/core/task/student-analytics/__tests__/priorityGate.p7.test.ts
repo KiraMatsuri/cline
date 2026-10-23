@@ -2,7 +2,7 @@
  * G7 · P7 判据门禁（L2 层）—— 代写信号 / 无法理解识别 / 警报顺延
  *
  * 对应 2026-10-18 F5 实测暴露的三处问题，以及用户三项裁定的落地形态：
- *  M4''（新口径）：助手**代写** 3 次 ⇒ 阻断；「代写」= 落盘 或 给出完整可运行实现
+ *  M4''（新口径）：助手**代写** 3 次 ⇒ 计数到 3 并产生软提示（阻断能力已删除，【P2-2】）
  *  M18'：填空模板 / 伪代码骨架 ⇒ **不**计入代写（防误判）
  *  M6'' 入口：「我还是无法理解」这类自然说法必须触发 b+c 询问
  *  M19'：两条规则同时达标 ⇒ 分两次展示，不再丢失
@@ -10,18 +10,12 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { expect } from "chai"
-import { after, beforeEach } from "mocha"
 import { BehaviorMonitor } from "../BehaviorMonitor"
 import { TeachingInterventionManager } from "../TeachingInterventionManager"
 import type { StudentInteractionLog } from "../types"
 import { ev } from "./__fixtures__/events"
 
-const managerStaticState = TeachingInterventionManager as unknown as {
-	globalBlockingEndsAt: number
-	globalLastBlockingIntervention: unknown
-}
-const savedEndsAt = managerStaticState.globalBlockingEndsAt
-const savedLast = managerStaticState.globalLastBlockingIntervention
+const runtimeProp = (obj: object, key: string): unknown => (obj as unknown as Record<string, unknown>)[key]
 
 const stu = (raw: string): StudentInteractionLog =>
 	ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: raw })
@@ -35,13 +29,8 @@ const assistantCodeTurn = (): StudentInteractionLog =>
 	ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true })
 
 describe("G7 · P7（代写信号 / 无法理解 / 警报顺延）", () => {
-	beforeEach(() => {
-		managerStaticState.globalBlockingEndsAt = 0
-		managerStaticState.globalLastBlockingIntervention = null
-	})
-
-	it("【G7-①】M4''：代写 3 次（此处为「给出完整实现」）才阻断", () => {
-		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+	it("【G7-①】M4''：代写 3 次（此处为「给出完整实现」）⇒ 计数到 3，只产生软提示", () => {
+		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0 })
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 
 		for (let i = 0; i < 2; i++) {
@@ -50,17 +39,18 @@ describe("G7 · P7（代写信号 / 无法理解 / 警报顺延）", () => {
 		}
 		expect(m.getAiCodingCount()).to.equal(2)
 		expect(mgr.checkAndGenerateIntervention(m, 1) ?? "").to.not.include("阻断模式")
-		expect(mgr.isBlockingActive()).to.equal(false)
+		expect(runtimeProp(mgr, "isBlockingActive")).to.equal(undefined)
 
 		m.ingest(stu("第 3 次：直接给我完整代码"))
 		m.ingest(fullImplTurn())
 		expect(m.getAiCodingCount()).to.equal(3)
-		expect(mgr.checkAndGenerateIntervention(m, 2)).to.include("阻断模式")
-		expect(mgr.isBlockingActive()).to.equal(true)
+		const text = mgr.checkAndGenerateIntervention(m, 2)
+		expect(text).to.be.a("string").and.to.not.be.empty
+		expect(text).to.not.include("阻断模式")
 	})
 
-	it("【G7-②】M18'：填空模板 / 骨架 3 次 ⇒ 永不阻断（防误判）", () => {
-		const mgr = new TeachingInterventionManager("t1", { blockingCooldownMs: 60_000 })
+	it("【G7-②】M18'：填空模板 / 骨架 3 次 ⇒ 不计入代写（防误判），也不产生阻断", () => {
+		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0 })
 		const m = new BehaviorMonitor("t1", { cooldownMs: 0 })
 		for (let i = 0; i < 3; i++) {
 			m.ingest(stu(`第 ${i + 1} 次：直接给我完整代码`))
@@ -68,7 +58,7 @@ describe("G7 · P7（代写信号 / 无法理解 / 警报顺延）", () => {
 		}
 		expect(m.getAiCodingCount()).to.equal(0)
 		expect(mgr.checkAndGenerateIntervention(m, 1) ?? "").to.not.include("阻断模式")
-		expect(mgr.isBlockingActive()).to.equal(false)
+		expect(runtimeProp(mgr, "isBlockingActive")).to.equal(undefined)
 	})
 
 	it("【G7-③】M6'' 入口：自然说法「我还是无法理解」即进入 b+c 询问条件", () => {
@@ -100,7 +90,7 @@ describe("G7 · P7（代写信号 / 无法理解 / 警报顺延）", () => {
 		const initial = m.getPendingAlerts().length
 		expect(initial).to.be.greaterThan(1)
 
-		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0, blockingCooldownMs: 60_000 })
+		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0 })
 		const shown: string[] = []
 		for (let turn = 1; turn <= initial; turn++) {
 			const d = mgr.checkAndGenerateInterventionDecision(m, turn)
@@ -123,9 +113,4 @@ describe("G7 · P7（代写信号 / 无法理解 / 警报顺延）", () => {
 		expect(managerSrc).to.include("monitor.dropAlert(priorityAlert)")
 		expect(managerSrc).to.not.include("const alerts = monitor.consumePendingAlerts()")
 	})
-})
-
-after(() => {
-	managerStaticState.globalBlockingEndsAt = savedEndsAt
-	managerStaticState.globalLastBlockingIntervention = savedLast
 })

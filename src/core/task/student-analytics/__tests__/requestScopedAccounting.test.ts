@@ -1,9 +1,9 @@
 /**
  * 【P6/T1】两处实测缺陷的守卫（结构断言，见 plan-2 §12.6）：
- *  ① 记账去重键含 `apiRequestCount` ⇒ 阻断回合被 Cline 记 mistake 重试时每次都换键，
+ *  ① 记账去重键含 `apiRequestCount` ⇒ 干预回合被 Cline 记 mistake 重试时每次都换键，
  *     同一条学生消息落了 3 对 D/T（实测 13:01:18–13:01:28 共 9 对）。
- *  ② `needDecision = !carryOverHint || ...` ⇒ 顺延重投的回合**整轮跳过**阻断检查与记账，
- *     导致"计数已达阈值却不阻断"（实测 13:00:20 / 13:00:49 与 13:06:26 / 13:06:49 各一次）。
+ *  ② `needDecision = !carryOverHint || ...` ⇒ 顺延重投的回合**整轮跳过**干预决策与记账，
+ *     导致"计数已达阈值却不提示"（实测 13:00:20 / 13:00:49 与 13:06:26 / 13:06:49 各一次）。
  */
 import * as fs from "node:fs"
 import * as path from "node:path"
@@ -27,9 +27,11 @@ describe("【P6/T1】记账键与顺延重投的结构不变量", () => {
 		expect(/apiRequestCount\}:\$\{studentRequests\}/.test(taskSrc)).to.equal(false)
 	})
 
-	it("★ 顺延重投的回合不得跳过阻断检查（needDecision 门控必须消失）", () => {
+	it("★ 顺延重投的回合不得跳过干预决策（needDecision 门控必须消失）", () => {
 		expect(taskSrc).to.not.include("const needDecision = !carryOverHint")
-		// 阻断决策必须始终被应用
-		expect(taskSrc).to.include('decision.interventionType === "blocking"')
+		// 决策必须始终被应用：注入文本写入 pendingInterventionText
+		expect(taskSrc).to.include("this.pendingInterventionText = decision.injectionText")
+		// 不存在阻断式的应用分支（阻断能力已整体删除）
+		expect(taskSrc).to.not.include('decision.interventionType === "blocking"')
 	})
 })

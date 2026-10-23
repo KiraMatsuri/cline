@@ -28,7 +28,7 @@ export type InterventionCopyDecision = "copy_accepted" | "copy_rejected" | "hint
 /** 学生实际看到的文案来源 */
 export type InterventionCopyVoice = "model" | "template"
 
-/** 记账原因：确定性校验原因 + 展示层专有的三种 */
+/** 记账原因：确定性校验原因 + 展示层专有的三种（`blocking_template` 仅为历史日志读兼容保留） */
 export type InterventionCopyReason = CopyValidationReason | "block_missing" | "no_injection_active" | "blocking_template"
 
 /** 落进 `StudentInteractionLog` 的结构化事件（字段与 `types.ts` 的可选字段一一对应） */
@@ -168,36 +168,4 @@ export function resolveInterventionCopyForDisplay(input: ResolveCopyInput): Reso
 
 	// ⑤ 普通正文：不附加、不落事件
 	return { text: undefined, event: undefined }
-}
-
-/**
- * 注入包裹标签（开/闭各一行；只在这两行是独立行时删除）。
- * ⚠️ 标签名后必须跟**空白或 `>`**：否则 `‹teaching_intervention_copy …›`（回执块）会被一并当成包裹误删。
- */
-const INJECTION_WRAPPER_RE = /^\s*<\/?teaching_intervention(?:\s[^>]*)?>\s*$/i
-/** 注入文本里"说给模型听"的那一段的起点（对学生无意义，且是内部实现细节） */
-const INTERNAL_INSTRUCTION_MARKER = "请在你的回复中严格执行以下要求"
-
-/**
- * 【P6/T3】把阻断注入文本转换为**学生可见文案**。
- *
- * 注入文本（`formatBlockingInterventionForInjection()` 的产物）是为**模型**准备的：
- * 首尾是 `‹teaching_intervention …›` 审计包裹，末尾还有一段"请在你的回复中严格执行以下要求"。
- * 实测（第二轮人工验收）：阻断分支直接 `say("text", injectionText)` ⇒ 学生看到原始 XML 与内部指令。
- *
- * 规则：删包裹行 → 截断内部指令段 → 去首尾空白。**幂等**（重复调用结果不变）。
- */
-export function toStudentVisibleBlockingText(injectionText: string): string {
-	const lines = injectionText.split("\n")
-	const kept: string[] = []
-	for (const line of lines) {
-		if (INJECTION_WRAPPER_RE.test(line)) {
-			continue
-		}
-		if (line.includes(INTERNAL_INSTRUCTION_MARKER)) {
-			break
-		}
-		kept.push(line)
-	}
-	return kept.join("\n").trim()
 }

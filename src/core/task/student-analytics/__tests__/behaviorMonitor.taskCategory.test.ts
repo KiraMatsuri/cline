@@ -50,13 +50,12 @@ describe("BehaviorMonitor — 按学生意图分流（方案 C-1）", () => {
 	})
 
 	it("★ 单次概念提问不达加权阈值（0.5 < 3）⇒ 不发提示", () => {
-		const m = new BehaviorMonitor("c3", { cooldownMs: 0, escalationBlockingThreshold: 1 })
+		const m = new BehaviorMonitor("c3", { cooldownMs: 0 })
 		m.ingest(taskStart("c3", "explanation"))
 		for (let i = 1; i <= 8; i++) {
 			m.ingest(ev("c3", "assistant", i, "explanation"))
 		}
 		expect(m.getPendingAlerts().map((a) => a.ruleId)).to.not.include("high_recent_ai_dependency")
-		expect(m.shouldEscalateToBlocking("high_recent_ai_dependency")).to.equal(false)
 	})
 
 	it("★ 分类未知时保守启用（不得因分类失败静默失效）", () => {
@@ -68,7 +67,7 @@ describe("BehaviorMonitor — 按学生意图分流（方案 C-1）", () => {
 	})
 
 	it("助手事件的 category 不得被当作学生意图", () => {
-		const m = new BehaviorMonitor("c5", { cooldownMs: 0, escalationBlockingThreshold: 2 })
+		const m = new BehaviorMonitor("c5", { cooldownMs: 0 })
 		m.ingest(taskStart("c5", "code_generation"))
 		// 助手回合报告 explanation —— 不应改变已经确立的学生意图
 		for (let i = 1; i <= 5; i++) {

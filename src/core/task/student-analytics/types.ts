@@ -3,6 +3,7 @@
  * Student Programming Behavior Analytics - Type Definitions
  */
 
+import type { BehaviorSource, BehaviorType, CodeKind } from "../../teaching/behavior/metricsSpec"
 import type { QueryType } from "./queryType"
 
 /**
@@ -89,6 +90,28 @@ export interface StudentInteractionLog {
 	queryType?: QueryType
 	/** 【P6/T8】该请求在 AI 依赖度里的权重（概念问答 0.5） */
 	dependencyWeight?: number
+	/**
+	 * 【P1-1】会话模式（自由问答 / 实验任务）。
+	 * 自由模式**不写日志**，所以带 `mode:"free"` 的记录只可能来自迁移或手工数据。
+	 */
+	mode?: "free" | "experiment"
+	/** 【P1-1】实验任务 id（仅实验模式有值；取自 `experiments/<id>/` 的目录名） */
+	experimentId?: string
+	// ===== 【P2-1】六类行为字段（权威定义与解析见 `src/core/teaching/behavior/metricsSpec.ts`） =====
+	/**
+	 * 【P2-1】六类行为之一：concept / design / error_help / self_code / ai_code / other。
+	 * 旧日志缺省；读取时用 `resolveBehaviorType()` 按契约 §3 回退，**不要**自行推断。
+	 */
+	behaviorType?: BehaviorType
+	/** 【P2-1】该事件的行为权重（缺省 = 按 behaviorType 查表；越界由 metricsSpec 夹取，BN-40） */
+	behaviorWeight?: number
+	/** 【P2-1】判定来源：`rule` = 规则判定（默认）；`llm` = 模型兜底（`teaching.behaviorClassifyLLM`） */
+	behaviorSource?: BehaviorSource
+	/** 【P2-1】命中的关键词 / 信号串（逗号分隔，≤120 字，便于审计；格式见 `behaviorClassify.ts`） */
+	behaviorSignals?: string
+	/** 【P2-1】助手回合的代码形态（R1 伪代码判定）；非助手事件缺省 */
+	codeKind?: CodeKind
+
 	/** 输入内容长度（字符数） */
 	contentLength: number
 	/** 是否包含代码 */
@@ -138,7 +161,7 @@ export interface StudentInteractionLog {
 	copyVoice?: "model" | "template"
 	/** 【F13】文案判定结果（M9'：accepted→C，rejected→T，hint_without_injection→N） */
 	copyDecision?: "copy_accepted" | "copy_rejected" | "hint_without_injection"
-	/** 【F13】降级原因（`block_missing` / `too_long` / `has_fenced_code` / `no_blank` / `forbidden_phrase` / `blocking_template`） */
+	/** 【F13】降级原因（`block_missing` / `too_long` / `has_fenced_code` / `no_blank` / `forbidden_phrase` / 旧版本阻断模板口径） */
 	copyReasons?: string[]
 	/** 【F13】启发性建议（`topic_unanchored`）—— 只记账，不影响是否展示 */
 	copyAdvisories?: string[]
@@ -281,6 +304,23 @@ export type BehaviorRuleId =
 	 * 单位 = 一个学生请求内至多 1 次（`bumpOncePerRequest`）；学生本人编辑代码时清零。
 	 */
 	| "ai_coding_rounds"
+	// ===== 【P2-3】六条行为指标驱动的**软提示**规则（只提示、不阻断；由 Lead / cline-intervention 落地判定） =====
+	/** 【P2-3】设计阶段停滞（反复停留在同一设计问题） */
+	| "design_stall"
+	/** 【P2-3】同一报错重复出现 */
+	| "same_error_twice"
+	/**
+	 * 【P2-3】直接索要完整实现。
+	 * ⚠️ 与上面的 `complete_impl_demand`（P5/T16，注入 b+c 询问）**不是**同一条：
+	 * 本 ID 是 P2-1 行为计数的规则化形态（`metricsSpec` 的 demands 按此 ID 或 behaviorSignals 计数）。
+	 */
+	| "full_impl_demand"
+	/** 【P2-3】连续 AI 编码回合 */
+	| "ai_code_streak"
+	/** 【P2-3】连续概念提问 */
+	| "concept_streak"
+	/** 【P2-3】报错后无进展（error_help 后窗口内无 `exit_code=0` 的 run_trace） */
+	| "error_no_progress"
 
 /**
  * 干预严重等级
@@ -298,17 +338,16 @@ export type InterventionSeverity = "gentle" | "moderate" | "strong"
  * - question:  提问型 — 引导学生思考的问题
  * - challenge: 挑战型 — 给出小任务让学生自主完成
  * - reflection: 反思型 — 引导学生回顾自己的学习过程
- * - blocking:  阻断型 — 强制禁用 AI 代码生成与工具执行，需完成反思后方可恢复
  */
-export type InterventionStyle = "hint" | "question" | "challenge" | "reflection" | "blocking"
+export type InterventionStyle = "hint" | "question" | "challenge" | "reflection"
 
 /**
- * 干预类型（区分普通干预与阻断式干预）
+ * 干预类型
  *
- * - normal:   普通干预 — 温和提示，不影响 AI 功能
- * - blocking: 阻断式干预 — 强制禁用代码生成与工具执行，含 180s 冷却倒计时
+ * 【P2-2】阻断式干预已整体移除：只剩普通干预，不影响 AI 功能。
+ * 保留联合类型而非直接删字段，是为了兼容旧日志的读取（读取侧不做枚举校验）。
  */
-export type InterventionType = "normal" | "blocking"
+export type InterventionType = "normal"
 
 /**
  * 行为风险警报（BehaviorMonitor 输出的结构化警报）
@@ -346,20 +385,12 @@ export interface InterventionMessage {
 	severity: InterventionSeverity
 	/** 干预风格 */
 	style: InterventionStyle
-	/** 干预类型（normal / blocking） */
+	/** 干预类型（【P2-2】恒为 normal） */
 	interventionType: InterventionType
 	/** 生成时间 (ISO 8601) */
 	generatedAt: string
 	/** 冷却到期时间 (ISO 8601)，在该时间之前不再对同一规则触发干预 */
 	cooldownUntil: string
-	/** [阻断模式] 禁用的功能列表 */
-	disabledFeatures?: string[]
-	/** [阻断模式] 倒计时秒数 */
-	countdownSeconds?: number
-	/** [阻断模式] 倒计时结束时间 (ISO 8601) */
-	blockingEndAt?: string
-	/** [阻断模式] 反思引导问题列表 */
-	reflectionQuestions?: string[]
 }
 
 /**
@@ -392,8 +423,4 @@ export interface InterventionManagerOptions {
 	preferredStyle?: InterventionStyle
 	/** 是否在 OutputChannel 同时输出干预日志 */
 	logToOutputChannel?: boolean
-	/** 触发阻断式干预的同规则累计次数阈值（默认 4 次） */
-	escalationBlockingThreshold?: number
-	/** 阻断式干预的冷却时间（毫秒，默认 180_000 = 3 分钟） */
-	blockingCooldownMs?: number
 }

@@ -85,8 +85,26 @@ import {
 } from "@/core/teaching/conceptModeConstraint"
 import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
-import { nextWeekSwitch } from "@/core/teaching/weekSwitchNotice"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
+import { logPersistEnabled, resolveSessionContext } from "@/core/teaching/TeachingSessionMode"
+import { readExperimentAttachments, readExperimentGuide, readExperimentTemplate } from "@/core/teaching/ExperimentWorkspace"
+import {
+	assembleTeachingContext,
+	experimentPseudoCodePromptSection,
+	freeModeReleasePromptSection,
+	type TeachingContextResult,
+} from "@/core/teaching/TeachingContext"
+import { classifyAssistantTurn, classifyStudentMessage } from "@/core/teaching/behavior/behaviorClassify"
+import {
+	attachDemandCount,
+	bumpDemandCounter,
+	loadDemandCounter,
+	saveDemandCounter,
+	shouldOfferPseudo,
+	shouldReleaseFullCode,
+	shouldRunIntervention,
+	type SessionContext,
+} from "@/core/teaching/TeachingSessionMode"
 import { HostProvider } from "@/hosts/host-provider"
 import { FileEditProvider } from "@/integrations/editor/FileEditProvider"
 import {
@@ -142,7 +160,6 @@ import { buildInterventionAccountKey } from "./student-analytics/interventionAcc
 import {
 	type InterventionCopyEvent,
 	resolveInterventionCopyForDisplay,
-	toStudentVisibleBlockingText,
 } from "./student-analytics/interventionDisplay"
 import { decideHintLifetime } from "./student-analytics/interventionHintLifetime"
 import { planInterventionTurn } from "./student-analytics/interventionTurnPlan"
@@ -959,12 +976,6 @@ export class Task {
 	 * 把提示丢在正文到达之前 ⇒ 学生没看到、日志也没 `intervention_copy`。
 	 */
 	private interventionDecisionRequest: number | undefined
-	/**
-	 * 【P6/T2】阻断提示的幂等键 = 学生请求序号（**不含** `apiRequestCount`，否则每次重试都会变）。
-	 * 阻断回合现在以 `ask` 挂起（见阻断分支），同一学生请求内即便生成器被再次进入（恢复/重入），
-	 * 键相同 ⇒ 只展示一次、只记一次账。
-	 */
-	private blockingNoticeRequestKey?: string
 	/** 【F13】最近 2 轮学生输入（主题锚定启发式用；只写 advisory，绝不影响是否展示/是否干预） */
 	private recentStudentTexts: string[] = []
 	/** 【P5/T19】未送达的干预可顺延重投的剩余次数（见回合入口的送达保护） */
@@ -977,8 +988,13 @@ export class Task {
 	 * 为何也要带 `decision` 而不仅是学生请求序号：见该方法的 JSDoc。
 	 */
 	private lastComplianceAccountKey: string | undefined
-	/** 【F7】上次注入周切换通知时的教学周；undefined = 本任务尚未注入过 */
-	private lastInjectedWeek: number | undefined
+
+	// 【P1-5/P1-6】教学会话上下文缓存（cwd 解析一次；模式/实验 id 在任务生命周期内不变）
+	private teachingBaseContext: SessionContext | undefined
+	/** 【P1-6】「明确索要完整实现」的连续次数（内存镜像；落盘见 persistTeachingDemand） */
+	private teachingDemandCount = 0
+	/** 【P1-6】是否已从任务目录读回计数（恢复会话不重置） */
+	private teachingDemandLoaded = false
 
 	/**
 	 * 设置全局代码编辑追踪器（由 extension.ts 在激活时调用）
@@ -1049,11 +1065,119 @@ export class Task {
 	}
 
 	/**
+	 * 【P1-5/P1-6】解析当前教学会话上下文（懒加载 + 计数镜像）。
+	 *
+	 * 为什么缓存基础上下文：cwd 在任务生命周期内不变，每轮重新读 `.teaching/task.json`
+	 * 既慢又可能被学生改动影响；次数单独叠加，避免每次 bump 都重建整个上下文。
+	 */
+	private getTeachingSessionContext(): SessionContext {
+		if (!this.teachingBaseContext) {
+			this.teachingBaseContext = resolveSessionContext({ cwd: this.cwd })
+		}
+		return attachDemandCount(this.teachingBaseContext, this.teachingDemandCount)
+	}
+
+	/**
+	 * 【P1-6】恢复会话时读回索要次数，避免「恢复后从 0 开始」导致阶梯被重置。
+	 *
+	 * 为什么不用 workspaceState：设计要求按 taskId 清零，而 workspaceState 的 key 注册表
+	 * 在共享类型文件里（本任务写入作用域外）；任务目录内的 JSON 以 taskId 天然隔离，
+	 * 正好同时满足「恢复不重置」和「新任务清零」。读失败按 0，不阻断任务。
+	 */
+	private async ensureTeachingDemandLoaded(): Promise<void> {
+		if (this.teachingDemandLoaded) {
+			return
+		}
+		// 先置位：并发调用（startTask/resume/attemptApiRequest）只读一次；失败也按 0 继续
+		this.teachingDemandLoaded = true
+		try {
+			const ctx = this.getTeachingSessionContext()
+			const taskDir = await ensureTaskDirectoryExists(this.taskId)
+			this.teachingDemandCount = loadDemandCounter(taskDir, ctx.mode)
+		} catch (error) {
+			Logger.warn("[TeachingDemand] 读取索要计数失败，按 0 开始:", error)
+		}
+	}
+
+	/**
+	 * 【P1-6】把一条学生消息喂给阶梯（同步）。
+	 *
+	 * 为什么必须是同步的：say("user_feedback") 里 `void persistTurnLevelLog(...)` 是
+	 * fire-and-forget；而 attemptApiRequest 要在拼 system prompt 前读到最新次数，
+	 * 所以计数更新放在 persistTurnLevelLog 最前面（第一个 await 之前）同步执行。
+	 */
+	private bumpTeachingDemand(text?: string): void {
+		const ctx = this.getTeachingSessionContext()
+		const result = bumpDemandCounter(ctx, text)
+		this.teachingDemandCount = result.count
+		if (result.action === "none") {
+			return
+		}
+		Logger.info(`[TeachingDemand][${this.taskId}] ${result.action} (mode=${ctx.mode}) → count=${result.count}`)
+		void this.persistTeachingDemand()
+	}
+
+	/** 【P1-6】把当前计数落盘到任务目录（失败仅告警：计数是优化项，不能阻断对话） */
+	private async persistTeachingDemand(): Promise<void> {
+		try {
+			const ctx = this.getTeachingSessionContext()
+			const taskDir = await ensureTaskDirectoryExists(this.taskId)
+			saveDemandCounter(taskDir, ctx.mode, this.teachingDemandCount)
+		} catch (error) {
+			Logger.warn("[TeachingDemand] 保存索要计数失败:", error)
+		}
+	}
+
+	/**
+	 * 【P1-5】按会话模式装配本轮教学上下文。
+	 *
+	 * - 自由模式：教材索引（含认知边界约束，来自 buildWikiSystemPrompt）+ 预召回片段；
+	 * - 实验模式：实验目录产物（GUIDE.md / attachments/ / 模板）+ 预召回片段。
+	 *   实验任务已有明确实验指导，不注入全量索引，避免挤占 6000 字预算。
+	 * P1-1 目前按 cwd 识别实验模式（cwd 即 experiments/<id>/），因此实验目录 = this.cwd。
+	 */
+	private async buildTeachingContext(indexContext: string, recall: string | null): Promise<TeachingContextResult> {
+		await this.ensureTeachingDemandLoaded()
+		const ctx = this.getTeachingSessionContext()
+		if (ctx.mode === "experiment") {
+			const experimentDir = this.cwd
+			const attachments = readExperimentAttachments(experimentDir).map((item) => `【${item.file}】\n${item.text}`)
+			const result = assembleTeachingContext({
+				mode: "experiment",
+				guide: readExperimentGuide(experimentDir),
+				attachments,
+				template: readExperimentTemplate(experimentDir),
+				recall,
+			})
+			Logger.log(
+				`[Task] 实验教学上下文已装配 (id=${ctx.experimentId ?? "未知"}, sections=${result.sections
+					.map((section) => `${section.name}:${section.chars}`)
+					.join(",") || "无"}, dropped=${result.dropped.join("|") || "无"}, totalChars=${result.totalChars})`,
+			)
+			return result
+		}
+		const result = assembleTeachingContext({ mode: "free", index: indexContext, recall })
+		Logger.log(
+			`[Task] 自由模式教学上下文已装配 (sections=${result.sections
+				.map((section) => `${section.name}:${section.chars}`)
+				.join(",") || "无"}, totalChars=${result.totalChars})`,
+		)
+		return result
+	}
+
+	/**
 	 * 获取学生日志持久化器（懒加载）
+	 *
+	 * 【P1-1】在这里统一判定会话模式并注入门控：自由模式**不落盘**，
+	 * 实验模式的每条记录带 `mode` / `experimentId`。判定只做一次（cwd 不变），
+	 * 因此不会出现"同一会话前半段有日志、后半段没有"的错账。
 	 */
 	private getStudentLogPersister(): StudentLogPersister {
 		if (!this.studentLogPersister) {
 			this.studentLogPersister = new StudentLogPersister(this.cwd)
+			const ctx = resolveSessionContext({ cwd: this.cwd })
+			this.studentLogPersister.setEnabled(logPersistEnabled(ctx))
+			this.studentLogPersister.setContext({ mode: ctx.mode, experimentId: ctx.experimentId })
 		}
 		return this.studentLogPersister
 	}
@@ -1246,6 +1370,12 @@ export class Task {
 	 * 跟随 BehaviorMonitor 的启用状态，只有在行为监测开启时才会创建
 	 */
 	private getInterventionManager(): TeachingInterventionManager | undefined {
+		// 【P1-6】自由问答模式不做任何干预（设计 §4.2）：连管理器都不创建，
+		// 后续所有干预注入/追问路径都因取不到管理器而自然跳过。
+		if (!shouldRunIntervention(this.getTeachingSessionContext())) {
+			return undefined
+		}
+
 		// 干预机制依赖于行为监测器
 		if (!this.getBehaviorMonitor()) {
 			return undefined
@@ -1260,18 +1390,6 @@ export class Task {
 		}
 
 		return this.interventionManager
-	}
-
-	/**
-	 * 【教学】获取当前阻隔式干预状态，供 webview 顶部实时倒计时组件使用。
-	 * @returns 处于阻断冷却中返回 { active: true, endsAt }，否则返回 null
-	 */
-	public getBlockingState(): { active: boolean; endsAt: number } | null {
-		const interventionManager = this.getInterventionManager()
-		if (!interventionManager) {
-			return null
-		}
-		return interventionManager.isBlockingActive() ? { active: true, endsAt: interventionManager.getBlockingEndsAt() } : null
 	}
 
 	/**
@@ -1304,6 +1422,14 @@ export class Task {
 			// 使用 ContentAnalyzer 进行内容分析
 			const analysis = contentAnalyzer.analyze(task)
 
+			// 【P2-1】学生消息六类分类（规则为主；behaviorSignals 供三端审计与回退解析）
+			const behavior = classifyStudentMessage({
+				text: task,
+				hasCode: analysis.hasCode,
+				mode: this.getTeachingSessionContext().mode,
+				demandCount: this.teachingDemandCount,
+			})
+
 			// 【F13】记住最近 2 轮学生输入（供干预文案的「主题锚定」启发式使用：只写 advisory）
 			this.rememberStudentText(task)
 
@@ -1325,6 +1451,11 @@ export class Task {
 				languageHint: analysis.languageHint,
 				imageCount: images?.length ?? 0,
 				fileCount: files?.length ?? 0,
+				// 【P2-1】六类行为字段：外部分析优先读 behaviorType，缺失才按 queryType 回退
+				behaviorType: behavior.type,
+				behaviorWeight: behavior.weight,
+				behaviorSource: "rule",
+				behaviorSignals: behavior.signals,
 				turnIndex,
 				// 可选：保存原始内容用于离线分析（如果内容不太长）
 				rawContent: task && task.length <= 2000 ? task : undefined,
@@ -1350,6 +1481,9 @@ export class Task {
 
 			// 使用 TaskClassifier 进行任务分类
 			// 【方案 C-3】概念问答里"拿到关键实现后仍索要完整代码"的提问，按 code_generation 对待。
+			// 【P1-6】在第一个 await 之前同步更新索要阶梯：attemptApiRequest 本轮就要读到最新次数
+			this.bumpTeachingDemand(text)
+
 			const rawCategory = taskClassifier.classify(text)
 			const category = refineStudentCategory(text ?? "", rawCategory, this.hasDeliveredKeyCode)
 			if (category !== rawCategory) {
@@ -1358,6 +1492,14 @@ export class Task {
 
 			// 使用 ContentAnalyzer 进行内容分析
 			const analysis = contentAnalyzer.analyze(text)
+
+			// 【P2-1】六类分类（P1-6 已在上面同步计入本次索要，demandCount 含本次）
+			const behavior = classifyStudentMessage({
+				text,
+				hasCode: analysis.hasCode,
+				mode: this.getTeachingSessionContext().mode,
+				demandCount: this.teachingDemandCount,
+			})
 
 			// 【F13】记住最近 2 轮学生输入（供干预文案的「主题锚定」启发式使用：只写 advisory）
 			this.rememberStudentText(text)
@@ -1380,6 +1522,11 @@ export class Task {
 				languageHint: analysis.languageHint,
 				imageCount: images?.length ?? 0,
 				fileCount: files?.length ?? 0,
+				// 【P2-1】六类行为字段：外部分析优先读 behaviorType，缺失才按 queryType 回退
+				behaviorType: behavior.type,
+				behaviorWeight: behavior.weight,
+				behaviorSource: "rule",
+				behaviorSignals: behavior.signals,
 				turnIndex,
 				// 可选：保存原始内容用于离线分析（如果内容不太长）
 				rawContent: text && text.length <= 2000 ? text : undefined,
@@ -1427,6 +1574,13 @@ export class Task {
 
 			const category = taskClassifier.classify(assistantText)
 
+			// 【P2-1】助手回合分类：完整实现/完整伪代码 → ai_code(1.2)；方向性伪代码/片段/讲解 → design(0.75)
+			const assistantBehavior = classifyAssistantTurn({
+				text: assistantText,
+				hasFullImpl: analysis.hasFullImpl,
+				toolsUsed,
+			})
+
 			// 推断建议类型
 			const suggestionType = this.inferSuggestionType(toolsUsed, assistantText)
 
@@ -1473,6 +1627,12 @@ export class Task {
 				rawContent: assistantText && assistantText.length <= 2000 ? assistantText : undefined,
 				suggestionType,
 				toolsUsed: toolsUsed.length > 0 ? toolsUsed : undefined,
+				// 【P2-1】助手回合的行为分类与代码形态（full/pseudo_complete 记 ai_code）
+				behaviorType: assistantBehavior.type,
+				behaviorWeight: assistantBehavior.weight,
+				behaviorSource: "rule",
+				behaviorSignals: assistantBehavior.signals,
+				codeKind: assistantBehavior.codeKind,
 			}
 
 			// 持久化日志
@@ -1683,6 +1843,9 @@ export class Task {
 		this.messageStateHandler.setApiConversationHistory([])
 
 		await this.postStateToWebview()
+
+		// 【P1-6】任务开始（含恢复）前先读回阶梯计数：恢复会话不能把次数重置为 0
+		await this.ensureTeachingDemandLoaded()
 
 		await this.say("text", task, images, files)
 
@@ -1913,6 +2076,8 @@ export class Task {
 		let responseImages: string[] | undefined
 		let responseFiles: string[] | undefined
 		if (response === "messageResponse" || text || (images && images.length > 0) || (files && files.length > 0)) {
+			// 【P1-6】恢复会话后先把落盘计数贴回内存，随后 say() 里的 bump 才是连续计数
+			await this.ensureTeachingDemandLoaded()
 			await this.say("user_feedback", text, images, files)
 			await this.checkpointManager?.saveCheckpoint()
 			responseText = text
@@ -2424,6 +2589,41 @@ export class Task {
 		this.taskState.didAutomaticallyRetryFailedApiRequest = true
 	}
 
+	/**
+	 * 【v3 · P0-3】预召回：取最近一条学生提问，交给教学后端按相关度检索，返回可注入的片段块。
+	 *
+	 * 为什么不放在 caller 里：`attemptApiRequest` 是唯一能同时拿到
+	 * 「本轮 system prompt」与「本轮对话历史」的位置，注入点必须与 prompt 同源。
+	 * 失败一律返回 null（宁可不注入，也不要因为检索故障打断学生提问）。
+	 */
+	private async buildWikiRecall(llmWiki: LLMWikiService): Promise<string | null> {
+		try {
+			const history = this.messageStateHandler.getApiConversationHistory()
+			let lastUserText = ""
+			for (let i = history.length - 1; i >= 0; i--) {
+				const msg = history[i] as unknown as { role?: string; content?: unknown }
+				if (msg?.role !== "user") continue
+				const content = msg.content
+				if (typeof content === "string") {
+					lastUserText = content
+				} else if (Array.isArray(content)) {
+					lastUserText = (content as Array<{ type?: string; text?: string }>)
+						.filter((b) => b?.type === "text" && typeof b.text === "string")
+						.map((b) => b.text as string)
+						.join("\n")
+				}
+				if (lastUserText.trim()) break
+			}
+			// 兜底：少数调用路径会把"环境详情"等系统注入也塞进 user 消息，这里只按前缀剔除
+			lastUserText = lastUserText.replace(/<environment_details>[\s\S]*$/i, "").trim()
+			if (!lastUserText) return null
+			return await llmWiki.recallForQuestion(lastUserText)
+		} catch (e) {
+			Logger.warn("[Task] 预召回失败（忽略）:", e instanceof Error ? e.message : e)
+			return null
+		}
+	}
+
 	async *attemptApiRequest(previousApiReqIndex: number): ApiStream {
 		// Wait for MCP servers to be connected before generating system prompt
 		await pWaitFor(() => this.mcpHub.isConnecting !== true, {
@@ -2581,28 +2781,36 @@ export class Task {
 			if (llmWiki.getServerUrl() && llmWiki.getWikiCacheSize() === 0) {
 				try {
 					await Promise.race([
-						llmWiki.fetchWikiForWeek(llmWiki.getCurrentWeek()),
+						llmWiki.fetchWiki(),
 						new Promise<never>((_, reject) => setTimeout(() => reject(new Error("wiki fetch timeout")), 3000)),
 					])
 				} catch (e) {
 					Logger.warn("[Task] 同步拉取 Wiki 超时/失败，使用空 RAG:", e instanceof Error ? e.message : e)
 				}
 			}
-			// 【v2.13】改为注入「认知边界约束 + 资料索引」，不再注入全文（见 spec §D5/§D6）
+			// 【v3】注入「认知边界约束 + 资料索引（全量标题）」，不再有周概念
 			// - 全文注入会导致 16k 截断（本次改造要解决的问题），且与 MCP 按需检索重复
 			// - 认知边界约束必须保留：检索边界拦不住模型"凭通用知识超纲作答"
 			// - 索引来自 _wikiCache 的元数据，因此上面的"缓存为空则同步拉取"仍然必要
 			const ragContext = buildWikiSystemPrompt({
-				week: llmWiki.getCurrentWeek(),
-				index: llmWiki.buildIndexGroups(),
+				index: llmWiki.buildIndexTitles(),
 				// 以**当前**连接状态为准，再退回注册期/轮询探测出的缓存值：
-				// MCP server 是异步拉起、且改 week 会重启进程，只靠缓存会把
-				// “连接尚未就绪”永久记成“不可用”，反之也会留下过期的 true。
+				// MCP server 是异步拉起的，只靠缓存会把“连接尚未就绪”永久记成“不可用”，
+				// 反之也会留下过期的 true。
 				mcpAvailable: llmWiki.isWikiMcpAvailable() || isWikiServerConnected(this.mcpHub),
 			})
-			systemPromptFinal = systemPrompt + "\n\n" + ragContext
+			// 【v3 · P0-3】预召回：拿最近一条学生提问去后端检索，把 top-3 片段直接注入。
+			// 为什么不能只靠模型自主调工具：学生端的默认模型经常**不调工具就先答**，
+			// 于是"按内容检索资料"在多数轮次里根本没发生；预召回把这件事变成确定性的。
+			// 无命中/失败一律返回 null，不改变原有行为（只注入索引）。
+			const recall = await this.buildWikiRecall(llmWiki)
+			// 【P1-5】按会话模式装配教学上下文：自由=索引+检索；实验=指导/附件/模板+检索
+			const teachingContext = await this.buildTeachingContext(ragContext, recall)
+			systemPromptFinal = systemPrompt + "\n\n" + teachingContext.prompt
 			Logger.log(
-				`[Task] Wiki RAG 已注入 (week=${llmWiki.getCurrentWeek()}, chunks=${llmWiki.getWikiCacheSize()}, ragChars=${ragContext.length})`,
+				`[Task] 教学上下文已注入 (mode=${this.getTeachingSessionContext().mode}, sections=${teachingContext.sections
+					.map((section) => `${section.name}:${section.chars}`)
+					.join(",") || "无"}, totalChars=${teachingContext.totalChars}, recallChars=${recall?.length ?? 0})`,
 			)
 		} catch (e) {
 			Logger.warn("[Task] Wiki RAG 注入失败，使用原 systemPrompt:", e)
@@ -2630,8 +2838,17 @@ export class Task {
 		// 「本请求已问过」的**终态**，活到下一个学生请求才由请求边界复位。`attemptApiRequest` 在同一学生请求内
 		// 会被工具轮（`recursivelyMakeClineRequests` 递归）与首 chunk 失败重试**多次进入**，若否认回落到 `"none"`，
 		// 门控重新武装 ⇒ 每轮重问一次，而答复被 `ask` 消费掉、请求身份不变 ⇒ 学生除确认或取消任务外无法脱离。
+		// 【P1-6】"服从流程"的追问属于打断，自由问答模式不得触发（设计 §4.2）；
+		// 实验模式才询问学生是否要给出完整实现（概念模式判定仍走全局开关）。
 		const complianceMonitor = this.getBehaviorMonitor()
-		if (complianceMonitor?.isCurrentRequestInability() && complianceMonitor.getDemandComplianceState() === "none") {
+		// 为什么不在 `complianceMonitor` 那行做门控：有结构测试以该行原文为锚点切片检查 ask/catch 路径，
+		// 保持锚点稳定，把模式门控放到条件里，语义等价（自由模式根本不进入询问块）。
+		const complianceInterventionEnabled = shouldRunIntervention(this.getTeachingSessionContext())
+		if (
+			complianceInterventionEnabled &&
+			complianceMonitor?.isCurrentRequestInability() &&
+			complianceMonitor.getDemandComplianceState() === "none"
+		) {
 			complianceMonitor.markDemandComplianceAsked()
 			this.persistDemandComplianceEvent("asked")
 			try {
@@ -2687,6 +2904,17 @@ export class Task {
 		// 重试的那次请求会既不在 system prompt 也不在历史里携带干预 ⇒ 该次干预被静默吞掉。
 		// 因此改为“每个回合（recursivelyMakeClineRequests 入口）先重置、注入时保留”，重试仍能拿到。
 		{
+			// 【P1-6】阶梯放行：自由模式第 3 次、实验模式第 4 次明确索要后，追加放行段。
+			// 计数已在学生消息入口（persistTurnLevelLog）同步更新，这里只做判定与追加。
+			const ladderContext = this.getTeachingSessionContext()
+			if (shouldReleaseFullCode(ladderContext)) {
+				systemPromptFinal = systemPromptFinal + "\n\n" + freeModeReleasePromptSection()
+				Logger.log(`[Task] 自由模式放行完整实现 (demandCount=${ladderContext.demandCount ?? 0})`)
+			} else if (shouldOfferPseudo(ladderContext)) {
+				systemPromptFinal = systemPromptFinal + "\n\n" + experimentPseudoCodePromptSection()
+				Logger.log(`[Task] 实验模式放行伪代码 (demandCount=${ladderContext.demandCount ?? 0})`)
+			}
+
 			const injected = appendEphemeralIntervention(systemPromptFinal, this.pendingInterventionText)
 			systemPromptFinal = injected.systemPrompt
 			if (injected.applied) {
@@ -3325,7 +3553,7 @@ export class Task {
 
 		// ========== 教学干预检查 ==========
 		// 在构建 API 请求之前，检查 BehaviorMonitor 是否触发了风险警报
-		// 阻断式干预: 完全跳过 API 请求，直接展示阻断消息并阻止后续输入
+		// 【P2-2】软提示干预：永不跳过 API 请求、永不阻止后续输入；只在**本回合** system prompt 追加提示。
 		try {
 			// 【F6】每回合入口先重置：干预只在“本回合”有效（注入点是 attemptApiRequest，
 			// 而重试会重新进入该生成器 ⇒ 那时仍需拿到值，所以不能在注入时就清）。
@@ -3373,83 +3601,19 @@ export class Task {
 				// 【F13】改用结构化决策入口：除注入文本外还要拿到模板文案与规则/力度/风格，
 				// 否则 `intervention_decision` 事件无从落库（F13 硬要求 1），M9' 的 D/T/N 全部不可数。
 				// 【P6/T1】★ 决策**始终**执行：`carryOverHint` 只决定"是否用新一轮文案覆盖顺延的文案"，
-				// 绝不能跳过阻断检查与记账 —— 否则计数已达阈值也不会阻断（实测 4 次）。
+				// 绝不能跳过决策与记账 —— 否则计数已达阈值也不会触发软提示（实测 4 次）。
 				const decision = interventionManager.checkAndGenerateInterventionDecision(
 					monitor,
 					this.taskState.apiRequestCount,
 					this.recentInterventionCopies,
 				)
-				// 【P6/T2】★ 回合级编排抽成纯函数（行为矩阵可运行时单测，不再只靠"读源码字符串"断言）：
-				// 携带重投 / 阻断例外 / 是否覆盖待投递文案 三条规则一次算清。
-				// ⚠️ 它取代 Task 1 遗留的内联 `appliesDecision` —— 那个变量只门控 `interventionText`（只有阻断分支读它），
-				// 普通分支仍是裸 `if (decision)` ⇒ 顺延回合照样覆盖待投递文案（`overwritePending` 修的就是这一点）。
+				// 【P2-2】★ 回合级编排抽成纯函数（行为矩阵可运行时单测，不再只靠"读源码字符串"断言）：
+				// 携带重投 / 是否覆盖待投递文案 两条规则一次算清（P2-2 删除阻断后不再有阻断例外）。
+				// ⚠️ 它取代 Task 1 遗留的内联 `appliesDecision`；普通分支以 `overwritePending` 门控覆盖。
 				const plan = planInterventionTurn({
 					carryOverHint,
 					hasDecision: decision !== null,
-					isBlocking: decision !== null && decision.interventionType === "blocking",
 				})
-				const interventionText = plan.inject ? decision?.injectionText : undefined
-
-				// ★ 阻断态优先检查（独立于 interventionText）
-				// checkAndGenerateInterventionDecision 在阻断冷却期间仍返回提醒消息
-				// 此处确保即使用户连续发送消息，每次都被拦截
-				if (interventionManager.isBlockingActive()) {
-					const blockingSeconds = Math.ceil((interventionManager.getBlockingEndsAt() - Date.now()) / 1000)
-					const minutes = Math.floor(blockingSeconds / 60)
-					const seconds = blockingSeconds % 60
-					const timeDisplay = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
-					const rawBlockingText =
-						interventionText ||
-						`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】\n\n系统处于阻断模式，代码生成与工具执行功能暂不可用。请利用这段时间独立编写代码。`
-					// 【P6/T3】展示前脱敏：去掉注入包裹标签与内部指令段（学生不该看到 XML 与"请严格执行…"）
-					const blockingText = toStudentVisibleBlockingText(rawBlockingText)
-
-					// 【P6/T2】幂等键 = 学生请求序号：同一学生请求内重复进入生成器时键不变
-					// ⇒ 只展示一次、只记一次账。
-					const requestKey = String(monitor?.getStudentRequestCount() ?? 0)
-					const firstNoticeThisRequest = this.blockingNoticeRequestKey !== requestKey
-					if (firstNoticeThisRequest) {
-						// 【F13】记账必须**先于** `ask` 完成：`ask` 一进入就把通知入列给学生看，
-						// 而学生可能中止/关窗、永不回复 ⇒ 若把 D/T 留在 `ask` 返回之后，
-						// 就会出现「展示了却没有 D/T」，使 M9' ①（`V = C + T`）误报为文案泄漏/模型仿写，
-						// 并违反 F13 硬要求 1（每次「判定要干预」都必须落一条可分析记录）。
-						// 重入安全由 `interventionAccountKey`（同一学生请求 + 同 kind 只落一次）兜住，
-						// 因此提前记账不会产生重复。
-						//
-						// 【F13】阻断文案是**代码模板**（不走模型叙述层），但它同样是「学生可见的一条干预文案」。
-						// 与决策事件成对记账，M9' ①（`V = C + T`）与 ②（`D ≥ C + T`）在阻断回合才成立。
-						if (decision) {
-							this.persistInterventionDecisionEvent(decision)
-							this.persistInterventionCopyEvent(
-								{
-									eventType: "intervention_copy",
-									copyDecision: "copy_rejected",
-									copyReasons: ["blocking_template"],
-									copyVoice: "template",
-									interventionRuleId: decision.ruleId,
-									interventionSeverity: decision.severity,
-									interventionStyle: decision.style,
-								},
-								blockingText,
-							)
-						}
-
-						// 【P6/T2】**以 ask 挂起**：既把通知交给学生，又把学生这条消息当场收下 ——
-						// `return true` 之后 loop 退出，没有 pending ask 时学生消息会丢。
-						await this.ask("followup", blockingText)
-						// 键在 `ask` **返回后**才消费：say/ask 抛错时该请求下次仍会重试展示（键未置位），
-						// 而 D/T 已在上方落库 ⇒ 不产生「展示了却没有记账」的窗口。
-						this.blockingNoticeRequestKey = requestKey
-					}
-
-					Logger.info(
-						`[TeachingIntervention][${this.taskId}] BLOCKING ENFORCED: ` +
-							`API request blocked, features disabled, remaining=${timeDisplay}`,
-					)
-
-					// 结束本轮：通知已通过 ask 交付、学生消息已被收下。
-					return true
-				}
 
 				// 普通干预：【F6】只作为**本轮** system prompt 后缀，不进对话历史
 				// （写进 userContent 会被 addToApiConversationHistory 持久化，而模型上下文只来自该历史，
@@ -3479,19 +3643,6 @@ export class Task {
 		} catch (error) {
 			// 干预机制出错不应影响正常对话流
 			Logger.warn("[TeachingIntervention] intervention check failed, continuing normally", error)
-		}
-
-		// 【F7】周数切换通知：**有意写入对话历史** —— 它的作用正是对抗“模型延续旧进度拒答”
-		// （spec §8.3 的对话历史自我锚定）。仅在与上次注入的周数不同时注入一次。
-		// 放在阻断早退之后：阻断回合不会发 API 请求，若在那之前注入会被白白消费掉。
-		{
-			const wk = LLMWikiService.getInstance().getCurrentWeek()
-			const sw = nextWeekSwitch(this.lastInjectedWeek, wk)
-			if (sw.notice) {
-				userContent.push({ type: "text", text: sw.notice })
-				Logger.log(`[Task] 教学周切换通知已注入: ${this.lastInjectedWeek} → ${wk}`)
-			}
-			this.lastInjectedWeek = sw.lastWeek
 		}
 
 		// getting verbose details is an expensive operation, it uses globby to top-down build file structure of project which for large projects can take a few seconds

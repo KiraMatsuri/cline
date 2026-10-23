@@ -14,11 +14,7 @@
 
 import { Logger } from "@/shared/services/Logger"
 import type { BehaviorMonitor } from "./BehaviorMonitor"
-import {
-	formatInterventionForInjection,
-	generateBlockingInterventionMessage,
-	generateInterventionMessage,
-} from "./InterventionMessageGenerator"
+import { formatInterventionForInjection, generateInterventionMessage } from "./InterventionMessageGenerator"
 import type {
 	BehaviorAlert,
 	BehaviorRuleId,
@@ -29,19 +25,21 @@ import type {
 	InterventionStyle,
 } from "./types"
 
-export const DEFAULT_OPTIONS: Readonly<Required<InterventionManagerOptions>> = Object.freeze({
+/** 【P2-2】管理器实际读取的配置项（旧阻断相关字段已退役，不再列入） */
+type EffectiveManagerOptions = Required<
+	Pick<
+		InterventionManagerOptions,
+		"enabled" | "globalCooldownMs" | "maxInterventionsPerTask" | "minTurnsBetweenInterventions" | "preferredStyle" | "logToOutputChannel"
+	>
+>
+
+export const DEFAULT_OPTIONS: EffectiveManagerOptions = Object.freeze({
 	enabled: true,
 	globalCooldownMs: 5_000, // 5 秒全局冷却（用于提示式干预）
-	maxInterventionsPerTask: 10, // 单任务最多 10 次干预（含阻断）
+	maxInterventionsPerTask: 10, // 单任务最多 10 次干预
 	minTurnsBetweenInterventions: 0, // 不限制轮次间隔
 	preferredStyle: "hint" as InterventionStyle, // 默认使用提示风格
 	logToOutputChannel: true,
-	// ⚠️ 本项在管理器内**从未被读取**（升级判定走 monitor.shouldEscalateToBlocking）。
-	// 保留是为了与 BehaviorMonitor 的值保持一致；改升级阈值请改 BehaviorMonitor。
-	// 【F1】6 → 3：与 BehaviorMonitor.DEFAULT_OPTIONS 同步（见 __tests__/interventionParams.test.ts）。
-	escalationBlockingThreshold: 3,
-	// 【方案 D 止血】180_000 → 60_000。阻隔 3 分钟对"概念问答误触发"场景过重。
-	blockingCooldownMs: 60_000,
 })
 
 /**
@@ -64,7 +62,7 @@ export interface InterventionDecision {
 
 export class TeachingInterventionManager {
 	private readonly taskId: string
-	private readonly options: Required<InterventionManagerOptions>
+	private readonly options: EffectiveManagerOptions
 
 	/** 干预历史记录 */
 	private interventionHistory: InterventionRecord[] = []
@@ -78,39 +76,16 @@ export class TeachingInterventionManager {
 	/** 每条规则的冷却到期时间 */
 	private ruleCooldownUntil: Partial<Record<BehaviorRuleId, number>> = {}
 
-	/** 阻断式干预是否处于激活状态（冷却期内） */
-	private blockingActive = false
-
-	/** 阻断式干预的结束时间戳 */
-	private blockingEndsAt = 0
-
-	/** 最近一次阻断式干预消息（用于冷却期间展示提示） */
-	private lastBlockingIntervention: InterventionMessage | null = null
-
-	// ===================== 跨会话全局阻断状态 =====================
-	// 【v2.7】阻断状态提升为全局静态，防止学生"退出对话 → 新建对话"绕过 180s 锁定。
-	// 所有 Task/对话共享同一份阻断状态；阻断到期后自动清除。
-	/** 全局阻断冷却结束时间戳（0 = 无全局阻断） */
-	private static globalBlockingEndsAt = 0
-	/** 全局最近一次阻断干预消息（新建对话展示提醒用） */
-	private static globalLastBlockingIntervention: InterventionMessage | null = null
-
 	constructor(taskId: string, options?: InterventionManagerOptions) {
 		this.taskId = taskId
 		this.options = { ...DEFAULT_OPTIONS, ...options }
 	}
 
 	/**
-	 * 核心方法：检查是否需要干预，如果需要则返回格式化后的干预文本
+	 * 核心方法：检查是否需要干预，如果需要则返回格式化后的干预文本。
 	 *
-	 * 支持两级干预策略：
-	 *   1. 普通提示式干预（hint/question/challenge/reflection）
-	 *   2. 阻断式干预（blocking）— 同规则累计触发 ≥ escalationBlockingThreshold 次后升级
-	 *
-	 * 阻断式干预特性:
-	 *   - 禁用代码生成与工具执行功能
-	 *   - 展示反思引导问题
-	 *   - 180 秒冷却倒计时（期间不触发新干预）
+	 * 【P2-2】阻断式干预已整体移除：本方法只产出普通提示式干预
+	 * （hint/question/challenge/reflection），永不阻断回合、永不调用 `ask()`、永不 `return true`。
 	 *
 	 * @param monitor   当前任务的 BehaviorMonitor 实例
 	 * @param turnIndex 当前对话轮次索引
@@ -140,63 +115,13 @@ export class TeachingInterventionManager {
 			return null
 		}
 
-		// 检查阻断冷却是否仍在进行中（实例状态 + 全局跨会话状态）
-		// 【v2.7】新建对话后新 Task 无实例阻断状态，但全局阻断仍有效 → 继续拦截
-		const endsAt = this.getBlockingEndsAt()
-		if (endsAt > 0 && !this.isBlockingCooldownExpired()) {
-			// 同步实例状态（新任务用全局恢复）
-			this.blockingActive = true
-			this.blockingEndsAt = endsAt
-			const remaining = this.getBlockingRemainingSeconds()
-			Logger.info(
-				`[TeachingIntervention][${this.taskId}] blocking cooldown active (${remaining}s remaining), returning reminder`,
-			)
-			// 返回阻断提醒消息（含剩余时间），让 index.ts 能继续执行阻断逻辑
-			// 【F13】阻断冷却期的提醒同样是一次「代码判定要干预」：本轮学生会**实际看到**模板文案，
-			// 因此必须与展示侧的 `T`（模板兜底记账）成对出现，否则 M9' ② 会误报「该干预却没干预」。
-			return this.buildBlockingReminderDecision()
-		}
-
-		// 阻断冷却到期，重置阻断状态（实例 + 全局）
-		if (endsAt > 0 && this.isBlockingCooldownExpired()) {
-			Logger.info(`[TeachingIntervention][${this.taskId}] blocking cooldown expired, releasing block`)
-			this.blockingActive = false
-			this.blockingEndsAt = 0
-			TeachingInterventionManager.globalBlockingEndsAt = 0
-			TeachingInterventionManager.globalLastBlockingIntervention = null
-		}
-
-		// ===== 阻断升级（独立入口）=====
-		// 【F1】阻断判定不依赖 pendingAlerts：只要某条规则的累计违规数达到阈值，
-		// 即使提醒因冷却未入队 / 已被消费，也在此升级为阻断。
-		const blockingRule = monitor.getRuleIdsAtBlockingThreshold()[0]
-		if (blockingRule) {
-			const count = monitor.getEscalationCount(blockingRule)
-			// 【P7/T4】阻断是最强信号：冷却期内残留的普通提示已失去语境，直接清空
-			//（否则解除阻断后会突然冒出上一条早已过时的建议）
-			monitor.consumePendingAlerts()
-			return this.triggerBlocking(
-				monitor,
-				{
-					ruleId: blockingRule,
-					message: "",
-					triggeredAt: new Date().toISOString(),
-					metricValue: count,
-					// 【P6/T6 Step 3b】按规则取阈值（与门控 / 日志 / 通知同源），不再写死 escalationBlockingThreshold
-					threshold: monitor.getBlockingThresholdFor(blockingRule),
-					escalationCount: count,
-				},
-				turnIndex,
-			)
-		}
-
 		// 检查是否有待处理的警报
 		if (!monitor.hasPendingAlerts()) {
 			return null
 		}
 
-		// 全局冷却检查（仅对普通干预生效，阻断模式跳过此检查）
-		if (!this.blockingActive && !this.isGlobalCooldownExpired()) {
+		// 全局冷却检查
+		if (!this.isGlobalCooldownExpired()) {
 			Logger.info(
 				`[TeachingIntervention][${this.taskId}] skipped: global cooldown active (${this.getRemainingCooldownMs()}ms remaining)`,
 			)
@@ -234,15 +159,6 @@ export class TeachingInterventionManager {
 			return null
 		}
 
-		// 【F1】防御性回退：上面的 getRuleIdsAtBlockingThreshold() 入口已覆盖此情形。
-		// 保留 alerts 侧判定并复用同一个 triggerBlocking()，避免两处阻断分支漂移（DRY）。
-		const blockingAlert = alerts.find((alert) => monitor.shouldEscalateToBlocking(alert.ruleId))
-		if (blockingAlert) {
-			// 阻断是最强信号：冷却期内的普通提示已失去意义，留着只会在解除后突然冒出陈年文案
-			monitor.consumePendingAlerts()
-			return this.triggerBlocking(monitor, blockingAlert, turnIndex)
-		}
-
 		// ===== 普通提示式干预 =====
 		const eligibleAlerts = alerts.filter((alert) => this.isRuleCooldownExpired(alert.ruleId))
 		if (eligibleAlerts.length === 0) {
@@ -278,149 +194,6 @@ export class TeachingInterventionManager {
 			style: intervention.style,
 			interventionType: intervention.interventionType,
 		}
-	}
-
-	/**
-	 * 【F1】触发阻断式干预。
-	 *
-	 * 从 checkAndGenerateIntervention() 抽出（原为内联分支），供两个入口复用：
-	 *   ① 阈值式入口（getRuleIdsAtBlockingThreshold）—— 不依赖提醒队列；
-	 *   ② alerts 侧回退入口 —— 保持原有行为。
-	 */
-	private triggerBlocking(monitor: BehaviorMonitor, alert: BehaviorAlert, turnIndex: number): InterventionDecision {
-		const intervention = generateBlockingInterventionMessage(alert, this.options.blockingCooldownMs)
-
-		// 标记阻断已触发
-		monitor.markBlockingTriggered()
-		this.blockingActive = true
-		this.blockingEndsAt = Date.now() + this.options.blockingCooldownMs
-
-		// 【v2.7】同步全局阻断状态（退出/新建对话后仍生效）
-		TeachingInterventionManager.globalBlockingEndsAt = this.blockingEndsAt
-		TeachingInterventionManager.globalLastBlockingIntervention = intervention
-
-		// 保存阻断干预消息（用于冷却期间展示提醒）
-		this.lastBlockingIntervention = intervention
-
-		// 格式化为注入文本
-		const injectionText = formatInterventionForInjection(intervention)
-
-		Logger.info(
-			`[TeachingIntervention][${this.taskId}] BLOCKING INTERVENTION triggered: rule=${intervention.ruleId}, ` +
-				`escalationCount=${alert.escalationCount}, disabledFeatures=${intervention.disabledFeatures?.join(",")}, ` +
-				`cooldown=${intervention.countdownSeconds}s`,
-		)
-
-		// 记录干预
-		this.recordIntervention(intervention, turnIndex)
-
-		// 【F13】阻断决策同样结构化交付（含兜底文案与规则/力度/风格）
-		return {
-			injectionText,
-			templateText: intervention.content,
-			ruleId: intervention.ruleId,
-			severity: intervention.severity,
-			style: intervention.style,
-			interventionType: intervention.interventionType,
-		}
-	}
-
-	/**
-	 * 阻断冷却是否已过期（基于实例 + 全局取较晚者）
-	 */
-	private isBlockingCooldownExpired(): boolean {
-		return Date.now() >= this.getBlockingEndsAt()
-	}
-
-	/**
-	 * 【F13】阻断冷却期的提醒也是一次「判定要干预」：把提醒文案与元数据一起交付，
-	 * 供 index.ts 同时落 `intervention_decision`（D）与 `intervention_copy`（T）两条记账。
-	 * 元数据取最近一次阻断干预（实例优先，退到全局，跨会话仍可对账）。
-	 */
-	private buildBlockingReminderDecision(): InterventionDecision {
-		const reminder = this.getBlockingReminderMessage()
-		const last = this.lastBlockingIntervention ?? TeachingInterventionManager.globalLastBlockingIntervention
-		return {
-			injectionText: reminder,
-			templateText: last?.content ?? reminder,
-			ruleId: last?.ruleId ?? "consecutive_code_generation",
-			severity: "strong",
-			style: "blocking",
-			interventionType: "blocking",
-		}
-	}
-
-	/**
-	 * 获取阻断剩余秒数
-	 */
-	private getBlockingRemainingSeconds(): number {
-		return Math.max(0, Math.ceil((this.getBlockingEndsAt() - Date.now()) / 1000))
-	}
-
-	/**
-	 * 检查当前是否处于阻断激活状态
-	 * 【v2.7】实例状态或全局跨会话状态任一激活即视为激活
-	 */
-	public isBlockingActive(): boolean {
-		if (this.blockingActive && !this.isBlockingCooldownExpired()) {
-			return true
-		}
-		return TeachingInterventionManager.globalBlockingEndsAt > Date.now()
-	}
-
-	/**
-	 * 获取阻断冷却结束时间戳（实例与全局取较晚者，全局跨会话延续）
-	 */
-	public getBlockingEndsAt(): number {
-		return Math.max(this.blockingEndsAt, TeachingInterventionManager.globalBlockingEndsAt)
-	}
-
-	/**
-	 * 跨会话获取全局阻断状态（供 Controller 倒计时组件读取，无需 Task 实例）。
-	 * 即使当前无任务（用户退出对话），只要全局阻断未过期即返回状态。
-	 */
-	public static getGlobalBlockingState(): { active: boolean; endsAt: number } | null {
-		if (TeachingInterventionManager.globalBlockingEndsAt > Date.now()) {
-			return { active: true, endsAt: TeachingInterventionManager.globalBlockingEndsAt }
-		}
-		return null
-	}
-
-	/**
-	 * 生成阻断冷却期间的提醒消息（含剩余时间）
-	 */
-	private getBlockingReminderMessage(): string {
-		const remaining = this.getBlockingRemainingSeconds()
-		const minutes = Math.floor(remaining / 60)
-		const seconds = remaining % 60
-		const timeDisplay = seconds > 0 ? `${minutes} 分 ${seconds} 秒` : `${minutes} 分钟`
-
-		// 【v2.7】实例无阻断消息时回退到全局（新建对话场景）
-		const lastIntervention = this.lastBlockingIntervention ?? TeachingInterventionManager.globalLastBlockingIntervention
-		if (lastIntervention) {
-			return [
-				`<teaching_intervention rule="${lastIntervention.ruleId}" severity="strong" style="blocking" interventionType="blocking">`,
-				`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】`,
-				"",
-				"系统仍处于阻断模式。代码生成与工具执行功能暂不可用。",
-				"",
-				"请继续完成之前的反思练习，或在编辑器中自主编写代码。",
-				`倒计时结束后系统将自动恢复功能。`,
-				"",
-				"如果你已经完成了反思练习，请在此输入你的答案，系统将在冷却结束后读取。",
-				"</teaching_intervention>",
-			].join("\n")
-		}
-
-		// 如果没有存储的阻断消息（极端情况），生成一个简单的
-		return [
-			`<teaching_intervention rule="consecutive_code_generation" severity="strong" style="blocking" interventionType="blocking">`,
-			`⏳ 【阻断冷却中 — 剩余 ${timeDisplay}】`,
-			"",
-			"系统处于阻断模式，代码生成与工具执行功能暂不可用。",
-			"请利用这段时间在编辑器中独立编写代码。",
-			"</teaching_intervention>",
-		].join("\n")
 	}
 
 	/**
@@ -529,8 +302,5 @@ export class TeachingInterventionManager {
 		this.lastInterventionAt = 0
 		this.lastInterventionTurnIndex = -Infinity
 		this.ruleCooldownUntil = {}
-		this.blockingActive = false
-		this.blockingEndsAt = 0
-		this.lastBlockingIntervention = null
 	}
 }

@@ -18,6 +18,7 @@ const stu = (raw: string): StudentInteractionLog =>
 	ev({ eventType: "turn_message", role: "user", hasCode: false, hasCodeBlock: false, rawContent: raw })
 const assistantCodeTurn = (): StudentInteractionLog =>
 	ev({ eventType: "turn_message", role: "assistant", hasCode: true, hasCodeBlock: true })
+const runtimeProp = (obj: object, key: string): unknown => (obj as unknown as Record<string, unknown>)[key]
 
 /** 造出「两条规则各一条警报同时在队」的局面：`no_edit_streak` + `consecutive_code_generation` */
 const twoAlertsPending = (): BehaviorMonitor => {
@@ -43,7 +44,7 @@ describe("【P7/T4】警报顺延（裁定 3）", () => {
 
 	it("★ 每次只展示一条，且被挤掉的规则最终仍会展示（不再丢失）", () => {
 		const m = twoAlertsPending()
-		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0, blockingCooldownMs: 60_000 })
+		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0 })
 		const initial = m.getPendingAlerts().length
 		expect(initial).to.be.greaterThan(1)
 
@@ -97,23 +98,17 @@ describe("【P7/T4】警报顺延（裁定 3）", () => {
 		expect(m.dropAlert(first)).to.equal(false) // 已经移除过
 	})
 
-	it("★ 阻断分支仍整队清空（陈年普通提示不应在解除阻断后突然冒出）", () => {
-		const m = new BehaviorMonitor("t1", { cooldownMs: 120_000 })
-		// 先制造一条普通提示
-		m.ingest(stu("第 1 次"))
-		m.ingest(assistantCodeTurn())
-		m.ingest(assistantCodeTurn())
-		m.ingest(assistantCodeTurn())
-		expect(m.getPendingAlerts().length).to.be.greaterThan(0)
+	it("★ 决策只消费当前这条警报，不会整队清空（不存在阻断式清队分支）", () => {
+		const m = twoAlertsPending()
+		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0 })
+		const initial = m.getPendingAlerts().length
 
-		// 再让独立通道达标 ⇒ 阻断
-		for (let i = 0; i < 3; i++) {
-			m.ingest(stu(`第 ${i + 2} 次：直接写进文件`))
-			m.ingest(ev({ eventType: "code_edit", category: "other", hasCode: false, hasCodeBlock: false, editor: "ai" }))
-		}
-		const mgr = new TeachingInterventionManager("t1", { globalCooldownMs: 0, blockingCooldownMs: 60_000 })
 		const decision = mgr.checkAndGenerateInterventionDecision(m, 10)
-		expect(decision?.interventionType).to.equal("blocking")
-		expect(m.getPendingAlerts()).to.have.length(0)
+		expect(decision, "仍有可展示的警报").to.not.equal(null)
+		// 软提示：决策类型恒为 normal，不存在阻断态
+		expect(decision?.interventionType).to.equal("normal")
+		expect(runtimeProp(mgr, "isBlockingActive")).to.equal(undefined)
+		// 只消费一条：其余警报仍留在队列里（旧实现会整队 consume）
+		expect(m.getPendingAlerts()).to.have.length(initial - 1)
 	})
 })
