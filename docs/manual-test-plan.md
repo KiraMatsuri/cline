@@ -118,3 +118,27 @@ npm run dev
 - 上表 **M-10、M-20、M-21、M-33、M-34、M-37** 任一失败即视为不可上线（核心链路）。
 - M-02 / M-03 / M-13 / M-36 / M-52 失败可降级发布，但需在实施计划 §11 风险表登记。
 - 自动化闸门必须先全绿，再跑本手册；本手册结果记到 `docs/manual-test-plan-results.md`（含日期、执行人、截图路径）。
+
+---
+
+## 8. 会话模式与指标（P1 双模式 + P2 行为加权）
+
+> 前置：按 §0 起教学端 / 看板后端 / 前端；另在「🧪 实验任务管理 → 📝 发布新任务」建一个带**模板**与**附件**的实验任务；
+> 学生工作区仍用 `D:\manual-ws`，另备一个**实验任务工作区**（由「开始实验」自动创建，形如 `<工作区>\experiments\<assignmentId>\`）。
+> 自动化对照：`docs/design/teaching-modes-and-behavior-metrics-plan.md` §9 的 18 条闸门 + `teaching-server/scripts/check-teaching-flow.mjs`。
+> 本节只写必须人看的界面/文案行为；自动化已覆盖的断言不重复。
+
+| 编号 | 用例 | 步骤 | 期望 |
+|---|---|---|---|
+| M-70 | 自由模式放行阶梯 | 在 `D:\manual-ws` 打开 Cline 面板（自由模式），连续 3 次要求「直接给我完整代码实现」 | 第 1~2 次：只给思路/关键步骤，**无完整实现**；第 3 次：给出完整代码且含**逐段中文注释**、结尾列出「需要你自己改的地方」；`D:\manual-ws\.cline-logs\student_interactions.log` **无新增行**（自由模式不落盘） |
+| M-71 | 自由模式运行痕迹 | 在 `D:\manual-ws` 终端故意跑出一次报错（`python main.py` 失败），再回面板提问「刚才为什么报错」 | `.cline-logs\run_traces.jsonl` 有新记录；助手回答能引用**具体报错信息/行号**，而不是泛泛而谈（BN-12 相关） |
+| M-72 | 任务详情面板 | 打开教学任务 tab，**单击**一条任务；再**双击**同一条任务 | 单击：侧边详情面板打开，显示指导书/模板/附件列表，附件正文可读、可下载；双击：**不再**在磁盘上创建任何文件（仅打开或聚焦面板） |
+| M-73 | 开始实验建目录 | 在任务 tab 点「开始实验」 | 生成 `experiments\<assignmentId>\`：含 `GUIDE.md`、`.teaching\task.json`、`attachments\`（有附件时）、`.cline-logs\`；`.teaching\task.json` 的 `template`/附件清单与任务配置一致；`GUIDE.md` **不含可运行完整实现**（只有步骤/要点/验收） |
+| M-74 | 实验模式日志与指标一致 | 在实验工作区完成若干轮问答（至少含 1 次概念提问、1 次报错求助、1 次 AI 给完整代码）→ 提交实验任务 → 打开报告页与看板 | `.cline-logs\student_interactions.log` 每条事件含 `mode:"experiment"`、`experimentId`、`behaviorType`/`behaviorWeight`/`behaviorSignals`（助手回合另含 `codeKind`）；报告页 `depIndex` 与看板同一学生/任务 `depIndex` 一致（±0.1%）；报告页 `metricsSchema="behavior-weighted/v1"` |
+| M-75 | 实验模式伪代码阶梯 | 在实验工作区连续 4 次索要「完整实现」 | 第 1~3 次：拒绝并给方向/关键步骤；第 4 次：给**伪代码**（逻辑完整但不可直接运行），且该轮日志 `behaviorType="design"`（不是 `ai_code`）；日志中 `behaviorSignals` 含 `demand_pending` / `demand_released` 标记 |
+| M-76 | 旧阻断场景不再阻断 | 连续 3 轮让 AI 写文件（原来会触发 `ai_coding_rounds` 阻断） | **不再出现横幅、不再中断回合**；最多出现一条软提示（hint/question 风格），回合照常继续；刷新旧聊天页也不显示残留阻断态（BN-36） |
+| M-77 | 三端指标一致 | 用同一份提交包分别看：①报告页 ②看板 `/api/dashboard/summary` ③`cd D:\web-dashboard\teaching-server; npx tsx scripts/check-metrics-spec.ts` | 报告页与看板的 `depIndex`/`selfCodingRatio`/`adoptionDeepening`/`guidanceEffect`/`errorResolutionRate`/`behaviorMix` 完全相同；`check-metrics-spec.ts` 全绿（三端 spec 逐字段相等）；`behaviorMix` 六类计数之和 = 六类事件数（`other` 不计入依赖度分子分母） |
+| M-78 | 旧口径徽标 | 用升级前的历史提交（库内 `metrics_schema='legacy'`）打开报告页 | 报告页显示「旧口径」徽标（黄色提示），新增 5 项指标显示「—」而不是 0；趋势图只连接新口径数据点，**不把 legacy 点混入** |
+| M-79 | 边界手工集 | ①发布任务时上传 10 个附件（含中文名/空格名）②任务描述填 `<script>alert(1)</script>` + Markdown 表格 ③面板里打开详情、再切回旧聊天页 | 10 个附件全部可见可下载、中文与空格文件名不乱码（BN-12）；描述按纯文本安全渲染（不执行脚本、表格不破版，BN-19）；旧聊天页无残留阻断横幅（BN-36） |
+
+**判定**：M-70 / M-74 / M-76 任一失败视为不可上线（核心链路：双模式与删阻断）；M-71~M-73、M-75、M-77~M-79 失败可降级发布，但需在实施计划风险表登记。

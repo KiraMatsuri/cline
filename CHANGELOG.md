@@ -1,5 +1,75 @@
 # Changelog
 
+## [Unreleased] — 2026-10-24
+
+### Added
+
+- **自由 / 实验双会话模式**（`src/core/teaching/TeachingSessionMode.ts`）：新增
+  `resolveSessionContext()` 从工作区 `.teaching/task.json` 判定模式（缺失/损坏一律判自由模式），
+  并提供 `logPersistEnabled()` / `guidancePolicy()` / `contextAssembly()` 三个判定点；Task 初始化时
+  `studentLogPersister.setEnabled(...)` + `setContext({ mode, experimentId })`，日志侧无需再自己猜模式。
+- **任务详情面板**（`AssignmentDetailPanelProvider` + `webview-ui/.../AssignmentDetailForm.tsx`）：
+  教学任务 tab 单击任务即在侧边打开详情（指导书 / 模板 / 附件列表 / 附件正文），附件下载走
+  `Content-Disposition: filename*=UTF-8''`，中文与空格文件名不再乱码；双击不再在磁盘上创建任何文件。
+- **实验子工作区**（`src/core/teaching/ExperimentWorkspace.ts`）：点「开始实验」在
+  `<工作区>/experiments/<任务id>/` 下生成 `GUIDE.md`、`.teaching/task.json`、`attachments/` 与
+  `.cline-logs/`；已有文件只补不覆盖，动手前弹确认，避免污染学生已有目录。
+- **实验指导生成与校验**（`src/core/teaching/experimentGuide.ts`）：`buildGuidePrompt` 生成 →
+  `validateGuide` 校验（禁止可运行完整实现、限制长度、拦占位符）→ 不合格时 `buildFallbackGuide`
+  模板兜底，`normalizeGuideMarkdown` 保证同一份 GUIDE 在不同模型输出下格式稳定。
+- **六类行为分类**（`src/core/teaching/behavior/behaviorClassify.ts`）：
+  `classifyStudentMessage()` / `classifyAssistantTurn()` / `detectCodeKind()`；学生消息判
+  concept / design / error_help / self_code，助手回合判 ai_code / other，并单独识别代码块种类
+  （`full` / `pseudo_complete` / `pseudo_partial` / `snippet`）。`pseudo_complete` 用「签名或 ≥3 步、
+  ≥2 处控制流、输入输出、任务要点命中」四类信号打分（≥3 分才升格），出现 TODO/省略等占位符一律
+  降为 `pseudo_partial`（BN-33）。信号写入 `behaviorSignals`（≤120 字）保证可回溯。
+- **三端统一的行为加权指标 spec**（`src/core/teaching/behavior/metricsSpec.ts`，权威实现）：
+  `METRICS_SCHEMA="behavior-weighted/v1"`、权重 `concept .25 / design .75 / error_help 1.0 /
+  self_code 0 / ai_code 1.2`，`depIndex=Σ(w×count)/(1.2×N)`（`other` 不进分子分母）、
+  `selfCodingRatio`、`adoptionDeepening`（5 轮窗口）、`guidanceEffect`、`errorResolutionRate`
+  （5 轮窗口）、`behaviorMix`；窗口距离 0（同 turnIndex、数组靠后）计入、turnIndex 倒退不计入。
+- **问题预召回**：每次提问先向 wiki 检索（top3、累计 1600 字）并注入 system prompt，
+  替代原来「按当前教学周整章塞索引」的做法。
+- **附件正文读取**（`src/core/teaching/submission/attachmentText.ts`）：提交包之外，任务详情也能读
+  md/txt/pdf/docx/pptx/xlsx 正文，超长截断并标注。
+- **软提示 6 条**（`design_stall` / `same_error_twice` / `full_impl_demand` / `ai_code_streak` /
+  `concept_streak` / `error_no_progress`）：全部是 hint/question 级提示，只在本回合 system prompt
+  追加，**永不跳过 API 请求、永不阻止后续输入**；同一请求同一规则最多 1 条（BN-37 只出优先级最高的
+  一条），冷却 120 秒。
+- 文档：`docs/design/teaching-modes-and-behavior-metrics-design.md`、
+  `docs/design/teaching-modes-and-behavior-metrics-plan.md`、`docs/design/metrics-spec.md`（三端契约）；
+  `docs/manual-test-plan.md` 新增 §8（M-70~M-79）。
+
+### Changed
+
+- **删除「当前教学周」全部入口**：配置项、状态栏、MCP `--week` 参数、共享 `teaching-week.json` 与
+  `WikiWeekSelector` / `AssignmentHeader` 组件、`weekStateFile` / `weekStatePath` / `weekSwitchNotice`
+  三个模块一并删除；wiki 改为**按提问召回**（`LLMWikiService.fetchScope` / `index`），旧请求里的
+  `week` / `max_week` 参数接受但忽略，返回 `meta.week_ignored`。
+- **删除 60 秒阻断式干预**：`TeachingInterventionManager` 不再有 `triggerBlocking` / `isBlockingActive` /
+  `getBlockingEndsAt` 等成员，`BehaviorMonitor` 去掉升级阈值与阻断判定，`rulePolicy` 去掉阻断白名单；
+  改为六条软提示（见 Added）。webview 侧 `TeachingBlockingBanner` 与 `ExtensionMessage.teachingBlocking`
+  状态一并删除，历史消息里的阻断字段只保留读兼容。
+- **索要阶梯改为 3/4 次语义**：自由模式第 3 次索要完整实现时放行（要求逐段中文注释）；实验模式永不
+  给可运行完整实现，第 4 次才给伪代码。计数按任务持久化，`self_code`、切模式、新 taskId 均清零，
+  一条消息里多次索要只计 1 次（BN-30）。
+- **AI 依赖度改为行为加权公式**：`ai_dependency` 由 `depIndex` 计算，旧 `queryType` 保留并映射
+  （concept→concept / coding→design / other→other）用于旧日志回退（BN-34/35）。
+- **教学上下文装配改为配额制**（`src/core/teaching/TeachingContext.ts`）：总预算 6000 字，
+  guide 3000 / attachments 1500 / template 800 / recall 700，按固定顺序装配、超配额丢尾部，
+  并返回 `sections` / `totalChars` / `dropped` 便于排查；实验模式额外注入「只给方向、不给完整实现」
+  硬约束段。
+
+### Fixed
+
+- **实验模式下 `ai_code` 恒为 0**：旧逻辑只看 `hasFullImpl` 与 `queryType`，实验模式答案多为伪代码/片段
+  且 `queryType` 不含助手事件 → 现按「助手回合行为分类 + codeKind + 写文件工具」判定，伪代码完整逻辑
+  计入 `ai_code`（Q2 口径），不再漏计。
+- **`wikiPrompt` 周字样误导模型**：提示词不再出现「当前教学周 / 第 N 周」字样，避免模型把检索结果
+  当成周内资料。
+- **`AssignmentManager` 附件下载回执前端无接收**：详情面板接管下载回执并渲染下载按钮/错误提示，
+  不再出现「点了没反应」。
+
 ## [Unreleased] — 2026-10-18
 
 ### Added
