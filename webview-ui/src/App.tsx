@@ -9,6 +9,7 @@ import SettingsView from "./components/settings/SettingsView"
 import { AssignmentErrorBoundary } from "./components/teaching/AssignmentErrorBoundary"
 import AssignmentTab from "./components/teaching/AssignmentTab"
 import FeedbackForm from "./components/teaching/FeedbackForm"
+import AssignmentDetailForm from "./components/teaching/AssignmentDetailForm"
 import LLMSettingsView from "./components/teaching/LLMSettingsView"
 import ThinkingQuestionsForm from "./components/teaching/ThinkingQuestionsForm"
 import WorktreesView from "./components/worktrees/WorktreesView"
@@ -46,6 +47,12 @@ const AppContent = () => {
 	// 点击上传后先出题、答完确认才真正上传（需求 2 两段式提交）
 	if (currentView === "clineThinkingQuestionsPanel") {
 		return <ThinkingQuestionsForm />
+	}
+
+	// 【P1-2 增量】编辑器区任务详情面板（AssignmentDetailPanelProvider 创建）：
+	// 点任务卡片 → 展示指导书/附件/模板 + 「开始实验」
+	if (currentView === "clineAssignmentDetailPanel") {
+		return <AssignmentDetailForm />
 	}
 
 	const {

@@ -320,29 +320,6 @@ const AssignmentTab: FC = () => {
 	// 折叠/展开状态：实验任务列表和学生信息
 	const [showTaskList, setShowTaskList] = useState(true)
 
-	// 【v2.3 增量】学习进度（教学周数 1~18）。LLMWikiService.fetchWikiForWeek
-	// 会按此周数在主对话 RAG 注入 Wiki 资料。此处放在底部紧凑控件，
-	// 避免与"获取实验任务"按钮功能区视觉上重叠。
-	const [currentWeek, setCurrentWeek] = useState<number>(() => {
-		// 持久化：从 VS Code 全局状态恢复
-		try {
-			const saved = cachedVsCodeApi?.getState?.()
-			const w = (saved as { teachingCurrentWeek?: number } | undefined)?.teachingCurrentWeek
-			if (typeof w === "number" && w >= 1 && w <= 18) return w
-		} catch {
-			// 忽略状态读取异常
-		}
-		return 1
-	})
-	const onWeekChange = useCallback((week: number) => {
-		setCurrentWeek(week)
-		try {
-			cachedVsCodeApi?.setState?.({ teachingCurrentWeek: week })
-		} catch {
-			// 状态写入失败不影响 UI
-		}
-	}, [])
-
 	// ========================================================================
 	//  消息监听：接收 Extension 后台发来的响应
 	// ========================================================================
@@ -563,33 +540,30 @@ const AssignmentTab: FC = () => {
 	}, [])
 
 	// ========================================================================
-	//  ②.b 【v2.3 增量】双击任务项 → 创建单个源码文件
+	//  ②.b 【P1-2】单击任务项 → 打开编辑器区「任务详情」面板
 	// ========================================================================
 
 	/**
-	 * 【IPC 消息：createOneFile】
-	 * 向 Extension 后台发送"为单个任务创建源码文件"请求。
+	 * 【IPC 消息：openAssignmentDetail】
+	 * 单击任务 → 打开编辑器区面板（实验要求 / 实验指导书 / 附件 / 开始实验）。
 	 *
 	 * 消息流转：
 	 *   AssignmentTab (Webview)
-	 *     → postMessage({ command: 'createOneFile', payload: { assignmentId } })
-	 *     → AssignmentManager.handleCreateOneFile()
-	 *     → 在当前工作区创建 ${assignment.id}_experiment.py
-	 *     → postMessage() 返回创建结果
+	 *     → postMessage({ command: 'openAssignmentDetail', payload: { assignmentId } })
+	 *     → AssignmentManager.handleOpenAssignmentDetail()
+	 *     → 拉取指导书正文（附件 /text）+ 判定是否已开始实验
+	 *     → AssignmentDetailPanelProvider.reveal(载荷)
 	 *
-	 * 设计动机：v2.3 前 fetchAssignments 会一次性创建所有任务文件，
-	 * 不利于"一个任务一个独立工作区"的学生；改为按需创建。
+	 * 取代了 v2.3 的「双击任务 → 在工作区根目录建一个源码文件」——
+	 * 实验任务现在有独立子工作区（experiments/<任务 id>/），入口统一在详情面板的「开始实验」。
 	 */
-	const handleCreateOne = useCallback(
+	const handleOpenDetail = useCallback(
 		(assignment: Assignment) => {
 			if (!vscodeApi) return
-			setStatusMessage({
-				type: "info",
-				text: `⏳ 正在为「${assignment.title}」创建源码文件...`,
-			})
+			setSelectedTask(assignment)
 			vscodeApi.postMessage({
 				type: "assignment_command",
-				command: "createOneFile",
+				command: "openAssignmentDetail",
 				payload: { assignmentId: assignment.id },
 			})
 		},
@@ -820,15 +794,13 @@ const AssignmentTab: FC = () => {
 						assignments.map((task) => (
 							<div
 								key={task.id}
-								onClick={() => handleSelectTask(task)}
-								// 【v2.3 增量】双击任务项 → 在当前工作区创建对应的源码文件
-								onDoubleClick={() => handleCreateOne(task)}
+								onClick={() => handleOpenDetail(task)}
 								style={{
 									...styles.taskCard,
 									...(selectedTask?.id === task.id ? styles.taskCardSelected : {}),
-									userSelect: "none", // 避免双击时误选中文本
+									userSelect: "none",
 								}}
-								title="单击查看任务详情，双击创建源码文件">
+								title="单击打开任务详情（实验指导、附件、开始实验）">
 								<p style={styles.taskTitle}>{task.title}</p>
 								<div style={styles.taskMeta}>
 									<span style={styles.badge}>第 {task.week} 周</span>
@@ -919,44 +891,6 @@ const AssignmentTab: FC = () => {
 			{/* ================================================================ */}
 
 			<div style={styles.divider} />
-
-			{/* ----- 【v2.3 增量】底部紧凑：学习进度（教学周数）----- */}
-			<div
-				style={{
-					display: "flex",
-					alignItems: "center",
-					gap: 8,
-					padding: "4px 0",
-				}}>
-				<label
-					htmlFor="teaching-week-select"
-					style={{
-						fontSize: 11,
-						color: "var(--vscode-descriptionForeground)",
-						fontWeight: 600,
-					}}>
-					📅 学习进度
-				</label>
-				<select
-					id="teaching-week-select"
-					onChange={(e) => onWeekChange(Number(e.target.value))}
-					style={{
-						flex: 1,
-						padding: "3px 6px",
-						background: "var(--vscode-input-background)",
-						color: "var(--vscode-input-foreground)",
-						border: "1px solid var(--vscode-input-border)",
-						borderRadius: 3,
-						fontSize: 11,
-					}}
-					value={currentWeek}>
-					{Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
-						<option key={w} value={w}>
-							第 {w} 周
-						</option>
-					))}
-				</select>
-			</div>
 
 			<div style={styles.divider} />
 

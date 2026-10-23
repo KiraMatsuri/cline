@@ -45,6 +45,11 @@ import type {
 	ThinkingQuestionsPayload,
 } from "./submission/bundleTypes"
 import { sliceLogForUpload } from "./submission/logSlicer"
+import {
+	type AttachmentTextError,
+	type AttachmentTextOk,
+	fetchAttachmentText,
+} from "./submission/attachmentText"
 import type { QuestionCountPolicy } from "./submission/QuestionCountPolicy"
 import { generateThinkingQuestions } from "./submission/QuestionGenerator"
 import { describeLLMFailure, isAuthFailure, resolveQuestionLLMTargets } from "./submission/questionLLM"
@@ -61,6 +66,20 @@ import {
 import { redactForFile } from "./submission/secrets"
 import type { QuestionSignals } from "./submission/thinkingQuestions"
 import { ensureStudentLogFile, resolveStudentLogFile } from "./workspaceLogPath"
+import { type AssignmentDetailPayload, buildAssignmentDetailPayload, pickGuideAttachment } from "./assignmentDetail"
+import {
+	ensureExperimentWorkspace,
+	EXPERIMENT_ATTACHMENT_DIR,
+	experimentDirFor,
+	readExperimentTaskFile,
+} from "./ExperimentWorkspace"
+import {
+	buildFallbackGuide,
+	buildGuidePrompt,
+	type GuideRequest,
+	normalizeGuideMarkdown,
+	validateGuide,
+} from "./experimentGuide"
 
 // ============================================================================
 //  类型定义
@@ -124,6 +143,9 @@ export interface AssignmentMessage {
 		| "prepareSubmission"
 		| "confirmSubmission"
 		| "cancelSubmission"
+		// 【P1-2 任务详情面板】单击任务 → 编辑器区面板展示要求/指导书/附件 → 开始实验
+		| "openAssignmentDetail"
+		| "startExperiment"
 	payload?: Record<string, unknown>
 }
 
@@ -182,6 +204,15 @@ export type ThinkingPanelOpener = (
 	payload: ThinkingQuestionsPayload,
 	onConfirm: (answers: BundleAnswer[]) => Promise<ThinkingConfirmResult>,
 ) => void
+
+/** 详情面板的两种反向调用（面板 → 扩展） */
+export interface AssignmentDetailHandlers {
+	openAttachment: (attachmentId: number) => Promise<{ ok: boolean; message?: string }>
+	startExperiment: () => Promise<{ ok: boolean; message?: string; experimentDir?: string }>
+}
+
+/** 宿主注入任务详情面板（复用 AssignmentDetailPanelProvider 单例） */
+export type DetailPanelOpener = (payload: AssignmentDetailPayload, handlers: AssignmentDetailHandlers) => void
 
 /** 统计文本行数（末尾换行不算空行），用于打码后重算 lineCount */
 function countTextLines(text: string): number {
@@ -258,6 +289,10 @@ export class AssignmentManager {
 	/** 【v2.13】待提交内容与答题面板回调（点击上传后暂存，确认后才上传） */
 	private pendingSubmission: PendingSubmission | null = null
 	private panelOpener: ThinkingPanelOpener | null = null
+	/** 任务详情面板（P1-2）：宿主注入的打开器 + 当前展示的任务与指导书正文 */
+	private detailOpener: DetailPanelOpener | null = null
+	private detailAssignment: Assignment | null = null
+	private detailGuideText: string | undefined
 	/** 上传互斥：面板连点/重复确认时只允许一个在飞 */
 	private uploadInFlight = false
 
@@ -539,6 +574,18 @@ export class AssignmentManager {
 					break
 				}
 
+				case "openAssignmentDetail": {
+					const assignmentId = typeof payload["assignmentId"] === "string" ? (payload["assignmentId"] as string) : ""
+					await this.handleOpenAssignmentDetail({ assignmentId }, postMessage)
+					break
+				}
+
+				case "startExperiment": {
+					const result = await this.startExperiment()
+					postMessage({ command: "startExperiment", success: result.ok, data: result, error: result.message })
+					break
+				}
+
 				case "openFile": {
 					const filePath = typeof payload["filePath"] === "string" ? (payload["filePath"] as string) : ""
 					await this.handleOpenFile({ filePath }, postMessage)
@@ -631,6 +678,219 @@ export class AssignmentManager {
 
 	public cancelPendingSubmission(): void {
 		this.pendingSubmission = null
+	}
+
+	// ============================================================================
+	//  【P1-2】任务详情面板：单击任务 → 面板展示要求 / 指导书 / 附件 → 开始实验
+	// ============================================================================
+
+	/** 宿主注入详情面板打开器（VscodeWebviewProvider） */
+	public attachDetailPanelOpener(opener: DetailPanelOpener | null): void {
+		this.detailOpener = opener
+	}
+
+	/**
+	 * 打开任务详情面板。
+	 *
+	 * 指导书正文取自附件里优先级最高的那个可解析文件（md > docx > doc > pdf > txt）；
+	 * 解析失败不阻断展示 —— 面板仍可下载附件，只是没有内联正文（给出 notice）。
+	 */
+	private async handleOpenAssignmentDetail(
+		{ assignmentId }: { assignmentId: string },
+		postMessage: (response: AssignmentResponse) => void,
+	): Promise<void> {
+		try {
+			if (!assignmentId) {
+				throw new Error("缺少任务 id")
+			}
+
+			const workspaceFolders = vscode.workspace.workspaceFolders
+			if (!workspaceFolders || workspaceFolders.length === 0) {
+				throw new Error("未打开工作区")
+			}
+			const workspaceRoot = workspaceFolders[0].uri.fsPath
+
+			const assignment = await this.resolveAssignmentById(assignmentId)
+			if (!assignment) {
+				throw new Error("未找到实验任务（可能已被教师删除）")
+			}
+
+			// ----- 指导书正文 -----
+			let guide: { text: string; attachmentName?: string } | undefined
+			let guideNotice: string | undefined
+			const attachmentInputs = (assignment.attachments ?? []).map((a) => ({
+				id: a.id,
+				name: a.original_name,
+				size: a.file_size,
+				mimeType: a.mime_type,
+			}))
+			const picked = pickGuideAttachment(attachmentInputs)
+			if (!picked) {
+				guideNotice = "本任务未提供可内联阅读的实验指导书附件（可下载附件查看）"
+			} else {
+				const res = await this.fetchAttachmentText(assignmentId, picked.id)
+				if (res.ok) {
+					guide = { text: res.text, attachmentName: picked.name }
+				} else {
+					guideNotice = `实验指导书解析失败（${res.error}），请下载附件查看`
+				}
+			}
+
+			// ----- 是否已开始实验 -----
+			const experimentDir = this.findExperimentDir(workspaceRoot, assignmentId) ?? undefined
+			const built = buildAssignmentDetailPayload({
+				assignment: {
+					id: assignment.id,
+					title: assignment.title,
+					week: assignment.week,
+					description: assignment.description,
+					template_code: assignment.template_code,
+					attachments: attachmentInputs,
+				},
+				apiBase: this.apiBase,
+				guide,
+				guideNotice,
+				started: Boolean(experimentDir),
+				experimentDir,
+			})
+
+			if (!built.ok) {
+				throw new Error(built.error)
+			}
+
+			this.detailAssignment = assignment
+			this.detailGuideText = guide?.text
+
+			if (!this.detailOpener) {
+				throw new Error("详情面板不可用（宿主未注入）")
+			}
+			this.detailOpener(built.payload, {
+				openAttachment: (attachmentId) => this.openAttachmentFromPanel(attachmentId),
+				startExperiment: () => this.startExperiment(),
+			})
+
+			postMessage({ command: "openAssignmentDetail", success: true, assignmentId })
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error)
+			vscode.window.showErrorMessage(`❌ 打开任务详情失败: ${msg}`)
+			postMessage({ command: "openAssignmentDetail", success: false, error: msg })
+		}
+	}
+
+	/** 详情面板里点附件：下载并按已有规则落盘/打开 */
+	private async openAttachmentFromPanel(attachmentId: number): Promise<{ ok: boolean; message?: string }> {
+		try {
+			const assignment = this.detailAssignment
+			if (!assignment) {
+				return { ok: false, message: "当前没有打开的任务" }
+			}
+			const attachment = (assignment.attachments ?? []).find((a) => a.id === attachmentId)
+			const result = await this.downloadAttachmentFile(
+				assignment.id,
+				attachmentId,
+				attachment?.original_name,
+			)
+			return { ok: true, message: result.safeFileName }
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error)
+			return { ok: false, message: msg }
+		}
+	}
+
+	/**
+	 * 生成实验指导书正文（P1-4）。
+	 *
+	 * 模型不可用、超时、或输出越界（给完整实现）时**一律降级**为结构模板：
+	 * 指导书是学生进入实验的第一屏，宁可是通用步骤，也不能是空文件或带答案的代码。
+	 */
+	private async buildExperimentGuide(assignment: Assignment): Promise<string> {
+		const req: GuideRequest = {
+			assignmentTitle: assignment.title,
+			assignmentDescription: assignment.description,
+			teacherGuide: this.detailGuideText,
+			templateCode: assignment.template_code,
+			snippets: [],
+		}
+		const fallback = buildFallbackGuide(req)
+
+		const caller = this.createQuestionLLMCaller()
+		if (!caller) {
+			return fallback
+		}
+
+		const { system, user } = buildGuidePrompt(req)
+		try {
+			const text = await Promise.race([
+				caller.complete(system, user),
+				new Promise<string>((_, reject) => setTimeout(() => reject(new Error("生成实验指导超时（30s）")), 30_000)),
+			])
+			const normalized = normalizeGuideMarkdown(text, assignment.title)
+			if (!normalized) {
+				return fallback
+			}
+			const validation = validateGuide(normalized)
+			if (!validation.ok) {
+				Logger.warn("[AssignmentManager] 实验指导越界，已按校验结果降级", validation.violations)
+				const repaired = normalizeGuideMarkdown(validation.sanitized, assignment.title)
+				return repaired || fallback
+			}
+			return normalized
+		} catch (error) {
+			Logger.warn("[AssignmentManager] 生成实验指导失败，使用结构模板", error)
+			return fallback
+		}
+	}
+
+	/**
+	 * 开始实验（P1-3）：建独立子工作区 + 模板 + GUIDE.md + 实验日志，
+	 * 随后打开模板文件。幂等：已有目录只补缺失文件，绝不覆盖学生改动。
+	 */
+	public async startExperiment(): Promise<{ ok: boolean; message?: string; experimentDir?: string }> {
+		try {
+			const assignment = this.detailAssignment
+			if (!assignment) {
+				return { ok: false, message: "当前没有打开的任务，请先点击任务" }
+			}
+			const workspaceFolders = vscode.workspace.workspaceFolders
+			if (!workspaceFolders || workspaceFolders.length === 0) {
+				return { ok: false, message: "未打开工作区，无法创建实验目录" }
+			}
+			const workspaceRoot = workspaceFolders[0].uri.fsPath
+
+			// 已建过实验目录就不再生成指导书（学生可能已经改过 GUIDE.md）
+			const dir = experimentDirFor(workspaceRoot, assignment.id)
+			const existed = Boolean(readExperimentTaskFile(dir))
+			const guideText = existed ? this.detailGuideText : await this.buildExperimentGuide(assignment)
+
+			const res = ensureExperimentWorkspace({
+				workspaceRoot,
+				assignmentId: assignment.id,
+				templateCode: assignment.template_code,
+				assignmentTitle: assignment.title,
+				guideText,
+			})
+			if (!res.ok) {
+				return { ok: false, message: res.error ?? "创建实验目录失败" }
+			}
+
+			// 打开模板文件，让学生的注意力落在该改的文件上
+			try {
+				const uri = vscode.Uri.file(res.templatePath)
+				const document = await vscode.workspace.openTextDocument(uri)
+				await vscode.window.showTextDocument(document, { preview: false })
+			} catch (error) {
+				Logger.warn("[AssignmentManager] 打开模板文件失败", error)
+			}
+
+			vscode.window.showInformationMessage(
+				res.created ? `🧪 实验已开始：${assignment.title}` : `🧪 已回到实验：${assignment.title}`,
+			)
+			return { ok: true, experimentDir: res.dir }
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error)
+			vscode.window.showErrorMessage(`❌ 开始实验失败: ${msg}`)
+			return { ok: false, message: msg }
+		}
 	}
 
 	/**
@@ -1296,6 +1556,20 @@ export class AssignmentManager {
 	}
 
 	/**
+	 * 【P0-4】读取附件正文（任务详情面板要直接显示实验指导书）。
+	 *
+	 * 解析在教学端完成（md/txt/pdf/docx/pptx），这里只负责取回；**失败不抛**，
+	 * 面板据 `unsupported` 决定显示「无法预览，可下载」还是红条提示。
+	 */
+	public async fetchAttachmentText(
+		assignmentId: string,
+		attachmentId: string | number,
+		opts: { maxChars?: number } = {},
+	): Promise<AttachmentTextOk | AttachmentTextError> {
+		return fetchAttachmentText(this.apiBase, assignmentId, attachmentId, opts)
+	}
+
+	/**
 	 * 【附件下载】Webview 点击附件 → 从后端下载附件到本地工作区并打开。
 	 *
 	 * 背景：附件实际存储在 teaching-server 的 uploads/ 目录，学生本地工作区
@@ -1313,65 +1587,7 @@ export class AssignmentManager {
 			if (!assignmentId || !fileId) {
 				throw new Error("缺少附件下载参数")
 			}
-
-			// ----- 校验工作区是否打开 -----
-			const workspaceFolders = vscode.workspace.workspaceFolders
-			if (!workspaceFolders || workspaceFolders.length === 0) {
-				throw new Error("未打开工作区，无法保存附件")
-			}
-			const workspaceRoot = workspaceFolders[0].uri.fsPath
-
-			// ----- 调用后端下载接口（返回二进制流） -----
-			const downloadUrl = `${this.apiBase}/api/v1/assignments/${encodeURIComponent(
-				assignmentId,
-			)}/attachments/${fileId}/download`
-			const response = await this.fetchWithRetry(downloadUrl, {
-				method: "GET",
-			})
-			if (!response.ok) {
-				throw new Error(`附件下载失败: HTTP ${response.status}`)
-			}
-
-			// ----- 文件名解析 -----
-			// 优先使用 webview 传入的 originalName（任务列表中的原始文件名，中文正常）。
-			// 后端 res.download 的 Content-Disposition 对中文会做 latin1+UTF-8 双重编码
-			// （filename*=UTF-8''%C3%A5...），解析后反而是乱码，故仅作为兜底。
-			let fileName = originalName || ""
-			if (!fileName) {
-				const disposition = response.headers.get("content-disposition") ?? ""
-				const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
-				const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
-				if (utf8Match) {
-					try {
-						fileName = decodeURIComponent(utf8Match[1])
-					} catch {
-						fileName = utf8Match[1]
-					}
-				} else if (plainMatch) {
-					fileName = plainMatch[1]
-				}
-			}
-			if (!fileName) {
-				fileName = `attachment_${fileId}`
-			}
-			// 文件名安全过滤（防止路径穿越）
-			const safeFileName = path.basename(fileName).replace(/[\\/:*?"<>|]/g, "_")
-
-			// ----- 写入工作区根目录 -----
-			const targetPath = path.join(workspaceRoot, safeFileName)
-			const buffer = Buffer.from(await response.arrayBuffer())
-			fs.writeFileSync(targetPath, buffer)
-
-			// ----- 打开文件（PDF 等二进制用 showTextDocument 可能乱码，走系统默认应用） -----
-			const uri = vscode.Uri.file(targetPath)
-			const isTextLike = /\.(txt|md|py|js|ts|json|c|cpp|h|java|html|css|xml|yml|yaml|log|sql|sh)$/i.test(safeFileName)
-			if (isTextLike) {
-				const document = await vscode.workspace.openTextDocument(uri)
-				await vscode.window.showTextDocument(document, { preview: false })
-			} else {
-				await vscode.commands.executeCommand("vscode.open", uri)
-			}
-
+			const { targetPath, safeFileName } = await this.downloadAttachmentFile(assignmentId, fileId, originalName)
 			vscode.window.showInformationMessage(`📄 已下载附件: ${safeFileName}`)
 			postMessage({
 				command: "downloadAttachment",
@@ -1382,6 +1598,91 @@ export class AssignmentManager {
 			const msg = error instanceof Error ? error.message : String(error)
 			vscode.window.showErrorMessage(`❌ 下载附件失败: ${msg}`)
 			postMessage({ command: "downloadAttachment", success: false, error: msg })
+		}
+	}
+
+	/**
+	 * 【附件下载 · 实体】下载 → 落盘 → 打开。
+	 *
+	 * 从 `handleDownloadAttachment` 抽出来，供详情面板复用（面板不带 webview 回执）。
+	 * 实验模式已开始时优先落到 `<实验目录>/attachments/`，让学生的实验目录保持自洽。
+	 */
+	private async downloadAttachmentFile(
+		assignmentId: string,
+		fileId: number,
+		originalName?: string,
+	): Promise<{ targetPath: string; safeFileName: string }> {
+		// ----- 校验工作区是否打开 -----
+		const workspaceFolders = vscode.workspace.workspaceFolders
+		if (!workspaceFolders || workspaceFolders.length === 0) {
+			throw new Error("未打开工作区，无法保存附件")
+		}
+		const workspaceRoot = workspaceFolders[0].uri.fsPath
+
+		// ----- 调用后端下载接口（返回二进制流） -----
+		const downloadUrl = `${this.apiBase}/api/v1/assignments/${encodeURIComponent(
+			assignmentId,
+		)}/attachments/${fileId}/download`
+		const response = await this.fetchWithRetry(downloadUrl, {
+			method: "GET",
+		})
+		if (!response.ok) {
+			throw new Error(`附件下载失败: HTTP ${response.status}`)
+		}
+
+		// ----- 文件名解析 -----
+		// 优先使用 webview 传入的 originalName（任务列表中的原始文件名，中文正常）。
+		// 后端 res.download 的 Content-Disposition 对中文会做 latin1+UTF-8 双重编码
+		// （filename*=UTF-8''%C3%A5...），解析后反而是乱码，故仅作为兜底。
+		let fileName = originalName || ""
+		if (!fileName) {
+			const disposition = response.headers.get("content-disposition") ?? ""
+			const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+			const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
+			if (utf8Match) {
+				try {
+					fileName = decodeURIComponent(utf8Match[1])
+				} catch {
+					fileName = utf8Match[1]
+				}
+			} else if (plainMatch) {
+				fileName = plainMatch[1]
+			}
+		}
+		if (!fileName) {
+			fileName = `attachment_${fileId}`
+		}
+		// 文件名安全过滤（防止路径穿越）
+		const safeFileName = path.basename(fileName).replace(/[\\/:*?"<>|]/g, "_")
+
+		// ----- 决定落盘目录：已开始实验 → 实验目录的 attachments/ -----
+		const experimentDir = this.findExperimentDir(workspaceRoot, assignmentId)
+		const targetDir = experimentDir ? path.join(experimentDir, EXPERIMENT_ATTACHMENT_DIR) : workspaceRoot
+		fs.mkdirSync(targetDir, { recursive: true })
+		const targetPath = path.join(targetDir, safeFileName)
+		const buffer = Buffer.from(await response.arrayBuffer())
+		fs.writeFileSync(targetPath, buffer)
+
+		// ----- 打开文件（PDF 等二进制用 showTextDocument 可能乱码，走系统默认应用） -----
+		const uri = vscode.Uri.file(targetPath)
+		const isTextLike = /\.(txt|md|py|js|ts|json|c|cpp|h|java|html|css|xml|yml|yaml|log|sql|sh)$/i.test(safeFileName)
+		if (isTextLike) {
+			const document = await vscode.workspace.openTextDocument(uri)
+			await vscode.window.showTextDocument(document, { preview: false })
+		} else {
+			await vscode.commands.executeCommand("vscode.open", uri)
+		}
+
+		return { targetPath, safeFileName }
+	}
+
+	/** 找已建好的实验目录（不存在返回 null） */
+	private findExperimentDir(workspaceRoot: string, assignmentId: string): string | null {
+		const dir = experimentDirFor(workspaceRoot, assignmentId)
+		try {
+			return readExperimentTaskFile(dir) ? dir : null
+		} catch {
+			return null
 		}
 	}
 

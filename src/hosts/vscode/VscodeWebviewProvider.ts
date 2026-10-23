@@ -8,6 +8,7 @@ import { LLMWikiService } from "@/core/teaching/LLMWikiService"
 import { RunTraceCollector } from "@/core/teaching/submission/RunTraceCollector"
 import { HostProvider } from "@/hosts/host-provider"
 import { ThinkingQuestionsPanelProvider } from "@/hosts/vscode/ThinkingQuestionsPanelProvider"
+import { AssignmentDetailPanelProvider } from "@/hosts/vscode/AssignmentDetailPanelProvider"
 import { ExtensionRegistryInfo } from "@/registry"
 import type { ExtensionMessage } from "@/shared/ExtensionMessage"
 import { Logger } from "@/shared/services/Logger"
@@ -18,8 +19,7 @@ import { WebviewMessage } from "@/shared/WebviewMessage"
  * Webview → Extension 单向消息，response 通过 postMessageToWebview 回传
  */
 export type WikiCommand =
-	| { type: "wiki_command"; command: "switchWeek"; week: number }
-	| { type: "wiki_command"; command: "fetchWiki"; week: number }
+	| { type: "wiki_command"; command: "fetchWiki" }
 	| { type: "wiki_command"; command: "updateServerUrl"; url: string }
 	| { type: "wiki_command"; command: "loadHeaderState" }
 	| { type: "wiki_command"; command: "loadLLMSettings" }
@@ -81,6 +81,16 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 	private thinkingQuestionsPanel = (() => {
 		const provider = ThinkingQuestionsPanelProvider.getInstance(this.context.extensionUri)
 		this.assignmentManager.attachPanelOpener((payload, onConfirm) => provider.reveal(payload, onConfirm))
+		return provider
+	})()
+
+	/**
+	 * 【P1-2】任务详情面板：单击侧栏任务 → 编辑器区面板展示要求/指导书/附件，
+	 * 并提供「开始实验」。同样把面板生命周期留在宿主层，manager 只认载荷与回调。
+	 */
+	private assignmentDetailPanel = (() => {
+		const provider = AssignmentDetailPanelProvider.getInstance(this.context.extensionUri)
+		this.assignmentManager.attachDetailPanelOpener((payload, handlers) => provider.reveal(payload, handlers))
 		return provider
 	})()
 
@@ -309,31 +319,19 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		try {
 			switch (msg.command) {
 				case "loadHeaderState": {
-					// 返回当前生效的 serverUrl + currentWeek（用于 Header 初始化回填）
+					// 返回当前生效的 serverUrl（v3 起不再有教学周）
 					respond("loadHeaderState", true, {
-						week: llm.getCurrentWeek(),
 						serverUrl: llm.getServerUrl(),
 					})
 					return
 				}
 
-				case "switchWeek": {
-					// 周数切换：拉取 ≤ 当前周 的所有 wiki chunk
-					const chunks = await llm.fetchWikiForWeek(msg.week)
-					vscode.window.showInformationMessage(
-						`已成功载入第 ${msg.week} 周及之前的教学资料（共 ${chunks.length} 条）！`,
-					)
-					respond("switchWeek", true, { week: msg.week, count: chunks.length })
-					return
-				}
-
 				case "fetchWiki": {
-					// "获取任务"按钮（与 switchWeek 等价，但不下拉提示）
-					const chunks = await llm.fetchWikiForWeek(msg.week)
+					// 【v3】一次性载入全部已发布资料（不再有 week 参数）
+					const chunks = await llm.fetchWiki()
 					respond("fetchWiki", true, {
-						week: msg.week,
 						count: chunks.length,
-						message: `已载入第 ${msg.week} 周及之前的资料（${chunks.length} 条）`,
+						message: `已载入全部课程资料（${chunks.length} 条）`,
 					})
 					return
 				}
@@ -408,6 +406,7 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		this.assignmentManager.dispose()
 		// 关闭可能还开着的答题面板，避免扩展卸载后留下孤立 webview
 		this.thinkingQuestionsPanel.dispose()
+		this.assignmentDetailPanel.dispose()
 		this.runTraceCollector.dispose()
 		super.dispose()
 	}
