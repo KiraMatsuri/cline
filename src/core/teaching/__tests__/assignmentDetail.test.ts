@@ -126,6 +126,22 @@ describe("assignmentDetail — 任务详情载荷", () => {
 		expect(res.payload.description).to.include("<script>")
 	})
 
+	it("★ sessionActive：默认 false；传入 true 时透传（按钮态）", () => {
+		const base = buildAssignmentDetailPayload({ assignment, apiBase: "http://127.0.0.1:4001" })
+		expect(base.ok).to.equal(true)
+		if (!base.ok) return
+		expect(base.payload.sessionActive).to.equal(false)
+
+		const active = buildAssignmentDetailPayload({
+			assignment,
+			apiBase: "http://127.0.0.1:4001",
+			sessionActive: true,
+		})
+		expect(active.ok).to.equal(true)
+		if (!active.ok) return
+		expect(active.payload.sessionActive).to.equal(true)
+	})
+
 	it("★ started=true 时给出实验目录（按钮文案由前端决定）", () => {
 		const res = buildAssignmentDetailPayload({
 			assignment,

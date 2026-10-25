@@ -33,6 +33,10 @@ export interface AssignmentDetailHandlers {
 	openAttachment: (attachmentId: number) => Promise<{ ok: boolean; message?: string }>
 	/** 开始/继续实验：建目录、写模板与 GUIDE.md、打开模板 */
 	startExperiment: () => Promise<{ ok: boolean; message?: string; experimentDir?: string }>
+	/** 「提交实验」：复用侧栏同款两段式提交 */
+	submitExperiment: () => Promise<{ ok: boolean; message?: string }>
+	/** 「结束实验」：直接结束会话（实验目录/日志保留） */
+	endExperiment: () => Promise<{ ok: boolean; message?: string }>
 }
 
 export class AssignmentDetailPanelProvider {
@@ -162,7 +166,35 @@ export class AssignmentDetailPanelProvider {
 						data: result?.ok === true ? { message: result.message, experimentDir: result.experimentDir } : undefined,
 					})
 					if (result?.ok === true && this._payload) {
-						this.update({ ...this._payload, started: true, experimentDir: result.experimentDir ?? this._payload.experimentDir })
+						this.update({
+							...this._payload,
+							started: true,
+							sessionActive: true,
+							experimentDir: result.experimentDir ?? this._payload.experimentDir,
+						})
+					}
+					break
+				}
+				case "submitExperiment": {
+					const result = await this._handlers?.submitExperiment()
+					post({
+						command: "submitExperiment",
+						success: result?.ok === true,
+						error: result?.ok === true ? undefined : (result?.message ?? "打开提交面板失败"),
+						data: result?.ok === true ? { message: result.message } : undefined,
+					})
+					break
+				}
+				case "endExperiment": {
+					const result = await this._handlers?.endExperiment()
+					post({
+						command: "endExperiment",
+						success: result?.ok === true,
+						error: result?.ok === true ? undefined : (result?.message ?? "结束实验失败"),
+						data: result?.ok === true ? { message: result.message } : undefined,
+					})
+					if (result?.ok === true && this._payload) {
+						this.update({ ...this._payload, sessionActive: false })
 					}
 					break
 				}

@@ -170,6 +170,28 @@ export function endExperimentSession(workspaceRoot: string | null | undefined): 
 	}
 }
 
+/**
+ * 提交读侧根目录：活动会话属于该任务时读实验目录，否则读工作区根。
+ *
+ * 写入侧已经分别把行为日志、运行痕迹写进实验目录；提交必须用同一个函数选根，
+ * 否则会出现「写实验目录、读工作区根」的分叉（Task3 修复的正是这个问题的写入半边）。
+ */
+export function resolveExperimentSourceRoot(
+	workspaceRoot: string,
+	assignmentId: string,
+	sessionReader: (root: string) => ExperimentSession | null = readActiveExperiment,
+): string {
+	try {
+		const session = sessionReader(workspaceRoot)
+		if (session && session.assignmentId === assignmentId) {
+			return experimentLogRoot(workspaceRoot, assignmentId)
+		}
+	} catch {
+		// 读会话失败一律按工作区根，提交不因会话文件损坏而中断
+	}
+	return workspaceRoot
+}
+
 /** 活动会话的日志/代码根：`<root>/experiments/<sanitized-id>` */
 export function experimentLogRoot(workspaceRoot: string, assignmentId: string): string {
 	return path.join(workspaceRoot, EXPERIMENT_ROOT, sanitizeSegment(assignmentId))

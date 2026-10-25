@@ -59,6 +59,8 @@ export interface AssignmentDetailPayload {
 	started: boolean
 	/** 实验目录（已开始时） */
 	experimentDir: string | null
+	/** 是否有进行中的实验会话（决定面板显示「提交实验 / 结束实验」） */
+	sessionActive: boolean
 }
 
 export function extensionOf(name: string): string {
@@ -122,6 +124,8 @@ export interface BuildDetailInput {
 	/** 是否已开始实验 */
 	started?: boolean
 	experimentDir?: string | null
+	/** 是否有进行中的实验会话（会话文件存在且属于本任务） */
+	sessionActive?: boolean
 }
 
 /**
@@ -177,6 +181,7 @@ export function buildAssignmentDetailPayload(
 			guideNotice: input.guideNotice ?? null,
 			started: input.started === true,
 			experimentDir: input.experimentDir ?? null,
+			sessionActive: input.sessionActive === true,
 		},
 	}
 }

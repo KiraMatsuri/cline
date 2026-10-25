@@ -65,6 +65,15 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 		// 必须在持有 IPC 分发能力的同一个实例上调用，确保 queryAutoLogPath
 		// 能拿到同一份 cachedAutoLogPath（与 extension.ts 的独立实例隔离）。
 		m.startWatchingWorkspaceOpen()
+		// 【Task4】会话态广播：开始/提交/结束实验后推给侧栏，让实验态横幅即时显隐
+		m.attachSessionBroadcaster((view) => {
+			void this.postMessageToWebview({
+				type: "assignment_session",
+				command: "getExperimentSession",
+				success: true,
+				data: view,
+			} as unknown as ExtensionMessage)
+		})
 		return m
 	})()
 

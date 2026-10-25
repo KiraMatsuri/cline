@@ -74,6 +74,15 @@ import {
 	readExperimentTaskFile,
 } from "./ExperimentWorkspace"
 import {
+	endExperimentSession,
+	experimentLogRoot,
+	type ExperimentSessionView,
+	readActiveExperiment,
+	resolveExperimentSourceRoot,
+	startExperimentSession,
+	toExperimentSessionView,
+} from "./ExperimentSession"
+import {
 	buildFallbackGuide,
 	buildGuidePrompt,
 	type GuideRequest,
@@ -146,6 +155,10 @@ export interface AssignmentMessage {
 		// 【P1-2 任务详情面板】单击任务 → 编辑器区面板展示要求/指导书/附件 → 开始实验
 		| "openAssignmentDetail"
 		| "startExperiment"
+		// 【Task4 实验会话】会话态查询 / 侧栏「提交实验」「结束实验」（只有这两个命令会结束会话）
+		| "getExperimentSession"
+		| "submitExperiment"
+		| "endExperiment"
 	payload?: Record<string, unknown>
 }
 
@@ -177,6 +190,11 @@ interface PendingSubmission {
 	submittedAt: string
 	idempotencyKey: string
 	workspaceRoot: string
+	/**
+	 * 提交时实际读取日志/运行痕迹/代码的根目录：实验会话进行中指向 experiments/<id>，
+	 * 否则回退工作区根（诊断与幂等重试都用它，避免两类根混用）。
+	 */
+	submissionRoot: string
 	/** BN-16：内容取自编辑器缓冲区、磁盘上还没保存的文件 */
 	unsavedFiles: string[]
 	/** 打码命中次数（面板与报告都要告知学生「已打码」） */
@@ -209,6 +227,10 @@ export type ThinkingPanelOpener = (
 export interface AssignmentDetailHandlers {
 	openAttachment: (attachmentId: number) => Promise<{ ok: boolean; message?: string }>
 	startExperiment: () => Promise<{ ok: boolean; message?: string; experimentDir?: string }>
+	/** 侧栏同款两段式提交（打开思考题面板，确认后上传） */
+	submitExperiment: () => Promise<{ ok: boolean; message?: string }>
+	/** 直接结束实验会话（实验目录与日志保留） */
+	endExperiment: () => Promise<{ ok: boolean; message?: string }>
 }
 
 /** 宿主注入任务详情面板（复用 AssignmentDetailPanelProvider 单例） */
@@ -295,6 +317,8 @@ export class AssignmentManager {
 	private detailGuideText: string | undefined
 	/** 上传互斥：面板连点/重复确认时只允许一个在飞 */
 	private uploadInFlight = false
+	/** 会话态广播（宿主注入：把 new/ended 推给侧栏，实验态横幅据此显隐） */
+	private sessionBroadcaster: ((view: ExperimentSessionView) => void) | null = null
 
 	constructor(apiBase?: string) {
 		// 若调用方未传值，使用默认兜底；后续可通过 refreshApiBaseFromConfig 或 setApiBase 覆盖
@@ -586,6 +610,26 @@ export class AssignmentManager {
 					break
 				}
 
+				// 【Task4】会话态查询（侧栏进入实验任务页 / 重载时回填横幅）
+				case "getExperimentSession": {
+					const workspaceRoot = this.getWorkspaceRoot()
+					const view = toExperimentSessionView(workspaceRoot ?? "", readActiveExperiment(workspaceRoot))
+					postMessage({ command: "getExperimentSession", success: true, data: view })
+					break
+				}
+
+				// 【Task4】「提交实验」：与侧栏「🚀 一键提交实验结果至云端」同一条两段式链路
+				case "submitExperiment": {
+					await this.handleSubmitExperiment(postMessage)
+					break
+				}
+
+				// 【Task4】「结束实验」：只删会话文件；实验目录与日志保留
+				case "endExperiment": {
+					await this.handleEndExperiment(postMessage)
+					break
+				}
+
 				case "openFile": {
 					const filePath = typeof payload["filePath"] === "string" ? (payload["filePath"] as string) : ""
 					await this.handleOpenFile({ filePath }, postMessage)
@@ -736,8 +780,10 @@ export class AssignmentManager {
 				}
 			}
 
-			// ----- 是否已开始实验 -----
+			// ----- 是否已开始实验 / 是否有进行中的会话 -----
 			const experimentDir = this.findExperimentDir(workspaceRoot, assignmentId) ?? undefined
+			const session = readActiveExperiment(workspaceRoot)
+			const sessionActive = session?.assignmentId === assignment.id
 			const built = buildAssignmentDetailPayload({
 				assignment: {
 					id: assignment.id,
@@ -752,6 +798,7 @@ export class AssignmentManager {
 				guideNotice,
 				started: Boolean(experimentDir),
 				experimentDir,
+				sessionActive,
 			})
 
 			if (!built.ok) {
@@ -767,6 +814,8 @@ export class AssignmentManager {
 			this.detailOpener(built.payload, {
 				openAttachment: (attachmentId) => this.openAttachmentFromPanel(attachmentId),
 				startExperiment: () => this.startExperiment(),
+				submitExperiment: () => this.submitExperimentFromPanel(),
+				endExperiment: () => this.endExperimentFromPanel(),
 			})
 
 			postMessage({ command: "openAssignmentDetail", success: true, assignmentId })
@@ -857,6 +906,13 @@ export class AssignmentManager {
 			}
 			const workspaceRoot = workspaceFolders[0].uri.fsPath
 
+			// 【Task4】同一时间只允许一个实验会话：已有其它任务在实验中 → 拒绝，提示先提交/结束
+			const active = readActiveExperiment(workspaceRoot)
+			if (active && active.assignmentId !== assignment.id) {
+				const other = active.assignmentTitle ?? active.assignmentId
+				return { ok: false, message: `已有进行中的实验「${other}」，请先「提交实验」或「结束实验」后再开始本实验` }
+			}
+
 			// 已建过实验目录就不再生成指导书（学生可能已经改过 GUIDE.md）
 			const dir = experimentDirFor(workspaceRoot, assignment.id)
 			const existed = Boolean(readExperimentTaskFile(dir))
@@ -881,6 +937,17 @@ export class AssignmentManager {
 			} catch (error) {
 				Logger.warn("[AssignmentManager] 打开模板文件失败", error)
 			}
+
+			// 【Task4】会话文件是「是否处于实验模式」的唯一来源：跨任务、跨重启都靠它
+			const taskFile = readExperimentTaskFile(res.dir)
+			startExperimentSession({
+				workspaceRoot,
+				assignmentId: assignment.id,
+				assignmentTitle: assignment.title,
+				language: "python",
+				template: taskFile?.template,
+			})
+			this.broadcastExperimentSession(workspaceRoot)
 
 			vscode.window.showInformationMessage(
 				res.created ? `🧪 实验已开始：${assignment.title}` : `🧪 已回到实验：${assignment.title}`,
@@ -1027,11 +1094,15 @@ export class AssignmentManager {
 		}
 
 		try {
+			// 【Task4】读侧根目录与写侧对齐：活动会话属于本任务时读 experiments/<id>，
+			// 否则维持旧行为读工作区根（历史自由模式提交不受影响）。
+			const sourceRoot = resolveExperimentSourceRoot(workspaceRoot, assignment.id)
+
 			// ① 当前编辑器缓冲区（BN-16：未保存的内容也要能提交）
 			const activeDoc = vscode.window.activeTextEditor?.document
 			const activeFilePath = activeDoc?.uri.fsPath ?? null
 			const unsavedFiles: string[] = []
-			const collected = collectCodeFiles({ workspaceRoot, activeFilePath })
+			const collected = collectCodeFiles({ workspaceRoot: sourceRoot, activeFilePath })
 
 			// ② 代码文件：密钥打码 + 未保存内容优先（内容在客户端还完整时才处理，BN-11/BN-12/BN-16）
 			let redactionHits = 0
@@ -1054,7 +1125,7 @@ export class AssignmentManager {
 			})
 
 			// ③ 日志：切片（找不到 task_id 时降级为 run_result + 尾部 200 行，BN-06）
-			const logResolution = resolveStudentLogFile(workspaceRoot)
+			const logResolution = resolveStudentLogFile(sourceRoot)
 			const rawLog = collectLog(logResolution?.path ?? null)
 			const rawLogText = rawLog.buffer ? rawLog.buffer.toString("utf8") : ""
 			const activeTaskId = pickLatestTaskId(rawLogText)
@@ -1071,7 +1142,7 @@ export class AssignmentManager {
 					truncated: sliced.truncated || sliced.sliceMissing,
 				},
 			}
-			const runTraces = readRunTraces(workspaceRoot)
+			const runTraces = readRunTraces(sourceRoot)
 			const logEvents = summarizeLogEvents(log.buffer)
 
 			// ④ 出题信号 → 自适应题数
@@ -1117,6 +1188,7 @@ export class AssignmentManager {
 				submittedAt,
 				idempotencyKey: randomUUID(),
 				workspaceRoot,
+				submissionRoot: sourceRoot,
 				unsavedFiles,
 				redactionHits,
 				llmProvider: questionLLM?.provider,
@@ -1241,6 +1313,16 @@ export class AssignmentManager {
 
 			const result = response.body as BundleIngestResult
 			this.pendingSubmission = null
+
+			// 【Task4】提交成功 = 退出实验模式（需求：只有「提交实验」「结束实验」才算退出）
+			const workspaceRoot = this.getWorkspaceRoot()
+			if (workspaceRoot) {
+				const active = readActiveExperiment(workspaceRoot)
+				if (active && active.assignmentId === pending.assignment.id) {
+					endExperimentSession(workspaceRoot)
+					this.broadcastExperimentSession(workspaceRoot)
+				}
+			}
 
 			const aiDependencyPercent = Math.round((result.metrics?.ai_dependency ?? 0) * 100)
 			vscode.window.showInformationMessage(
@@ -2049,10 +2131,95 @@ export class AssignmentManager {
 	 * 间接让 WebviewStateContext 的 navigateToChat() 被调用，
 	 * 从而关闭实验任务视图。
 	 */
+	// ============================================================================
+	//  【Task4】实验会话：唯一退出路径 = 「提交实验」成功 或 「结束实验」
+	// ============================================================================
+
+	/** 宿主注入会话态广播（VscodeWebviewProvider：postMessageToWebview） */
+	public attachSessionBroadcaster(broadcaster: ((view: ExperimentSessionView) => void) | null): void {
+		this.sessionBroadcaster = broadcaster
+	}
+
+	/** 当前工作区根（没有工作区返回 null） */
+	private getWorkspaceRoot(): string | null {
+		const folders = vscode.workspace.workspaceFolders
+		if (!folders || folders.length === 0) return null
+		return folders[0].uri.fsPath
+	}
+
+	private broadcastExperimentSession(workspaceRoot: string | null): void {
+		if (!this.sessionBroadcaster) return
+		const view = toExperimentSessionView(workspaceRoot ?? "", readActiveExperiment(workspaceRoot))
+		try {
+			this.sessionBroadcaster(view)
+		} catch (error) {
+			Logger.warn("[AssignmentManager] 广播实验会话失败", error)
+		}
+	}
+
+	/** 【Task4】「提交实验」命令：复用两段式提交（本地收集 → 出题 → 确认上传） */
+	private async handleSubmitExperiment(postMessage: (response: AssignmentResponse) => void): Promise<void> {
+		const workspaceRoot = this.getWorkspaceRoot()
+		const session = readActiveExperiment(workspaceRoot)
+		if (!session) {
+			postMessage({ command: "submitExperiment", success: false, error: "当前没有进行中的实验会话，请先开始实验" })
+			return
+		}
+		await this.handlePrepareSubmission({ assignmentId: session.assignmentId }, postMessage)
+	}
+
+	/** 【Task4】「结束实验」命令：删会话文件，实验目录与日志全部保留 */
+	private async handleEndExperiment(postMessage: (response: AssignmentResponse) => void): Promise<void> {
+		const workspaceRoot = this.getWorkspaceRoot()
+		const session = readActiveExperiment(workspaceRoot)
+		if (!session) {
+			postMessage({ command: "endExperiment", success: true, data: { ended: false } })
+			return
+		}
+		const ended = endExperimentSession(workspaceRoot)
+		this.broadcastExperimentSession(workspaceRoot)
+		vscode.window.showInformationMessage(
+			`🧪 已结束实验：${session.assignmentTitle ?? session.assignmentId}（实验目录与日志已保留）`,
+		)
+		postMessage({ command: "endExperiment", success: true, data: { ended } })
+	}
+
+	/** 详情面板「提交实验」：内部走同一条两段式提交（思考题面板随后打开） */
+	private async submitExperimentFromPanel(): Promise<{ ok: boolean; message?: string }> {
+		const workspaceRoot = this.getWorkspaceRoot()
+		const session = readActiveExperiment(workspaceRoot)
+		if (!session) {
+			return { ok: false, message: "当前没有进行中的实验会话，请先开始实验" }
+		}
+		await this.handlePrepareSubmission({ assignmentId: session.assignmentId }, () => {})
+		return { ok: true, message: "已打开思考题面板，答完题后确认上传" }
+	}
+
+	/** 详情面板「结束实验」：删会话文件并广播（面板随后由 provider 刷新按钮态） */
+	private async endExperimentFromPanel(): Promise<{ ok: boolean; message?: string }> {
+		const workspaceRoot = this.getWorkspaceRoot()
+		if (!readActiveExperiment(workspaceRoot)) {
+			return { ok: true, message: "当前没有进行中的实验会话" }
+		}
+		const ended = endExperimentSession(workspaceRoot)
+		this.broadcastExperimentSession(workspaceRoot)
+		if (ended) {
+			vscode.window.showInformationMessage("🧪 已结束实验（实验目录与日志已保留）")
+		}
+		return { ok: true, message: ended ? "已结束实验" : "当前没有进行中的实验会话" }
+	}
+
 	private async handleExitToChat(postMessage: (response: AssignmentResponse) => void): Promise<void> {
 		try {
-			// 通过命令面板触发 + 新建任务按钮的相同逻辑
+			// 【Task4】「返回对话」不结束实验：会话文件仍在，新的聊天任务会被判为 experiment 模式
+			const workspaceRoot = this.getWorkspaceRoot()
+			const session = readActiveExperiment(workspaceRoot)
 			await vscode.commands.executeCommand("cline.plusButtonClicked")
+			if (session) {
+				vscode.window.showInformationMessage(
+					`🧪 实验「${session.assignmentTitle ?? session.assignmentId}」仍在进行中：需点击「提交实验」或「结束实验」才退出实验模式`,
+				)
+			}
 			postMessage({ command: "exitToChat", success: true })
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error)

@@ -9,6 +9,7 @@ import {
 	endExperimentSession,
 	experimentLogRoot,
 	readActiveExperiment,
+	resolveExperimentSourceRoot,
 	startExperimentSession,
 	toExperimentSessionView,
 } from "../ExperimentSession"
@@ -178,5 +179,39 @@ describe("experimentSession — 活动实验会话文件", () => {
 		expect(view.language).to.equal("java")
 		expect(view.template).to.equal("Main.java")
 		expect(view.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "viewme"))
+	})
+})
+
+/**
+ * Task4 · 提交读侧：日志 / 运行痕迹 / 代码收集都应以活动实验目录为根。
+ *
+ * 这里只锁「该用哪个根」这一条纯逻辑；真正的文件读取由提交链路复用同一函数，
+ * 避免「写入写实验目录、读取读工作区根」再次分叉。
+ */
+describe("resolveExperimentSourceRoot — 提交读侧根目录", () => {
+	let root = ""
+
+	beforeEach(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), "source-root-"))
+	})
+
+	afterEach(() => {
+		fs.rmSync(root, { recursive: true, force: true })
+	})
+
+	it("无活动会话 → 工作区根", () => {
+		expect(resolveExperimentSourceRoot(root, "task_a")).to.equal(root)
+	})
+
+	it("会话匹配当前任务 → experiments/<id>", () => {
+		startExperimentSession({ workspaceRoot: root, assignmentId: "task_a" })
+		expect(resolveExperimentSourceRoot(root, "task_a")).to.equal(
+			path.join(root, EXPERIMENT_ROOT, "task_a"),
+		)
+	})
+
+	it("会话属于其它任务 → 仍读工作区根（不串任务）", () => {
+		startExperimentSession({ workspaceRoot: root, assignmentId: "task_a" })
+		expect(resolveExperimentSourceRoot(root, "task_b")).to.equal(root)
 	})
 })
