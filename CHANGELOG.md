@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased] — 2026-10-25
+
+### Added
+
+- **实验会话绑定**（`src/core/teaching/ExperimentSession.ts`）：`.cline-logs/active-experiment.json`
+  作为「当前实验」唯一真相（原子写/损坏降级），`resolveSessionContext()` 在显式参数与路径推断之后读取它，
+  并让 `logRoot` 指向 `experiments/<assignmentId>/`；开始实验写入会话、跨任务与窗口重载都能恢复。
+- **「提交实验 / 结束实验」两个唯一出口**：聊天页新增实验态横幅（`ExperimentSessionBar`），详情面板按钮区
+  同步提供两个操作；「提交实验」与「🚀 一键提交实验结果至云端」走同一条 `prepareSubmission → confirmSubmission`
+  链路，上传成功或显式「结束实验」才清除会话，其余操作（返回对话、切视图、重启）都保持实验模式。
+  「结束实验」为红色背景按钮并需确认一次，结束后实验目录与日志保留（`AssignmentManager` 三个新 IPC 命令）。
+- **运行痕迹按实验目录路由**（`RunTraceCollector.resolveRunTraceRoot`）：实验会话进行中
+  `run_traces.jsonl` 写进 `experiments/<assignmentId>/.cline-logs/`，不再混进工作区根。
+
+### Fixed
+
+- **实验模式从未被激活**：`startExperiment` 此前只建目录、打开模板，不改变任何会话绑定；
+  聊天任务 `cwd` 恒为工作区根 → 一律判自由模式。现在以会话文件为准，进入实验模式后可跨任务保持。
+- **实验模式行为日志零写入**：`StudentLogPersister` 以 `Task.cwd`（工作区根）为日志根，且自由模式直接早退；
+  现在写入侧统一用 `SessionContext.logRoot`，实验模式写进 `experiments/<assignmentId>/.cline-logs/`。
+- **提交读错根目录**：提交时日志 / 运行痕迹 / 代码收集都以工作区根为根，导致实验目录里的记录被忽略；
+  现在通过 `resolveExperimentSourceRoot()` 统一切到实验目录，`PendingSubmission` 记录 `submissionRoot` 便于诊断。
+- **退出实验模式没有显式入口**：此前只能靠「返回对话」隐式离开且实际并未离开；现在仅「提交实验」「结束实验」退出，
+  有会话时点「返回对话」会提示仍需通过两个按钮退出。
+
 ## [Unreleased] — 2026-10-24
 
 ### Added
