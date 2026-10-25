@@ -80,3 +80,6 @@ test-results/
 *storybook.log
 storybook-static
 **/StorybookDecorator.tsx
+
+# Agent/session artifacts (not extension runtime)
+.superpowers/**
