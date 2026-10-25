@@ -228,3 +228,127 @@ describe("modeLogging — 日志按模式门控", () => {
 		expect(parsed.experimentId).to.equal(undefined)
 	})
 })
+
+/**
+ * Task2 · 工作区级会话文件进入模式判定链
+ *
+ * 聊天任务 cwd 永远是工作区根，所以「开始实验」后唯一的全局线索就是
+ * `<root>/.cline-logs/active-experiment.json`；这里锁定它的优先级、logRoot 计算与降级。
+ */
+describe("sessionFileMode — 根会话文件判定", () => {
+	let root = ""
+
+	beforeEach(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), "session-file-mode-"))
+	})
+
+	afterEach(() => {
+		fs.rmSync(root, { recursive: true, force: true })
+	})
+
+	function writeSession(body: unknown): void {
+		fs.mkdirSync(path.join(root, ".cline-logs"), { recursive: true })
+		fs.writeFileSync(
+			path.join(root, ".cline-logs", "active-experiment.json"),
+			typeof body === "string" ? body : JSON.stringify(body),
+			"utf8",
+		)
+	}
+
+	function writeTaskFile(dir: string, assignmentId: string): void {
+		fs.mkdirSync(path.join(dir, ".teaching"), { recursive: true })
+		fs.writeFileSync(path.join(dir, ".teaching", "task.json"), JSON.stringify({ assignmentId }), "utf8")
+	}
+
+	it("★ 根目录有活动会话 → experiment，id 与 logRoot 都指向实验目录", () => {
+		writeSession({
+			assignmentId: "task_week2_yufayu",
+			startedAt: "2026-10-25T04:23:04.924Z",
+			status: "active",
+		})
+		const ctx = resolveSessionContext({ cwd: root })
+		expect(ctx.mode).to.equal("experiment")
+		expect(ctx.experimentId).to.equal("task_week2_yufayu")
+		expect(ctx.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "task_week2_yufayu"))
+		expect(logPersistEnabled(ctx)).to.equal(true)
+	})
+
+	it("★ 显式 mode=free 压过活动会话", () => {
+		writeSession({ assignmentId: "a", startedAt: "2026-10-25T00:00:00.000Z", status: "active" })
+		const ctx = resolveSessionContext({ cwd: root, mode: "free" })
+		expect(ctx.mode).to.equal("free")
+		expect(ctx.experimentId).to.equal(undefined)
+		expect(logPersistEnabled(ctx)).to.equal(false)
+	})
+
+	it("★ 路径 experiments/other 优先于根会话的另一个任务", () => {
+		writeSession({ assignmentId: "from_session", startedAt: "2026-10-25T00:00:00.000Z", status: "active" })
+		const dir = path.join(root, EXPERIMENT_ROOT, "from_path")
+		fs.mkdirSync(path.join(dir, ".teaching"), { recursive: true })
+		const ctx = resolveSessionContext({ cwd: dir })
+		expect(ctx.experimentId).to.equal("from_path")
+		expect(ctx.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "from_path"))
+	})
+
+	it("★ 会话文件损坏 / 缺失 → free", () => {
+		writeSession("{broken")
+		expect(resolveSessionContext({ cwd: root }).mode).to.equal("free")
+		fs.rmSync(path.join(root, ".cline-logs", "active-experiment.json"))
+		expect(resolveSessionContext({ cwd: root }).mode).to.equal("free")
+	})
+
+	it("★ task.json 与根会话同时存在且 id 不同 → task.json 优先（cwd 语义）", () => {
+		writeSession({ assignmentId: "from_session", startedAt: "2026-10-25T00:00:00.000Z", status: "active" })
+		writeTaskFile(root, "from_taskfile")
+		const ctx = resolveSessionContext({ cwd: root })
+		expect(ctx.experimentId).to.equal("from_taskfile")
+		expect(ctx.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "from_taskfile"))
+	})
+
+	it("★ 注入 sessionReader 时以注入值为准（可模拟无会话）", () => {
+		writeSession({ assignmentId: "real_file", startedAt: "2026-10-25T00:00:00.000Z", status: "active" })
+		const ctx = resolveSessionContext({ cwd: root, sessionReader: () => null })
+		expect(ctx.mode).to.equal("free")
+
+		const mocked = resolveSessionContext({
+			cwd: root,
+			sessionReader: () => ({ assignmentId: "mock_id", startedAt: "x", status: "active" }),
+		})
+		expect(mocked.experimentId).to.equal("mock_id")
+		expect(mocked.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "mock_id"))
+	})
+
+	it("★ sessionReader 抛错 → 降级 free（不阻断聊天）", () => {
+		const ctx = resolveSessionContext({
+			cwd: root,
+			sessionReader: () => {
+				throw new Error("disk on fire")
+			},
+		})
+		expect(ctx.mode).to.equal("free")
+	})
+
+	it("★ 显式 experimentId 优先于路径", () => {
+		const dir = path.join(root, EXPERIMENT_ROOT, "by_path")
+		fs.mkdirSync(dir, { recursive: true })
+		const ctx = resolveSessionContext({ cwd: dir, workspaceRoot: root, experimentId: "explicit" })
+		expect(ctx.experimentId).to.equal("explicit")
+		expect(ctx.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "explicit"))
+	})
+
+	it("★ 显式 mode=experiment 且无 id 时，用会话文件的 id 并计算实验 logRoot", () => {
+		writeSession({ assignmentId: "from_session", startedAt: "2026-10-25T00:00:00.000Z", status: "active" })
+		const ctx = resolveSessionContext({ cwd: root, mode: "experiment" })
+		expect(ctx.mode).to.equal("experiment")
+		expect(ctx.experimentId).to.equal("from_session")
+		expect(ctx.logRoot).to.equal(path.join(root, EXPERIMENT_ROOT, "from_session"))
+	})
+
+	it("★ 自由模式 logRoot 仍是 cwd（用于定位，不写入）", () => {
+		const dir = path.join(root, "plain")
+		fs.mkdirSync(dir, { recursive: true })
+		const ctx = resolveSessionContext({ cwd: dir })
+		expect(ctx.mode).to.equal("free")
+		expect(ctx.logRoot).to.equal(dir)
+	})
+})

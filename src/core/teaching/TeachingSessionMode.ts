@@ -16,6 +16,7 @@ import * as path from "path"
 
 import { isCompleteImplDemand } from "../task/student-analytics/demandDetect"
 import { detectFullImplementation } from "../task/student-analytics/fullImplementationDetect"
+import { type ExperimentSession, experimentLogRoot, readActiveExperiment } from "./ExperimentSession"
 
 export type SessionMode = "free" | "experiment"
 
@@ -94,12 +95,30 @@ export function readExperimentTask(cwd: string): ExperimentTaskFile | null {
 export interface ResolveSessionInput {
 	/** 任务工作目录（Task.cwd） */
 	cwd: string
+	/** 工作区根（聊天任务 cwd 即根；缺省取 cwd） */
+	workspaceRoot?: string
 	/** 显式传入的实验 id（会话恢复时来自 initialState）；优先级最高 */
 	experimentId?: string | null
 	/** 显式模式（测试/迁移用） */
 	mode?: SessionMode | null
 	/** 注入的元数据读取器（测试用） */
 	taskReader?: (cwd: string) => ExperimentTaskFile | null
+	/** 注入的活动会话读取器（测试用；缺省读工作区会话文件） */
+	sessionReader?: (workspaceRoot: string) => ExperimentSession | null
+}
+
+/** cwd 若在 `<root>/experiments/<id>/...` 内，返回该实验目录；否则 null */
+function experimentDirContaining(cwd: string, id: string): string | null {
+	if (!cwd || !id) return null
+	let dir = path.resolve(cwd)
+	for (;;) {
+		const parent = path.dirname(dir)
+		if (parent === dir) return null
+		if (path.basename(dir) === id && path.basename(parent) === EXPERIMENT_ROOT) {
+			return dir
+		}
+		dir = parent
+	}
 }
 
 /**
@@ -110,37 +129,63 @@ export interface ResolveSessionInput {
  *   2. 显式 `experimentId`
  *   3. `cwd` 路径里有 `experiments/<id>/`
  *   4. `.teaching/task.json` 里写了 `assignmentId`
- *   5. 都不满足 → `free`
+ *   5. `<workspaceRoot>/.cline-logs/active-experiment.json`（Task2：开始实验后的全局绑定）
+ *   6. 都不满足 → `free`
+ *
+ * 为什么第 5 步必须存在：聊天任务 cwd 恒为工作区根（controller 用 getPrimaryRoot 建 Task），
+ * 只靠路径/task.json 永远判不出实验模式，日志与运行痕迹会全部落空。
  */
 export function resolveSessionContext(input: ResolveSessionInput): SessionContext {
 	const taskReader = input.taskReader ?? readExperimentTask
+	const sessionReader = input.sessionReader ?? readActiveExperiment
+	const cwd = input.cwd ?? ""
+	const workspaceRoot = (input.workspaceRoot ?? cwd).trim()
 	const explicitId = (input.experimentId ?? "").trim()
+	const byPath = detectExperimentId(cwd)
+	const byTaskFile = taskReader(cwd)?.assignmentId?.trim()
+	const readSession = (): ExperimentSession | null => {
+		if (!workspaceRoot) return null
+		try {
+			return sessionReader(workspaceRoot)
+		} catch {
+			// 会话文件读挂（盘满/权限/实现抛错）→ 当作没有会话，降级 free，不阻断聊天
+			return null
+		}
+	}
 
 	if (input.mode === "experiment") {
-		const id = explicitId || detectExperimentId(input.cwd) || taskReader(input.cwd)?.assignmentId
-		return buildContext("experiment", id || undefined, input.cwd)
+		const id = explicitId || byPath || byTaskFile || readSession()?.assignmentId
+		return buildContext("experiment", id || undefined, cwd, workspaceRoot)
 	}
 	if (input.mode === "free") {
-		return buildContext("free", undefined, input.cwd)
+		return buildContext("free", undefined, cwd, workspaceRoot)
 	}
 
-	const byPath = detectExperimentId(input.cwd)
-	if (byPath) return buildContext("experiment", byPath, input.cwd)
+	if (explicitId) return buildContext("experiment", explicitId, cwd, workspaceRoot)
+	if (byPath) return buildContext("experiment", byPath, cwd, workspaceRoot)
+	if (byTaskFile) return buildContext("experiment", byTaskFile, cwd, workspaceRoot)
 
-	if (explicitId) return buildContext("experiment", explicitId, input.cwd)
+	const bySession = readSession()?.assignmentId
+	if (bySession) return buildContext("experiment", bySession, cwd, workspaceRoot)
 
-	const byTaskFile = taskReader(input.cwd)?.assignmentId
-	if (byTaskFile) return buildContext("experiment", byTaskFile, input.cwd)
-
-	return buildContext("free", undefined, input.cwd)
+	return buildContext("free", undefined, cwd, workspaceRoot)
 }
 
-function buildContext(mode: SessionMode, experimentId: string | undefined, cwd: string): SessionContext {
+function buildContext(
+	mode: SessionMode,
+	experimentId: string | undefined,
+	cwd: string,
+	workspaceRoot: string,
+): SessionContext {
+	const root = workspaceRoot || cwd
 	return {
 		mode,
 		experimentId,
 		// 自由模式的 logRoot 只用于"定位"，不写日志（logPersistEnabled 已是 false）
-		logRoot: cwd,
+		logRoot:
+			mode === "experiment" && experimentId
+				? experimentDirContaining(cwd, experimentId) ?? experimentLogRoot(root, experimentId)
+				: cwd,
 		ladderLimit: DEMAND_LADDER[mode],
 	}
 }
