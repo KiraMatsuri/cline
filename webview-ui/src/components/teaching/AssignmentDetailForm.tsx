@@ -41,6 +41,7 @@ interface DetailPayload {
 	guideNotice: string | null
 	started: boolean
 	experimentDir: string | null
+	sessionActive: boolean
 }
 
 interface PanelResponse {
@@ -151,6 +152,17 @@ const STYLES = {
 		color: "var(--vscode-button-secondaryForeground, var(--vscode-foreground))",
 		border: "none",
 	} as React.CSSProperties,
+	dangerButton: {
+		padding: "8px 14px",
+		borderRadius: "4px",
+		border: "none",
+		cursor: "pointer",
+		fontSize: "13px",
+		fontWeight: 600,
+		// 红色背景：结束实验是破坏性操作，必须与「提交实验」明显区分
+		background: "var(--vscode-errorForeground, #d32f2f)",
+		color: "#ffffff",
+	} as React.CSSProperties,
 	link: {
 		fontSize: "12px",
 		padding: "3px 10px",
@@ -181,6 +193,7 @@ export default function AssignmentDetailForm(): React.ReactElement {
 	const [status, setStatus] = useState<string>("")
 	const [busy, setBusy] = useState(false)
 	const [templateOpen, setTemplateOpen] = useState(false)
+	const [confirmingEnd, setConfirmingEnd] = useState(false)
 
 	const getApi = useCallback((): VsCodeApi => getVsCodeApiInstance() as unknown as VsCodeApi, [])
 
@@ -209,6 +222,19 @@ export default function AssignmentDetailForm(): React.ReactElement {
 				setError(msg.success ? "" : (msg.error ?? "开始实验失败"))
 				return
 			}
+			if (msg.command === "submitExperiment") {
+				setBusy(false)
+				setStatus(msg.success ? "已打开思考题面板，答完题后确认上传" : "")
+				setError(msg.success ? "" : (msg.error ?? "提交实验失败"))
+				return
+			}
+			if (msg.command === "endExperiment") {
+				setBusy(false)
+				setConfirmingEnd(false)
+				setStatus(msg.success ? "已结束实验模式" : "")
+				setError(msg.success ? "" : (msg.error ?? "结束实验失败"))
+				return
+			}
 		}
 		window.addEventListener("message", handler)
 		api.postMessage({ type: "assignment_command", command: "assignmentDetailReady" })
@@ -226,6 +252,24 @@ export default function AssignmentDetailForm(): React.ReactElement {
 		setError("")
 		setStatus("正在准备实验环境…")
 		getApi().postMessage({ type: "assignment_detail_command", command: "startExperiment" })
+	}
+
+	const submitExperiment = () => {
+		setBusy(true)
+		setError("")
+		setStatus("正在准备提交…")
+		getApi().postMessage({ type: "assignment_detail_command", command: "submitExperiment" })
+	}
+
+	const endExperiment = () => {
+		if (!confirmingEnd) {
+			// 破坏性操作先内联确认一次，避免误点直接离开实验模式
+			setConfirmingEnd(true)
+			return
+		}
+		setBusy(true)
+		setError("")
+		getApi().postMessage({ type: "assignment_detail_command", command: "endExperiment" })
 	}
 
 	if (!payload) {
@@ -326,16 +370,39 @@ export default function AssignmentDetailForm(): React.ReactElement {
 			) : null}
 
 			<div style={STYLES.footer}>
-				<button type="button" style={STYLES.primaryButton} disabled={busy} onClick={startExperiment}>
-					{busy ? "处理中…" : payload.started ? "继续实验" : "开始实验"}
-				</button>
+				{payload.sessionActive ? (
+					<>
+						<button type="button" style={STYLES.primaryButton} disabled={busy} onClick={submitExperiment}>
+							提交实验
+						</button>
+						{confirmingEnd ? (
+							<>
+								<span style={STYLES.muted}>确认结束实验？（实验目录与日志会保留）</span>
+								<button type="button" style={STYLES.dangerButton} disabled={busy} onClick={endExperiment}>
+									确认结束
+								</button>
+								<button type="button" style={STYLES.secondaryButton} onClick={() => setConfirmingEnd(false)}>
+									取消
+								</button>
+							</>
+						) : (
+							<button type="button" style={STYLES.dangerButton} disabled={busy} onClick={endExperiment}>
+								结束实验
+							</button>
+						)}
+					</>
+				) : (
+					<button type="button" style={STYLES.primaryButton} disabled={busy} onClick={startExperiment}>
+						{busy ? "处理中…" : payload.started ? "继续实验" : "开始实验"}
+					</button>
+				)}
 				<button
 					type="button"
 					style={STYLES.secondaryButton}
 					onClick={() => getApi().postMessage({ type: "assignment_detail_command", command: "closeAssignmentDetail" })}>
 					关闭
 				</button>
-				{!payload.started ? (
+				{!payload.started && !payload.sessionActive ? (
 					<span style={STYLES.muted}>开始实验会在工作区创建独立子文件夹，并把日志根切到该目录。</span>
 				) : null}
 			</div>
