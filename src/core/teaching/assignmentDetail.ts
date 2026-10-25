@@ -185,3 +185,37 @@ export function buildAssignmentDetailPayload(
 		},
 	}
 }
+
+/** 详情面板按钮态推导的入参 */
+export interface DetailDerivedStateInput {
+	assignmentId: string
+	/** 对应子工作区（`experiments/<id>`）是否存在；不存在传 null */
+	experimentDir: string | null
+	/** 根会话文件里的 assignmentId；没有会话传 null */
+	sessionAssignmentId: string | null
+}
+
+/** 详情面板按钮态：开始/继续 vs 提交/结束 */
+export interface DetailDerivedState {
+	started: boolean
+	sessionActive: boolean
+}
+
+/**
+ * 详情面板按钮态的唯一推导规则。
+ *
+ * 为什么单独抽出来：面板的按钮文案由两个**不同来源**驱动——
+ *   - `started` 看磁盘上子工作区是否存在（点过「开始实验」就存在，提交/结束后仍保留）；
+ *   - `sessionActive` 看根会话文件是否属于本任务。
+ *
+ * 提交成功后会话被清掉、但子工作区仍在，两者会同时变化。App 侧若只刷新其中一个，
+ * 面板就会停在「提交实验 / 结束实验」的旧态（手动测试反馈的 bug），所以统一在这里推导，
+ * 由 `AssignmentManager` 在会话广播时重建整份 payload。
+ */
+export function resolveDetailDerivedState(input: DetailDerivedStateInput): DetailDerivedState {
+	return {
+		started: typeof input.experimentDir === "string" && input.experimentDir.trim().length > 0,
+		sessionActive: input.sessionAssignmentId === input.assignmentId,
+	}
+}
+

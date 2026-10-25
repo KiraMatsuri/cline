@@ -100,6 +100,8 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 	private assignmentDetailPanel = (() => {
 		const provider = AssignmentDetailPanelProvider.getInstance(this.context.extensionUri)
 		this.assignmentManager.attachDetailPanelOpener((payload, handlers) => provider.reveal(payload, handlers))
+		// 提交/结束实验走别的面板，详情面板必须由扩展侧主动推新载荷才能同步按钮态
+		this.assignmentManager.attachDetailUpdater((payload) => provider.update(payload))
 		return provider
 	})()
 

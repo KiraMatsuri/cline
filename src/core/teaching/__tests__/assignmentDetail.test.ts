@@ -7,6 +7,7 @@ import {
 	MAX_DESCRIPTION_CHARS,
 	MAX_GUIDE_CHARS,
 	pickGuideAttachment,
+	resolveDetailDerivedState,
 } from "../assignmentDetail"
 
 /**
@@ -185,5 +186,49 @@ describe("assignmentDetail — 任务详情载荷", () => {
 			"http://x:4001/api/v1/assignments/a%20b/attachments/3/download",
 		)
 		expect(downloadUrlFor("", "a", 1)).to.equal("/api/v1/assignments/a/attachments/1/download")
+	})
+
+	describe("resolveDetailDerivedState — 按钮态唯一推导（提交成功后的回归）", () => {
+		it("★ 目录存在 + 会话属于本任务 → 继续实验 + 提交/结束按钮", () => {
+			expect(
+				resolveDetailDerivedState({
+					assignmentId: "task_a",
+					experimentDir: "D:\ws\experiments\task_a",
+					sessionAssignmentId: "task_a",
+				}),
+			).to.deep.equal({ started: true, sessionActive: true })
+		})
+
+		it("★ 提交成功、会话已清但子工作区仍在 → 必须回到「继续实验」", () => {
+			expect(
+				resolveDetailDerivedState({
+					assignmentId: "task_a",
+					experimentDir: "D:\ws\experiments\task_a",
+					sessionAssignmentId: null,
+				}),
+			).to.deep.equal({ started: true, sessionActive: false })
+		})
+
+		it("★ 子工作区被删除 → 回到「开始实验」", () => {
+			expect(
+				resolveDetailDerivedState({ assignmentId: "task_a", experimentDir: null, sessionAssignmentId: null }),
+			).to.deep.equal({ started: false, sessionActive: false })
+		})
+
+		it("★ 会话属于别的任务时不算本任务进行中", () => {
+			expect(
+				resolveDetailDerivedState({
+					assignmentId: "task_a",
+					experimentDir: "D:\ws\experiments\task_a",
+					sessionAssignmentId: "task_b",
+				}),
+			).to.deep.equal({ started: true, sessionActive: false })
+		})
+
+		it("空字符串目录按「未开始」处理（BN：目录字段可能为 \"\"）", () => {
+			expect(
+				resolveDetailDerivedState({ assignmentId: "task_a", experimentDir: "", sessionAssignmentId: "task_a" }),
+			).to.deep.equal({ started: false, sessionActive: true })
+		})
 	})
 })

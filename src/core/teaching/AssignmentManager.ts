@@ -66,7 +66,12 @@ import {
 import { redactForFile } from "./submission/secrets"
 import type { QuestionSignals } from "./submission/thinkingQuestions"
 import { ensureStudentLogFile, resolveStudentLogFile } from "./workspaceLogPath"
-import { type AssignmentDetailPayload, buildAssignmentDetailPayload, pickGuideAttachment } from "./assignmentDetail"
+import {
+	type AssignmentDetailPayload,
+	buildAssignmentDetailPayload,
+	pickGuideAttachment,
+	resolveDetailDerivedState,
+} from "./assignmentDetail"
 import {
 	ensureExperimentWorkspace,
 	EXPERIMENT_ATTACHMENT_DIR,
@@ -315,6 +320,9 @@ export class AssignmentManager {
 	private detailOpener: DetailPanelOpener | null = null
 	private detailAssignment: Assignment | null = null
 	private detailGuideText: string | undefined
+	private detailGuideNotice: string | undefined
+	/** 详情面板载荷推送（宿主注入，保存即“面板还开着”也要刷新按钮态） */
+	private detailUpdater: ((payload: AssignmentDetailPayload) => void) | null = null
 	/** 上传互斥：面板连点/重复确认时只允许一个在飞 */
 	private uploadInFlight = false
 	/** 会话态广播（宿主注入：把 new/ended 推给侧栏，实验态横幅据此显隐） */
@@ -807,6 +815,7 @@ export class AssignmentManager {
 
 			this.detailAssignment = assignment
 			this.detailGuideText = guide?.text
+			this.detailGuideNotice = guideNotice
 
 			if (!this.detailOpener) {
 				throw new Error("详情面板不可用（宿主未注入）")
@@ -2140,6 +2149,62 @@ export class AssignmentManager {
 		this.sessionBroadcaster = broadcaster
 	}
 
+	/** 宿主注入详情面板刷新（VscodeWebviewProvider：AssignmentDetailPanelProvider.update） */
+	public attachDetailUpdater(updater: ((payload: AssignmentDetailPayload) => void) | null): void {
+		this.detailUpdater = updater
+	}
+
+	/**
+	 * 【Task5 修复】会话变化后重建详情面板载荷。
+	 *
+	 * 提交实验走的是思考题面板（另一个 webview）：上传成功后会话文件被删除，
+	 * 但详情面板不会自己向扩展要数据，所以必须主动推一次新载荷；否则按钮会停在
+	 * 「提交实验 / 结束实验」，学生得再点一次「结束实验」才回到「继续实验」。
+	 * 这里整份重建而不只改 sessionActive：`started` 以子工作区是否存在为准
+	 * （提交/结束都保留目录 → 「继续实验」；目录被删 → 「开始实验」）。
+	 */
+	private refreshDetailSessionState(workspaceRoot: string | null): void {
+		const assignment = this.detailAssignment
+		if (!assignment || !this.detailUpdater || !workspaceRoot) return
+		const experimentDir = this.findExperimentDir(workspaceRoot, assignment.id)
+		const derived = resolveDetailDerivedState({
+			assignmentId: assignment.id,
+			experimentDir,
+			sessionAssignmentId: readActiveExperiment(workspaceRoot)?.assignmentId ?? null,
+		})
+		const attachmentInputs = (assignment.attachments ?? []).map((a) => ({
+			id: a.id,
+			name: a.original_name,
+			size: a.file_size,
+			mimeType: a.mime_type,
+		}))
+		try {
+			const built = buildAssignmentDetailPayload({
+				assignment: {
+					id: assignment.id,
+					title: assignment.title,
+					week: assignment.week,
+					description: assignment.description,
+					template_code: assignment.template_code,
+					attachments: attachmentInputs,
+				},
+				apiBase: this.apiBase,
+				guide: this.detailGuideText ? { text: this.detailGuideText } : undefined,
+				guideNotice: this.detailGuideNotice,
+				started: derived.started,
+				experimentDir,
+				sessionActive: derived.sessionActive,
+			})
+			if (built.ok) {
+				this.detailUpdater(built.payload)
+			} else {
+				Logger.warn(`[AssignmentManager] 刷新详情面板失败: ${built.error}`)
+			}
+		} catch (error) {
+			Logger.warn("[AssignmentManager] 刷新详情面板异常", error)
+		}
+	}
+
 	/** 当前工作区根（没有工作区返回 null） */
 	private getWorkspaceRoot(): string | null {
 		const folders = vscode.workspace.workspaceFolders
@@ -2155,6 +2220,8 @@ export class AssignmentManager {
 		} catch (error) {
 			Logger.warn("[AssignmentManager] 广播实验会话失败", error)
 		}
+		// 会话变化 = 详情面板按钮态可能变化（开始/提交成功/结束），同步重建一次载荷
+		this.refreshDetailSessionState(workspaceRoot)
 	}
 
 	/** 【Task4】「提交实验」命令：复用两段式提交（本地收集 → 出题 → 确认上传） */
