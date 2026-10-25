@@ -3,6 +3,7 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 import { Logger } from "@/shared/services/Logger"
+import { type ExperimentSession, experimentLogRoot, readActiveExperiment } from "../ExperimentSession"
 
 /**
  * 运行痕迹采集（P1-2）
@@ -96,8 +97,28 @@ export function pickWorkspaceRoot(cwd: string | undefined, folders: readonly vsc
 	return folders.length === 1 ? folders[0].uri.fsPath : null
 }
 
-export class RunTraceCollector implements vscode.Disposable {
-	private disposables: vscode.Disposable[] = []
+/**
+ * 运行痕迹应该写到哪个目录（Task3）。
+ *
+ * 有活动实验会话时写 `experiments/<id>/`，否则写工作区根。放在写入时判断而不是
+ * 启动时缓存：学生可能先在自由模式跑命令，点「开始实验」之后才跑实验代码，此时
+ * 采集器不需要重启也能改道。
+ */
+export function resolveRunTraceRoot(
+	workspaceRoot: string,
+	sessionReader: (root: string) => ExperimentSession | null = readActiveExperiment,
+): string {
+	if (!workspaceRoot) return workspaceRoot
+	try {
+		const session = sessionReader(workspaceRoot)
+		return session ? experimentLogRoot(workspaceRoot, session.assignmentId) : workspaceRoot
+	} catch {
+		// 会话文件读挂 → 退回工作区根：运行痕迹是辅助信号，不能阻断终端使用
+		return workspaceRoot
+	}
+}
+
+export class RunTraceCollector implements vscode.Disposable {	private disposables: vscode.Disposable[] = []
 	private pending = new Map<ExecutionLike, PendingExecution>()
 	private available = false
 	private started = false
@@ -203,7 +224,7 @@ export class RunTraceCollector implements vscode.Disposable {
 
 		const root = pickWorkspaceRoot(entry.cwd, vscode.workspace.workspaceFolders ?? [])
 		if (!root) return
-		this.append(root, record)
+		this.append(resolveRunTraceRoot(root), record)
 	}
 
 	private append(workspaceRoot: string, record: RunTraceRecord): void {

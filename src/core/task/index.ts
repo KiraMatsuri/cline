@@ -69,6 +69,7 @@ import { filterExistingFiles } from "@utils/tabFiltering"
 import cloneDeep from "clone-deep"
 import Mutex from "p-mutex"
 import pWaitFor from "p-wait-for"
+import * as fs from "fs"
 import * as path from "path"
 import { ulid } from "ulid"
 import type { SystemPromptContext } from "@/core/prompts/system-prompt"
@@ -88,6 +89,7 @@ import { isWikiServerConnected } from "@/core/teaching/WikiMcpRegistrar"
 import { buildWikiSystemPrompt } from "@/core/teaching/wikiPrompt"
 import { logPersistEnabled, resolveSessionContext } from "@/core/teaching/TeachingSessionMode"
 import { readExperimentAttachments, readExperimentGuide, readExperimentTemplate } from "@/core/teaching/ExperimentWorkspace"
+import { activeExperimentPath } from "@/core/teaching/ExperimentSession"
 import {
 	assembleTeachingContext,
 	experimentPseudoCodePromptSection,
@@ -989,8 +991,10 @@ export class Task {
 	 */
 	private lastComplianceAccountKey: string | undefined
 
-	// 【P1-5/P1-6】教学会话上下文缓存（cwd 解析一次；模式/实验 id 在任务生命周期内不变）
+	// 【P1-5/P1-6】教学会话上下文缓存（按根会话文件签名增量刷新：开始/结束实验无需重建任务）
 	private teachingBaseContext: SessionContext | undefined
+	/** 【Task3】根会话文件（`.cline-logs/active-experiment.json`）的 mtime:size 签名，用于发现模式切换 */
+	private teachingSessionSignature: string | undefined
 	/** 【P1-6】「明确索要完整实现」的连续次数（内存镜像；落盘见 persistTeachingDemand） */
 	private teachingDemandCount = 0
 	/** 【P1-6】是否已从任务目录读回计数（恢复会话不重置） */
@@ -1067,14 +1071,52 @@ export class Task {
 	/**
 	 * 【P1-5/P1-6】解析当前教学会话上下文（懒加载 + 计数镜像）。
 	 *
-	 * 为什么缓存基础上下文：cwd 在任务生命周期内不变，每轮重新读 `.teaching/task.json`
-	 * 既慢又可能被学生改动影响；次数单独叠加，避免每次 bump 都重建整个上下文。
+	 * 为什么用文件签名而不是只解析一次：`startExperiment`/`endExperiment` 只写根会话文件，
+	 * 不重建任务；若只缓存一次，同一任务内切换实验/自由模式将永远读不到新状态。
+	 * 签名（mtime:size）只做一次 stat，代价远小于每轮重建整个上下文。
 	 */
 	private getTeachingSessionContext(): SessionContext {
-		if (!this.teachingBaseContext) {
-			this.teachingBaseContext = resolveSessionContext({ cwd: this.cwd })
+		return attachDemandCount(this.refreshTeachingSession(), this.teachingDemandCount)
+	}
+
+	/**
+	 * 【Task3】按根会话文件签名刷新教学会话上下文。
+	 *
+	 * 变化时同步写给日志持久化器（启用开关 / mode / logRoot），并在「实验 → 非实验」时
+	 * 清零索要计数：阶梯属于一次实验会话，结束后不应沿用。
+	 */
+	private refreshTeachingSession(): SessionContext {
+		let signature = "none"
+		try {
+			const stat = fs.statSync(activeExperimentPath(this.cwd))
+			signature = `${stat.mtimeMs}:${stat.size}`
+		} catch {
+			// 文件不存在或不可读：视为无会话，与 readActiveExperiment 的降级一致
 		}
-		return attachDemandCount(this.teachingBaseContext, this.teachingDemandCount)
+		if (this.teachingSessionSignature === signature && this.teachingBaseContext) {
+			return this.teachingBaseContext
+		}
+		this.teachingSessionSignature = signature
+		const previous = this.teachingBaseContext
+		const next = resolveSessionContext({ cwd: this.cwd })
+		this.teachingBaseContext = next
+		if (
+			previous &&
+			(previous.mode !== next.mode || previous.experimentId !== next.experimentId || previous.logRoot !== next.logRoot)
+		) {
+			const persister = this.studentLogPersister
+			if (persister) {
+				persister.setEnabled(logPersistEnabled(next))
+				persister.setContext({ mode: next.mode, experimentId: next.experimentId })
+				persister.setLogRoot(next.logRoot)
+			}
+			if (previous.mode === "experiment" && next.mode !== "experiment") {
+				this.teachingDemandCount = 0
+				void this.persistTeachingDemand()
+			}
+			Logger.info(`[TeachingSession][${this.taskId}] ${previous.mode} -> ${next.mode} (logRoot=${next.logRoot})`)
+		}
+		return next
 	}
 
 	/**
@@ -1134,13 +1176,14 @@ export class Task {
 	 * - 自由模式：教材索引（含认知边界约束，来自 buildWikiSystemPrompt）+ 预召回片段；
 	 * - 实验模式：实验目录产物（GUIDE.md / attachments/ / 模板）+ 预召回片段。
 	 *   实验任务已有明确实验指导，不注入全量索引，避免挤占 6000 字预算。
-	 * P1-1 目前按 cwd 识别实验模式（cwd 即 experiments/<id>/），因此实验目录 = this.cwd。
+	 * 实验目录取 `ctx.logRoot`（Task3）：会话可由根 `.cline-logs/active-experiment.json` 激活，
+	 * 此时任务 cwd 仍是工作区根，不能再用 `this.cwd` 当实验目录。
 	 */
 	private async buildTeachingContext(indexContext: string, recall: string | null): Promise<TeachingContextResult> {
 		await this.ensureTeachingDemandLoaded()
 		const ctx = this.getTeachingSessionContext()
 		if (ctx.mode === "experiment") {
-			const experimentDir = this.cwd
+			const experimentDir = ctx.logRoot
 			const attachments = readExperimentAttachments(experimentDir).map((item) => `【${item.file}】\n${item.text}`)
 			const result = assembleTeachingContext({
 				mode: "experiment",
@@ -1174,8 +1217,9 @@ export class Task {
 	 */
 	private getStudentLogPersister(): StudentLogPersister {
 		if (!this.studentLogPersister) {
-			this.studentLogPersister = new StudentLogPersister(this.cwd)
-			const ctx = resolveSessionContext({ cwd: this.cwd })
+			// 【Task3】日志根取会话上下文：实验会话写 experiments/<id>/.cline-logs，自由模式仍是 cwd
+			const ctx = this.getTeachingSessionContext()
+			this.studentLogPersister = new StudentLogPersister(this.cwd, ctx.logRoot)
 			this.studentLogPersister.setEnabled(logPersistEnabled(ctx))
 			this.studentLogPersister.setContext({ mode: ctx.mode, experimentId: ctx.experimentId })
 		}
@@ -2631,6 +2675,9 @@ export class Task {
 		}).catch(() => {
 			Logger.error("MCP servers failed to connect in time")
 		})
+
+		// 【Task3】拼 prompt 前按会话文件刷新：同一任务内「开始实验」应在下一轮立即生效
+		this.refreshTeachingSession()
 
 		const providerInfo = this.getCurrentProviderInfo()
 		const ide = (await HostProvider.env.getHostVersion({})).platform || "Unknown"

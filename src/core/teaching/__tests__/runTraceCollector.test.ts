@@ -1,9 +1,10 @@
 import "should"
 import * as fs from "fs"
-import { describe, it } from "mocha"
+import { afterEach, beforeEach, describe, it } from "mocha"
+import * as os from "os"
 import * as path from "path"
 
-import { pickWorkspaceRoot, type RunTraceRecord, stripAnsi, tailOf } from "../submission/RunTraceCollector"
+import { resolveRunTraceRoot, pickWorkspaceRoot, type RunTraceRecord, stripAnsi, tailOf } from "../submission/RunTraceCollector"
 import { readRunTraces } from "../submission/SubmissionPackager"
 
 function folder(fsPath: string): { uri: { fsPath: string } } {
@@ -75,5 +76,72 @@ describe("运行痕迹采集（P1-2 / RT-1、RT-2）", () => {
 
 	it("readRunTraces 对不存在的文件返回空数组（RT-2）", () => {
 		readRunTraces(path.join(".tmp-test", "no-such-workspace")).should.eql([])
+	})
+})
+
+/**
+ * Task3 · 运行痕迹目录路由
+ *
+ * 实验模式下运行痕迹要写进 `experiments/<id>/.cline-logs/`，否则同一个工作区的
+ * 多个任务会混在根 `run_traces.jsonl` 里；没有活动会话时保持写根（自由模式不改）。
+ */
+describe("运行痕迹目录路由（resolveRunTraceRoot）", () => {
+	let root = ""
+
+	beforeEach(() => {
+		root = fs.mkdtempSync(path.join(os.tmpdir(), "run-trace-root-"))
+	})
+
+	afterEach(() => {
+		fs.rmSync(root, { recursive: true, force: true })
+	})
+
+	it("★ 没有活动会话 → 工作区根", () => {
+		resolveRunTraceRoot(root).should.equal(root)
+	})
+
+	it("★ 有活动会话 → experiments/<id>", () => {
+		const target = resolveRunTraceRoot(root, () => ({
+			assignmentId: "task_week2_yufayu",
+			startedAt: "2026-10-25T04:23:04.924Z",
+			status: "active",
+		}))
+		target.should.equal(path.join(root, "experiments", "task_week2_yufayu"))
+	})
+
+	it("★ 缺省 reader 读真实会话文件", () => {
+		fs.mkdirSync(path.join(root, ".cline-logs"), { recursive: true })
+		fs.writeFileSync(
+			path.join(root, ".cline-logs", "active-experiment.json"),
+			JSON.stringify({
+				assignmentId: "from_file",
+				startedAt: "2026-10-25T04:23:04.924Z",
+				status: "active",
+			}),
+			"utf8",
+		)
+		resolveRunTraceRoot(root).should.equal(path.join(root, "experiments", "from_file"))
+	})
+
+	it("★ 会话文件损坏 → 根（降级，不抛）", () => {
+		fs.mkdirSync(path.join(root, ".cline-logs"), { recursive: true })
+		fs.writeFileSync(path.join(root, ".cline-logs", "active-experiment.json"), "{broken", "utf8")
+		resolveRunTraceRoot(root).should.equal(root)
+	})
+
+	it("★ reader 抛错 → 根（降级，不阻断终端使用）", () => {
+		const target = resolveRunTraceRoot(root, () => {
+			throw new Error("disk on fire")
+		})
+		target.should.equal(root)
+	})
+
+	it("★ id 含分隔符时路径仍 sanitize", () => {
+		const target = resolveRunTraceRoot(root, () => ({
+			assignmentId: "a/b",
+			startedAt: "2026-10-25T04:23:04.924Z",
+			status: "active",
+		}))
+		target.should.equal(path.join(root, "experiments", "a_b"))
 	})
 })

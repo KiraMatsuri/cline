@@ -31,12 +31,31 @@ export interface LogPersistContext {
  */
 export class StudentLogPersister {
 	private readonly cwd: string
+	/**
+	 * 实际落盘根（Task3）。
+	 *
+	 * 实验模式下是 `experiments/<id>/`，自由模式/旧调用方缺省回退 cwd。
+	 * 用可变字段而不是 readonly：同一个聊天任务里点「开始实验」后要能立刻切过去，
+	 * 不必等下一个任务。
+	 */
+	private logRoot?: string
 	private turnIndexMap: Map<string, number> = new Map()
 	private enabled = true
 	private context: LogPersistContext | null = null
 
-	constructor(cwd: string) {
+	constructor(cwd: string, logRoot?: string) {
 		this.cwd = cwd
+		this.logRoot = logRoot?.trim() || undefined
+	}
+
+	/** 当前日志落盘根（实验目录或 cwd） */
+	public getLogRoot(): string {
+		return this.logRoot ?? this.cwd
+	}
+
+	/** 会话模式变化时切换落盘根（同一任务内开始/结束实验均会调用） */
+	public setLogRoot(logRoot: string): void {
+		this.logRoot = logRoot?.trim() || undefined
 	}
 
 	/** 是否落盘（自由模式为 false） */
@@ -69,7 +88,7 @@ export class StudentLogPersister {
 	 * 获取日志目录路径
 	 */
 	public getLogDir(): string {
-		return path.join(this.cwd, LOG_DIR_NAME)
+		return path.join(this.getLogRoot(), LOG_DIR_NAME)
 	}
 
 	/**
