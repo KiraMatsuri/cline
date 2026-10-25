@@ -1491,6 +1491,10 @@ M4' **必须记录"第几次索要触发阻断"**：
 
 **建议顺序**：插桩 → T14 → T19 → T15 → T17 → T16 → T18 → G5 全量 → 重跑 M1'–M14'。
 
+**落地状态与人工验收清单**：T14–T19 已全部落地并提交（代码 `06e1cb0b` / 文档 `9ad10f00`；全量 1074 passing / 0 failing）。
+实机验收按 `docs/design/teaching-intervention-p5-manual-test.md` 执行 —— 第一轮 **P5 专项 7 项**（T14–T19 的判别点），
+第二轮 **M1'–M14' 全量回归**；其中包含证据复算命令、M4' 判据补强表与可填写的记录表。
+
 ### 11.6 计数单位：三个选项（**需用户裁定**）
 
 | 选项 | 定义 | 一次 12 回合的请求 | M4' 的「连续 3 次请求」 | 成本 / 风险 |
@@ -1519,6 +1523,155 @@ M4' **必须记录"第几次索要触发阻断"**：
 - 不通过调低 `escalationBlockingThreshold` 来掩盖问题（阈值本身不是根因）。
 - 不动 `src/core/prompts/**`；不改 `CHANGELOG.md` 的 `[Unreleased]` 日期行。
 - M10'（联网检索）跨仓阻塞，不在本计划范围。
+
+---
+
+## 12. P6 —— 阻断改造为独立干预通道 + 询问类型影响 AI 依赖度（2026-10-14 定稿）
+
+> **触发**：第二轮人工验收（P5 之后，日志见 §13 的附录 / `d:\test-work\.cline-logs\student_interactions.log`）
+> 暴露两类新问题：① 9 条阻断**全部发生在助手从未写过一行代码**的会话里（断言：本次日志 `code_edit` 事件数 = **0**）；
+> ② 学生连续 4 次索要完整实现时助手**逐字复读**同一条回答（562 字节文字重复 4 次），且看不到任何干预文案。
+> **用户裁定（2026-10-14）**：
+> 1. 阻断式干预改造为**独立干预手段**：**只有助手真正编码文件时才计数**，达到 **3 次**触发；**学生手动编码时清零**。
+> 2. **其余干预手段正常触发**（仅提示，不再阻断），但需**记录询问类型**，并由询问类型影响 **AI 依赖度**计算
+>    （例：概念问答只记 **50%** 的依赖度）。
+> 3. 索要完整实现的处理采用 **b + c**：仅当学生**明确表示自己写不出**时进入服从流程，
+>    且**先询问一次**并在询问中**告知"直接编码 3 次会触发阻断"**。
+>
+> **书写约定**：尖括号写作 `‹ ›`。
+
+### 12.1 设计总览
+
+| 维度 | P5（现状） | P6（本方案） |
+|---|---|---|
+| 阻断触发量 | `complete_impl_demand` 的**学生索要次数**（阈值 3） | **助手真实落盘次数**（阈值 3，独立通道） |
+| 阻断清零 | 无（`blockingTriggered` 一次性） | **学生本人编辑代码 ⇒ 清零** |
+| 其余规则 | 部分允许升级（`consecutive_code_generation` / `no_edit_streak` / `complete_impl_demand`） | **一律不允许升级**，只提示 |
+| 依赖度 | 绝对助手回合数（概念分类下整条停用） | **询问类型加权**的学生请求和（概念 0.5 / 编码 1.0），概念分类下也生效 |
+| 索要完整实现 | 一律拒绝 + 计 3 次阻断 | 引导 → 学生自述写不出 → **询问一次（含 3 次告知）** → 确认后**给出完整实现** |
+
+### 12.2 独立阻断通道（T20）
+
+| 项 | 规定 |
+|---|---|
+| **新规则 ID** | `ai_coding_rounds`（`BehaviorRuleId` 新增；文案主语是「我（AI）」而不是学生，避免指控错位） |
+| **计数信号** | `eventType === "code_edit"` 且 `editor === "ai"` —— 等价于 `write_to_file` / `replace_in_file` / `apply_patch` **真实落盘成功**（F2/F11 已落地该归属；M8' 的判据即此） |
+| **计数单位** | **每个学生请求最多 + 1**（复用 `bumpOncePerRequest`）—— 同一请求内连写 3 个文件算 **1** 次（T14 的教训：一次请求 = 一件事） |
+| **阈值** | `aiCodingBlockingThreshold = 3` |
+| **清零** | 学生本人 `code_edit`（`editor !== "ai"`；缺省 editor 视为人工，向后兼容）⇒ 计数归零，**仅作用于本规则** |
+| **触发** | 复用现有阻断机制：`triggerBlocking()` → 禁用 `code_generation` / `tool_execution` + 60s 倒计时 + 全局静态（防"退出/新建对话"绕过）+ `blockingTriggered` 一次性 |
+| **记账** | `intervention_decision` / `intervention_copy` 带 `interventionRuleId: "ai_coding_rounds"`（M9' 自动兼容） |
+| **不变** | 阻断文案仍是代码模板（`generateBlockingInterventionMessage`），不走模型叙述层 |
+
+### 12.3 规则策略反转（T21）
+
+- 新增白名单 `BLOCKING_CAPABLE_RULES = { ai_coding_rounds }`；**其余全部** `canEscalateToBlocking = false`
+  （含 `complete_impl_demand`、`consecutive_code_generation`、`no_edit_streak`、`high_recent_ai_dependency`、
+  `high_adoption_low_self_modification`）。
+- `ALWAYS_ESCALATING_RULES` 更名/改义为 `ALWAYS_ENABLED_RULES`：`complete_impl_demand` 仍在**任何分类**下启用
+  （概念型任务是它的主战场），但**不再可升级**。
+- 概念分类下 `no_edit_streak` / `consecutive_code_generation` 仍按 C-1 停用（原有理由不变）。
+
+### 12.4 询问类型 → AI 依赖度加权（T22 / T23）
+
+**类型映射**（由 `TaskCategory` 推导，不改分类器）：
+
+| `queryType` | 来源分类 | 权重 |
+|---|---|---|
+| `concept` | `explanation`、`algorithm` | **0.5** |
+| `coding` | `code_generation`、`debugging`、`refactoring`、`testing` | 1.0 |
+| `other` | `other`、`language_request`、`undefined` | 1.0（保守：分类缺失时不打折，沿用"宁可保留能力"原则） |
+
+- **在线规则**：`high_recent_ai_dependency` 的命中条件改为「窗口内学生请求的**加权和** ≥ `dependencyWeightedThreshold`（默认 **3**）」，
+  命中 ⇒ **gentle 提示（永不阻断）**。语义直观：3 次编码类提问、或 **6 次概念提问** 才提示一次
+  （这就是"概念问答只记 50%"的落地形式）。
+- **单次提问仍然零提示**（0.5 < 3）⇒ 保留 M1' 的通过条件；概念提问**重复出现**时才会出现干预文案
+  （回答"当前是否会出现"这一问题：现状 **不会**，见本文 §12.8 的证据表）。
+- **日志新增字段**（学生侧事件）：`queryType`、`dependencyWeight`。⚠️ `student_interactions.log` 字段是**外部契约**
+  （教师端看板消费）⇒ 属**新增字段**（不改变既有字段语义），须同步 CHANGELOG 与后端说明（跨仓登记）。
+- **口径提醒（交接复查 2026-10-17）**：教师端**复算依赖度以 `queryType` 为准**；`dependencyWeight` 只是**写入时的派生快照**
+  （由 `dependencyWeightForQueryType(toQueryType(category))` 生成），若权重口径日后变更，历史快照会过期 —— 不要把它当权威值。
+- 旧字段 `aiDependencyThreshold: 0.85` 仍不参与在线判定（F9 起已如此），保留仅为向后兼容。
+
+### 12.5 索要完整实现的 b + c 服从流程（T24 / T25）
+
+```
+引导态 ──学生「明确写不出」──▶ 询问态（助手问一次 + 告知 3 次阻断）
+                              ├─ 学生确认 ──▶ 服从态（本轮给出完整实现，允许写文件）
+                              └─ 否认/换题 ──▶ 回引导态
+```
+
+| 项 | 规定 |
+|---|---|
+| **(b) 判定** | 新纯函数 `isInabilityStatement(text)`：`我(真的)不会写 / 我写不出来 / 我实在写不出来 / 我看不懂 / 我完全没思路 / 你别问了(直接)给我 / 我照着写也写不出来 …`（保守，宁漏勿误；单测锁定正反例）。**"请提供完整实现"不算**（那是索要，不是自述能力不足） |
+| **(c) 询问** | **代码驱动**（不交给模型自由发挥 —— 实测模型对提示词的遵循度很低）：由 `Task` 用 `ask("followup")` 呈现固定文案，并进入等待确认状态 |
+| **询问文案**（必含告知） | 「你是希望我**直接给出完整可运行的实现**吗？回复"是"我就给。⚠️ 提醒：如果让我**连续 3 次直接编码**，会触发**阻断式干预** —— 代码生成与工具执行暂停约 **1 分钟**，期间请自己写代码或完成反思练习。」（逐字稿，含 3 次告知） |
+| **服从态** | 豁免**概念护栏**（`buildConceptModeConstraint`）本轮注入，改为注入「本轮请直接给出完整可运行实现（写入文件），并逐段说明关键步骤」；`buildDemandRefusalConstraint` 不注入 |
+| **确认判定** | `isAffirmation(text)`（`是 / 对 / 好 / 可以 / 给我 / 就这样`…，保守） |
+| **记账** | 新事件类型 `demand_compliance`，取值 `asked` / `granted` / `denied`；**不并入 M9' 的 `D`**（避免污染三条守恒式），在文档中单独作为 `D′` 统计 |
+| **与阻断的关系** | 服从态给出实现 ⇒ 会触发 §12.2 的 **AI 落盘计数**（助手确实写了文件）⇒ 累计 3 次即阻断 —— 与"3 次告知"一致，**这是有意为之** |
+
+### 12.6 展示层缺陷一并修复（T26，来自第二轮实测）
+
+| 缺陷 | 证据 | 修法 |
+|---|---|---|
+| 顺延重投回合把**阻断检查与记账一起跳过**（`needDecision=false`）⇒ 计数已达阈值却既不阻断也不记账 | 13:00:20 / 13:00:49（该会话第 3、4 次索要）、13:06:26 / 13:06:49 两处复现 | 阻断检查与记账**始终执行**；只让"文案注入"去重（T17 已能防重复记账） |
+| 阻断回合 `return false` → Cline 记 mistake → **重试 3 次** ⇒ 同一消息显示 3 次、D/T 各记 3 次、结尾冒出"AI 连续 3 次没能正确调用工具" | 13:01:18–13:01:28、13:07:04–13:07:05（9 对 D/T） | 阻断回合改为**不进入** mistake 重试（或使重试路径幂等：每条学生消息最多 展示/记账 1 次） |
+| `attempt_completion` 独占回合不追加兜底模板、也不记账 | 12:59:47 与 13:05:48 两条 gentle 决策**零可见文案**（M9' ③ 恰好差 2） | 把"兜底追加 + 记账"下沉为**两条展示路径共用**的前置处理 |
+| 阻断文案把原始 `‹teaching_intervention …›` 包裹与内部指令（"请在你的回复中严格执行以下要求…"）**展示给学生** | 会话原文可证 | 展示前剥离包裹与内部指令段 |
+
+### 12.7 任务清单（P6）
+
+| Task | 内容 | 门禁 |
+|---|---|---|
+| **T20** | 独立阻断通道（`ai_coding_rounds` 计数 / 清零 / 阈值 3 / 触发） | 新增 4 例：① AI 落盘一次 = 1 次（同请求多文件仍 1）；② 3 次 ⇒ 阻断；③ 学生本人编辑 ⇒ 清零；④ 非编码回合（无 `code_edit(ai)`）永不计数 |
+| **T21** | 规则策略反转（`BLOCKING_CAPABLE_RULES` 白名单） | policy 矩阵 5×5 + 既有断言重写 |
+| **T22** | 询问类型加权（`queryType` / `dependencyWeight` / 加权阈值 3） | 新增 4 例：权重表；概念 6 次才提示；单次零提示；编码 3 次提示 |
+| **T23** | 日志字段 + CHANGELOG + 后端口径说明 | 字段存在性 + 外部契约变更登记 |
+| **T24** | b+c 服从流程（句式判定 + 询问 + 服从态 + `demand_compliance` 记账） | 句式正反例 + `asked/granted/denied` 三态 + 服从轮不再注入拒答约束 |
+| **T25** | 文案（`ai_coding_rounds` 三档 + 询问文案含 3 次告知） | 文案断言（含"3 次"与"阻断"字样） |
+| **T26** | §12.6 四项展示层修复 | 结构断言 + 阻断幂等（同消息只 1 对 D/T） |
+| **T27** | 文档与验收判据重写 | M2'/M3'/M8'/M9' 重述 + **M4''** / **M6''** 替代 M4'/M6' + 新增 **M15'/M16'/M17'** |
+
+**建议顺序**：T26（先把噪音止住）→ T20 → T21 → T22/T23 → T24/T25 → T27 → G6 全量 → 重跑验收。
+
+> **落地状态（2026-10-17 勾选）**：T20 ✅ / T21 ✅ / T22 ✅ / T23 ✅ / T24 ✅ / T25 ✅ / T26 ✅ / T27 ✅
+> —— 全部由 P6 Task 1–10 实现；G6 门禁落在 `src/core/task/student-analytics/__tests__/priorityGate.p6.test.ts`（4 passing）。
+> 验收判据（M2'/M3'/M4''/M6''/M8'/M9'/M15'–M17'）见 `teaching-intervention-acceptance-and-revisions.md` §10；
+> 实机步骤见 `teaching-intervention-p5-manual-test.md` §2.5；该文件 §3 的 M4'/M6'/M8' 三行已划废（指向 §2.5 / 验收 §10），
+> P5-2 ④、P5-6 的旧例外也已改为 P6 口径。收尾提交：`3522023e`（G6 + 交接项修复）；
+> 代码全部已提交，**`docs/design/**` 的改动按惯例留待用户批准后单独提交**。
+
+**实现计划（逐任务 TDD 步骤 / 完整代码 / 提交命令）**：`docs/design/teaching-intervention-p6-implementation-plan.md`
+（Task 1–10，用户 2026-10-14 裁定"按默认执行"后定稿）。
+
+### 12.8 受影响测试与判据（必须同步，否则"全绿"是假的）
+
+| 文件 / 文档 | 需改什么 |
+|---|---|
+| `__tests__/countingUnit.test.ts` | T14 的 4 例中，"3 次索要即阻断"改为"3 次 **AI 落盘** 即阻断"；`no_edit_streak` 断言改为"只提示、永不阻断" |
+| `__tests__/demandRule.test.ts` | `shouldEscalateToBlocking("complete_impl_demand")` 断言**反转**为 `false`；改为断言"计数 + 提示 + 可进入 b+c 流程" |
+| `__tests__/priorityGate.p5.test.ts` | G5-② 端到端改为"AI 落盘 3 次 ⇒ 阻断"；新增 G6 门禁 |
+| `__tests__/rulePolicy.test.ts` | `canEscalateToBlocking` 期望值全表更新（只 `ai_coding_rounds` 为 true） |
+| `__tests__/escalationReachability.test.ts` | 阻断可达性用例换成新通道 |
+| `__tests__/interventionParams.test.ts` | 阈值断言（`aiCodingBlockingThreshold` / `dependencyWeightedThreshold`） |
+| `docs/.../teaching-intervention-acceptance-and-revisions.md` | **M4'**（→ **M4''**："AI 代写 3 次才阻断"）、**M6'**（→ **M6''**：b+c 流程 询问 → 确认 → 给码，询问文案含「连续 3 次直接编码会触发阻断」）、**M8'**（AI 落盘计数）、**M2'/M3'**（单次零干预，**重复概念提问**出现提示）；新增 **M15'**（学生手动编码清零）、**M16'**（6 次概念提问加权 3.0 ⇒ 1 条提示、永不阻断）、**M17'**（阻断文案脱敏 + 同一条学生消息只展示/记账一次） |
+
+### 12.9 采用默认值的细节（如不同意可直接覆盖）
+
+1. 阈值 3（`aiCodingBlockingThreshold`）—— 与"3 次告知"文案一致。
+2. 同一请求内多次落盘**只算 1 次**。
+3. 阻断触发后本任务不再重复阻断（沿用 `blockingTriggered` 一次性）。
+4. 权重表只两档：`concept = 0.5`、其余 1.0；加权阈值 `dependencyWeightedThreshold = 3`。
+5. 服从态**仅本轮**（下一轮回到引导态），并且**计入** AI 落盘计数。
+6. 清零**只作用于 `ai_coding_rounds`**，不动其它规则的计数（"学生编辑 ⇒ 清零两个代码规则"是另一项待议裁定）。
+
+### 12.10 明确不做
+
+- 不动 `src/core/prompts/**`；不改 `CHANGELOG.md` 的 `[Unreleased]` 日期行。
+- 不把 `demand_compliance` 并入 M9' 的 `D`（守恒式会失真）。
+- 不因"分类缺失/未知"而让新规则静默失效（保守启用，沿用既有原则）。
+- M10'（联网检索）仍跨仓阻塞，不在本方案范围。
 
 
 
