@@ -34,6 +34,7 @@ import { HookProcessRegistry } from "./core/hooks/HookProcessRegistry"
 import { Task } from "./core/task"
 import { CodeEditTracker } from "./core/task/student-analytics/CodeEditTracker"
 import { PasteLimitManager } from "./core/teaching/PasteLimitManager"
+import { normalizeServerUrl } from "./core/teaching/serverUrl"
 import { workspaceResolver } from "./core/workspace"
 import { findMatchingNotebookCell, getContextForCommand, showWebview } from "./hosts/vscode/commandUtils"
 import { abortCommitGeneration, generateCommitMsg } from "./hosts/vscode/commit-message-generator"
@@ -164,7 +165,7 @@ export async function activate(context: vscode.ExtensionContext) {
 				enabled: webCfg.get<boolean>("webSearchEnabled") ?? false,
 				execPath: process.execPath,
 				scriptPath: path.join(context.extensionPath, "dist", "mcp-web-search-server.js"),
-				serverUrl: (webCfg.get<string>("serverUrl") ?? "").trim(),
+				serverUrl: normalizeServerUrl(webCfg.get<string>("serverUrl"), ""),
 			})
 		} catch (e) {
 			// 注册失败不应阻断插件启动

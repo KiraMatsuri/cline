@@ -36,6 +36,7 @@ import * as path from "path"
 import * as vscode from "vscode"
 import { StateManager } from "@/core/storage/StateManager"
 import { Logger } from "@/shared/services/Logger"
+import { normalizeServerUrl } from "./serverUrl"
 import type {
 	BundleAnswer,
 	BundleIngestResult,
@@ -339,7 +340,8 @@ export class AssignmentManager {
 	 * 拼接 `/api/v1/...` 会产生双斜杠路径 `//api/...`，Express 返回 404。
 	 */
 	private static normalizeApiBase(url: string): string {
-		return url.trim().replace(/\/+$/, "")
+		// 收敛到 shared/normalizeServerUrl（测试连接 / wiki / 反馈 / MCP 共用）
+		return normalizeServerUrl(url, AssignmentManager.DEFAULT_API_BASE)
 	}
 
 	/**

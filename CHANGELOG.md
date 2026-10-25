@@ -27,6 +27,7 @@
 - **提交完成后详情面板按钮不刷新**：提交走的是思考题面板（另一个 webview），上传成功清除会话后详情面板没有收到新载荷，
   按钮仍停在「提交实验 / 结束实验」，需再点一次「结束实验」才回到「继续实验」。现在会话任何变化都会由扩展侧重推整份载荷，
   按钮态按「子工作区是否存在」推导：目录在 →「继续实验」，目录被删 →「开始实验」，无需手动操作。
+- **服务器地址带结尾斜杠时「测试连接」报 HTML/JSON 解析错误**：`_getServerUrl()` 只 `trim()` 不去尾斜杠，填 `http://host/` 会拼出 `//api/v1/internal/llm-test-current`，nginx/Express 返回 404 HTML 页面，而 `resp.json()` 直接抛 `Unexpected token '<', "<!DOCTYPE "...`，看不出问题在地址。现在新增 `src/core/teaching/serverUrl.ts`（`normalizeServerUrl` / `looksLikeHtml` / `describeTestConnectionFailure`），测试连接与 Wiki、反馈、联网检索 MCP、`AssignmentManager` 统一复用；非 JSON 响应会明确提示「返回了网页而不是 JSON」并给出「去掉结尾斜杠、确认指向教学后端」的动作建议，不再暴露原始解析异常。
 
 ## [Unreleased] — 2026-10-24
 

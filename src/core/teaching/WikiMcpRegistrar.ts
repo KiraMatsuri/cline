@@ -27,6 +27,7 @@ import * as vscode from "vscode"
 import { HostProvider } from "@/hosts/host-provider"
 import { ShowMessageType } from "@/shared/proto/host/window"
 import { Logger } from "@/shared/services/Logger"
+import { normalizeServerUrl } from "./serverUrl"
 
 /** McpHub 的最小结构依赖（便于单测，避免 teaching 层绑定 McpHub 实现） */
 export interface McpHubLike {
@@ -155,7 +156,7 @@ export async function ensureWikiMcpServer(context: vscode.ExtensionContext): Pro
 	try {
 		const cfg = vscode.workspace.getConfiguration("clineTeaching")
 		const enabled = cfg.get<boolean>("llmEnableTools") ?? true
-		const serverUrl = (cfg.get<string>("serverUrl") ?? "").trim()
+		const serverUrl = normalizeServerUrl(cfg.get<string>("serverUrl"), "")
 
 		// 必须与 McpHub 用同一个函数取目录（它是 `<globalStorage>/settings`）。
 		// 切勿改回 `context.globalStorageUri.fsPath` —— 那会写到 McpHub 看不到的位置。

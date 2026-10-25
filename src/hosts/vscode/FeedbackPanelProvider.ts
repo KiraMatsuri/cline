@@ -26,6 +26,7 @@ import * as os from "os"
 import * as vscode from "vscode"
 import { ExtensionRegistryInfo } from "@/registry"
 import { Logger } from "@/shared/services/Logger"
+import { DEFAULT_SERVER_URL, normalizeServerUrl } from "@/core/teaching/serverUrl"
 
 export class FeedbackPanelProvider {
 	/** WebviewPanel viewType（动态面板无需 package.json 声明） */
@@ -159,12 +160,12 @@ export class FeedbackPanelProvider {
 	private _getServerUrl(): string {
 		const cfg = vscode.workspace.getConfiguration("clineTeaching")
 		const v = cfg.get<string>("serverUrl")
-		if (v && v.trim()) return v.trim()
+		if (v && v.trim()) return normalizeServerUrl(v)
 		// fallback 到旧配置
 		const oldCfg = vscode.workspace.getConfiguration("teaching")
 		const oldV = oldCfg.get<string>("apiBase")
-		if (oldV && oldV.trim()) return oldV.trim()
-		return "http://localhost:4001"
+		if (oldV && oldV.trim()) return normalizeServerUrl(oldV)
+		return DEFAULT_SERVER_URL
 	}
 
 	// ============================================================================

@@ -23,6 +23,7 @@
 import * as vscode from "vscode"
 import { FeedbackPanelProvider } from "@/hosts/vscode/FeedbackPanelProvider"
 import { Logger } from "@/shared/services/Logger"
+import { DEFAULT_SERVER_URL, describeTestConnectionFailure, normalizeServerUrl } from "@/core/teaching/serverUrl"
 
 // ============================================================================
 //  类型定义
@@ -159,10 +160,35 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 				case "testLLMConnection": {
 					// 【v2.11】用后端已配置的 Key 测试 LLM 连通性（学生无需、也无法提供 Key）：
 					// 既验证"插件 ↔ 教学服务器"连通，也验证"服务器 ↔ LLM 供应商"是否可用。
+					// 【2026-10-25 线上修复】两点：
+					// 1) 地址必须归一化（去尾斜杠）再拼路径 —— 学生填 `http://host/` 时会拼出
+					//    `http://host//api/v1/...`，nginx/Express 返回 404 HTML；
+					// 2) 不再盲信 `resp.json()` —— 失败时后端返回的是 HTML 错误页/SPA 回退页，
+					//    直接解析只会抛 `Unexpected token '<', "<!DOCTYPE "...`，学生无法定位。
 					const serverUrl = this._getServerUrl()
 					try {
 						const resp = await fetch(`${serverUrl}/api/v1/internal/llm-test-current`, { method: "POST" })
-						const data = (await resp.json()) as { ok: boolean; message?: string; model?: string }
+						const rawBody = await resp.text()
+						type LlmTestResponse = { ok?: boolean; message?: string; model?: string; provider?: string }
+						let data: LlmTestResponse | null = null
+						try {
+							data = rawBody.trim() ? (JSON.parse(rawBody) as LlmTestResponse) : null
+						} catch {
+							data = null
+						}
+						if (!data) {
+							const reason = describeTestConnectionFailure({
+								serverUrl,
+								status: resp.status,
+								contentType: resp.headers.get("content-type"),
+								body: rawBody,
+							})
+							post({ command: "testLLMConnection", success: false, error: reason })
+							Logger.warn(
+								`[LLMSettingsViewProvider] llm-test-current 返回非 JSON（HTTP ${resp.status}）: ${rawBody.slice(0, 120)}`,
+							)
+							break
+						}
 						post({
 							command: "testLLMConnection",
 							success: Boolean(data.ok),
@@ -171,13 +197,10 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 						})
 					} catch (e) {
 						const rawMsg = e instanceof Error ? e.message : String(e)
-						const isFetchFailed = /fetch failed|ECONNREFUSED|ENOTFOUND/i.test(rawMsg)
 						post({
 							command: "testLLMConnection",
 							success: false,
-							error: isFetchFailed
-								? `无法连接教学服务器 ${serverUrl}，请检查「服务器设置」中的地址与网络`
-								: `请求后端失败: ${rawMsg}`,
+							error: describeTestConnectionFailure({ serverUrl, error: e }),
 						})
 						Logger.warn(`[LLMSettingsViewProvider] llm-test-current 不可达: ${rawMsg}`)
 					}
@@ -243,12 +266,12 @@ export class LLMSettingsViewProvider implements vscode.WebviewViewProvider {
 	private _getServerUrl(): string {
 		const cfg = vscode.workspace.getConfiguration("clineTeaching")
 		const v = cfg.get<string>("serverUrl")
-		if (v && v.trim()) return v.trim()
+		if (v && v.trim()) return normalizeServerUrl(v)
 		// fallback 到旧配置
 		const oldCfg = vscode.workspace.getConfiguration("teaching")
 		const oldV = oldCfg.get<string>("apiBase")
-		if (oldV && oldV.trim()) return oldV.trim()
-		return "http://localhost:4001"
+		if (oldV && oldV.trim()) return normalizeServerUrl(oldV)
+		return DEFAULT_SERVER_URL
 	}
 
 	/** 【v2.11】只同步本机偏好（不再写 llmPresetModel —— 模型由教师在后端 .env 维护） */

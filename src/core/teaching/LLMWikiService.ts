@@ -27,6 +27,7 @@
 
 import * as vscode from "vscode"
 import { Logger } from "@/shared/services/Logger"
+import { normalizeServerUrl } from "./serverUrl"
 import { buildRecallContext } from "./wikiPrompt"
 
 // ============================================================================
@@ -143,7 +144,7 @@ export class LLMWikiService {
 		const legacy = vscode.workspace.getConfiguration("teaching")
 
 		// serverUrl 优先级：clineTeaching.serverUrl → teaching.apiBase → "http://localhost:4001"
-		const newUrl = ct.get<string>("serverUrl")?.trim() || legacy.get<string>("apiBase")?.trim() || "http://localhost:4001"
+		const newUrl = normalizeServerUrl(ct.get<string>("serverUrl")?.trim() || legacy.get<string>("apiBase")?.trim() || "")
 
 		// 【v2.0】同步 currentTextbookId
 		const newTextbookId = ct.get<string>("currentTextbookId")?.trim() ?? ""
